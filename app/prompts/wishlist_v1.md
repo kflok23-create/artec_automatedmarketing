@@ -1,4 +1,4 @@
-A HERMES post could not be rendered — no bank asset or tool chain hits the match. Write the
+A artec post could not be rendered — no bank asset or tool chain hits the match. Write the
 asset wishlist that tells the human exactly what to shoot and where to file it.
 
 Post genome:

@@ -21,4 +21,4 @@ at their default instance and silently ignores weight axes — a variable Bricol
 renders Regular where Bold was asked. Download the static weights from Google Fonts
 ("Download family" → `static/` folder inside the zip).
 
-`hermes doctor` is RED and TEXT CARD raises a named error until these four files exist.
+`artec doctor` is RED and TEXT CARD raises a named error until these four files exist.

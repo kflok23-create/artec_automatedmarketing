@@ -1,7 +1,7 @@
 [project]
-name = "hermes"
+name = "artec"
 version = "0.1.0"
-description = "HERMES — one agent, one store, one key. Manual marketing loop for artec.my."
+description = "HERMES system, `artec` CLI — one agent, one store, one key. Marketing loop for artec.my."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.111",
@@ -22,8 +22,10 @@ dependencies = [
     "python-multipart>=0.0.9",
 ]
 
+# `hermes` refers EXCLUSIVELY to the NousResearch hermes-agent CLI (hermes doctor,
+# hermes update, hermes gateway). The bespoke CLI is `artec` — the two must never collide.
 [project.scripts]
-hermes = "app.cli:main"
+artec = "app.cli:main"
 
 [dependency-groups]
 dev = [

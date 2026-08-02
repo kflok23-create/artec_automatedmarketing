@@ -87,7 +87,7 @@ def test_publish_photo_flow_sets_external_id(session):
 
 def test_failed_publish_records_reason_and_never_lost_the_media(session):
     # A publish failure keeps the render (media ids intact) and records why, so
-    # `hermes post retry` can flip it back to RENDERED for another attempt.
+    # `artec post retry` can flip it back to RENDERED for another attempt.
     post = _approved(session, pid="post_1501")
     post.status = "RENDERED"
     post.media_drive_file_id = "gen_1"
@@ -107,7 +107,7 @@ def test_failed_publish_records_reason_and_never_lost_the_media(session):
     assert post.external_post_id is None          # nothing went live → retry is safe
     assert post.media_drive_file_id == "gen_1"    # render preserved
 
-    # The retry transition itself (what `hermes post retry` performs):
+    # The retry transition itself (what `artec post retry` performs):
     post.status = "RENDERED"
     post.park_reason = None
     session.flush()

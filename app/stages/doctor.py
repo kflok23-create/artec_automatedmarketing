@@ -1,4 +1,4 @@
-"""`hermes doctor` — green/red verification of every dependency, with a named remedy per
+"""`artec doctor` — green/red verification of every dependency, with a named remedy per
 red line. Exits non-zero on any red. Includes the live LoRA base-model probe (§7.2) and the
 Drive `_generated/` write probe.
 """
@@ -209,7 +209,7 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                     "write probe FILE NOT FOUND (404): the id being written under no longer "
                     "exists — usually a stale Drive id from before a bank migration. Verify "
                     "GOOGLE_DRIVE_ROOT_FOLDER_ID and GOOGLE_SHARED_DRIVE_ID are the "
-                    "post-migration values, then run `hermes assets sync --full` (a root "
+                    "post-migration values, then run `artec assets sync --full` (a root "
                     "change auto-resets the sync cursor)"
                 ) from e
             raise
@@ -225,7 +225,7 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
         seeds = get_config(session, "seo_seeds", [])
         checks.append(Check("seo seeds", bool(seeds and len(seeds) >= 5),
                             f"{len(seeds or [])} seeds",
-                            "set 5–15 seeds before the first ideate: hermes config set seo_seeds '[…]'",
+                            "set 5–15 seeds before the first ideate: artec config set seo_seeds '[…]'",
                             warn=True))
 
     return checks

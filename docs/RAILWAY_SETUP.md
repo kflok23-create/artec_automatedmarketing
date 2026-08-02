@@ -57,6 +57,6 @@ Already committed — no dashboard action needed:
 ## 5. Verify
 
 ```bash
-railway run hermes doctor     # or run it in a one-off shell on the service
+railway run artec doctor     # or run it in a one-off shell on the service
 curl https://<domain>/healthz
 ```

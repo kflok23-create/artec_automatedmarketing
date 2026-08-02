@@ -1,4 +1,4 @@
-"""`hermes config seed` must never silently clobber operator-set values (seo_seeds once
+"""`artec config seed` must never silently clobber operator-set values (seo_seeds once
 died this way, discovered only when ideate refused to run)."""
 
 from app.config import RUNTIME_KEYS, get_config, seed_config, set_config

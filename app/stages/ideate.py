@@ -29,7 +29,7 @@ def ideate(session: Session, llm, week_start: date | None = None, log=print) -> 
     if not seeds or len(seeds) < 5:
         raise OperatorError(
             "SEO_SEEDS is empty or too short — seed 5–15 keywords before the first ideate: "
-            "hermes config set seo_seeds '[\"keyword one\", …]'"
+            "artec config set seo_seeds '[\"keyword one\", …]'"
         )
     cadence: dict[str, int] = get_config(session, "channel_cadence")
     site = get_config(session, "site_base_url")

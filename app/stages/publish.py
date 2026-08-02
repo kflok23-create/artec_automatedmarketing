@@ -110,7 +110,7 @@ def publish(session: Session, drive, fal, uploader, brevo,
             log(preview)
             if not confirm:
                 raise FirstPublishNotConfirmed(
-                    "first publish requires confirmation — re-run `hermes publish` and "
+                    "first publish requires confirmation — re-run `artec publish` and "
                     "answer 'continue', or pass --yes"
                 )
             answer = input("Type 'continue' to go live (anything else aborts): ").strip().lower()

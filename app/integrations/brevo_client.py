@@ -120,7 +120,7 @@ class Brevo:
         if resp.status_code == 402:
             raise BrevoCreditsError(
                 "Brevo returned 402 (insufficient email credits) — top up credits and re-run "
-                "`hermes publish`; the post remains RENDERED"
+                "`artec publish`; the post remains RENDERED"
             )
         if resp.status_code >= 400:
             raise BrevoError(f"sendNow failed: HTTP {resp.status_code}: {resp.text[:300]}")

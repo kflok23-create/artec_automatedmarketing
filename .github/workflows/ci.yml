@@ -39,7 +39,7 @@ jobs:
           uv build --wheel
           uv run python tests/wheel_contents_check.py
       - name: Mocked full cycle
-        run: uv run hermes cycle --dry-run
+        run: uv run artec cycle --dry-run
         env:
           DATABASE_URL: sqlite://
           HERMES_API_TOKEN: ci-token

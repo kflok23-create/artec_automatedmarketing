@@ -20,7 +20,7 @@ class OperatorError(RuntimeError):
 _RAISE = object()
 
 # ---------------------------------------------------------------------------------------
-# §0 OPERATOR CONSTANTS — seeded into the config table by `hermes config seed`.
+# §0 OPERATOR CONSTANTS — seeded into the config table by `artec config seed`.
 # Plain config only; secrets never appear here.
 # ---------------------------------------------------------------------------------------
 OPERATOR_CONSTANTS: dict[str, Any] = {
@@ -176,7 +176,7 @@ def get_config(session: Session, key: str, default: Any = _RAISE) -> Any:
     row = session.get(Config, key)
     if row is None:
         if default is _RAISE:
-            raise OperatorError(f"config key '{key}' missing — run `hermes config seed`")
+            raise OperatorError(f"config key '{key}' missing — run `artec config seed`")
         return default
     return row.value
 
@@ -199,7 +199,7 @@ def next_post_id(session: Session) -> str:
     """Monotonic post ids: post_1482, post_1483, … Counter lives in config."""
     row = session.get(Config, "post_id_counter")
     if row is None:
-        raise OperatorError("config key 'post_id_counter' missing — run `hermes config seed`")
+        raise OperatorError("config key 'post_id_counter' missing — run `artec config seed`")
     n = int(row.value)
     row.value = n + 1
     row.updated_at = datetime.now(UTC)

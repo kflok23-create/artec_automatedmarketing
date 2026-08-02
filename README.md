@@ -18,16 +18,16 @@ an authenticated POST route). Cadence numbers are planning inputs, never timers.
 ## The manual cycle
 
 ```bash
-hermes doctor              # green/red table; every line must be green
-hermes config seed         # §0 operator constants → config table
-hermes assets sync --full  # index the Drive bank into Postgres
-hermes learn               # score last week (cold start → "insufficient data")
-hermes ideate              # 7-day DRAFT plan sized by channel cadence
-hermes gate                # Telegram: approve / edit / reject / inject
-hermes render --all-approved
-hermes publish --all-rendered   # first ever publish halts for confirmation
-hermes measure             # hand the figures to the service directly
-hermes report              # REVENUE and ENGAGEMENT — separate blocks, never blended
+artec doctor              # green/red table; every line must be green
+artec config seed         # §0 operator constants → config table
+artec assets sync --full  # index the Drive bank into Postgres
+artec learn               # score last week (cold start → "insufficient data")
+artec ideate              # 7-day DRAFT plan sized by channel cadence
+artec gate                # Telegram: approve / edit / reject / inject
+artec render --all-approved
+artec publish --all-rendered   # first ever publish halts for confirmation
+artec measure             # hand the figures to the service directly
+artec report              # REVENUE and ENGAGEMENT — separate blocks, never blended
 ```
 
 See [docs/RUNBOOK.md](docs/RUNBOOK.md) for the copy-pasteable operator guide,
@@ -54,7 +54,7 @@ judgment call made during the build.
 uv sync --group dev
 uv run pytest              # acceptance tests (offline, SQLite + fakes)
 uv run ruff check .
-uv run hermes cycle --dry-run   # full mocked cycle, same as CI
+uv run artec cycle --dry-run   # full mocked cycle, same as CI
 ```
 
 Secrets live in the Railway dashboard (or a local `.env` you write by hand) — never in the

@@ -1,4 +1,4 @@
-"""§4.3 `hermes assets sync` — the only Drive read path. Manual command, no scheduler.
+"""§4.3 `artec assets sync` — the only Drive read path. Manual command, no scheduler.
 
 Full mode walks the whole tree; incremental mode replays the Drive changes API from the
 persisted startPageToken. Tags derive from the folder path (app/taxonomy.py). Disappeared

@@ -62,15 +62,15 @@ An unrecognised path imports as `subject='unknown'` with a warning — never a g
    still exists for reads — leave `GOOGLE_SHARED_DRIVE_ID` empty — but it cannot host
    `_generated/`.) Also required: the service account's GCP project must have the
    **Drive API explicitly enabled**; fresh projects don't. If the bank ever migrates
-   again, just update the two env vars — `hermes assets sync` detects the root change and
+   again, just update the two env vars — `artec assets sync` detects the root change and
    forces a full rescan automatically.
 
 ## The rhythm
 
 ```
-hermes wishlist show   →   shoot & file into exactly the named folders (daily uploads)
-hermes assets sync     →   new files indexed and tagged from their paths
-hermes wishlist match  →   parked posts that can now be serviced return to APPROVED
+artec wishlist show   →   shoot & file into exactly the named folders (daily uploads)
+artec assets sync     →   new files indexed and tagged from their paths
+artec wishlist match  →   parked posts that can now be serviced return to APPROVED
 ```
 
 The wishlist is written in folder-path vocabulary on purpose: there is never a translation

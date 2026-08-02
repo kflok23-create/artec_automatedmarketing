@@ -50,7 +50,7 @@ the single join key across posts, orders, events, and metrics.
 | `app/integrations/telegram_client.py` | sendMessage + inline keyboards; long-poll getUpdates |
 | `app/integrations/stripe_webhook.py` | manual signature verify; checkout.session.completed → orders (client_reference_id only) |
 | `app/integrations/billplz_webhook.py` | X-Signature verify; bill fetch for reference_1; → orders |
-| `app/integrations/fakes.py` | in-process fakes for `hermes cycle --dry-run` and tests |
+| `app/integrations/fakes.py` | in-process fakes for `artec cycle --dry-run` and tests |
 | `app/toolbox/asset_match.py` | bank-first candidate query; LRU preference; times_used accounting |
 | `app/toolbox/selector.py` | model-driven tool routing; pure `validate_plan` + deterministic fallback |
 | `app/toolbox/edit_combine.py` | kontext 0/1/2+ routing; video family routing; ffmpeg trim/frame; Pillow aspect fit |
@@ -96,5 +96,5 @@ margin only (SGD 7400 / MYR 21200 by default config).
 ## Checkpoints
 
 The build halts at four human gates (§16): env-var table before deploy; webhook URLs after
-first deploy; `hermes doctor` all-green; first-publish confirmation (once per install,
+first deploy; `artec doctor` all-green; first-publish confirmation (once per install,
 persisted in `config`).

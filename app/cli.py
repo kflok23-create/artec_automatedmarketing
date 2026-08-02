@@ -1,5 +1,9 @@
-"""`hermes` — the Typer CLI. Every stage is manually invoked; each writes a `runs` row.
-No step fires on a clock, ever.
+"""`artec` — the bespoke Typer CLI; each command writes a `runs` row.
+
+The name `hermes` belongs exclusively to the NousResearch hermes-agent CLI (`hermes
+doctor`, `hermes update`, `hermes gateway`) — the bespoke CLI renamed to avoid the
+collision. The only timed execution anywhere is the four v3 scheduled jobs (§9);
+every other stage remains manually invoked.
 """
 
 from __future__ import annotations
@@ -255,7 +259,7 @@ def wishlist_fulfil(
 
 @post_app.command("retry")
 def post_retry(post_id: str = typer.Option(..., "--post-id")):
-    """Return a FAILED post to RENDERED so `hermes publish` can retry it.
+    """Return a FAILED post to RENDERED so `artec publish` can retry it.
 
     Refuses if the post ever received an external_post_id — that means the surface
     accepted it and a retry would double-publish (the most expensive possible bug)."""
@@ -278,7 +282,7 @@ def post_retry(post_id: str = typer.Option(..., "--post-id")):
         post.status = "RENDERED"
         post.park_reason = None
         session.flush()
-        rec.log(f"{post_id}: FAILED → RENDERED — re-run `hermes publish --post-id {post_id}`")
+        rec.log(f"{post_id}: FAILED → RENDERED — re-run `artec publish --post-id {post_id}`")
 
 
 @post_app.command("show")

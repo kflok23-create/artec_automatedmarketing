@@ -1,4 +1,4 @@
-"""`hermes cycle --dry-run` — learn→ideate→gate(auto)→render→publish→measure→report against
+"""`artec cycle --dry-run` — learn→ideate→gate(auto)→render→publish→measure→report against
 mocked externals, asserting the §13 invariants. Used in CI. Touches no real service and no
 real database: it builds its own in-memory SQLite store.
 """

@@ -42,7 +42,7 @@ _TABLE: dict[str, AssetTags] = {
 # Valid targets for a PARK wishlist entry — the bank's own vocabulary.
 WISHLIST_FOLDERS: tuple[str, ...] = tuple(_TABLE.keys())
 
-# The eleven folders `hermes doctor` expects to exist (plus `_generated`, which HERMES owns).
+# The eleven folders `artec doctor` expects to exist (plus `_generated`, which HERMES owns).
 EXPECTED_FOLDERS: tuple[str, ...] = WISHLIST_FOLDERS
 GENERATED_FOLDER = "_generated"
 

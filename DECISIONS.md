@@ -35,7 +35,7 @@ unless marked.
    the model page during the build, so the operator-supplied slugs
    (`bytedance/seedance-2.0/text-to-video`, `bytedance/seedance-2.0/reference-to-video`)
    are seeded into `config.video_family` together with `reference_syntax: "bracket"`
-   (`[Image1] [Video1] [Audio1]`), max 3 ref videos, 4–15 s, 480p/720p. `hermes doctor`
+   (`[Image1] [Video1] [Audio1]`), max 3 ref videos, 4–15 s, 480p/720p. `artec doctor`
    flags the family as UNVERIFIED until the first successful render. Switching to Wan v2.6
    is a config edit (endpoint + `reference_syntax: "at"`), no code change.
 
@@ -59,7 +59,7 @@ unless marked.
    `alembic upgrade head` against a throwaway Postgres.
 
 8. **Fonts are operator-committed** (per the groundwork list): the three static .ttf
-   families go into `assets/fonts/` by hand; `hermes doctor` is RED and TEXT CARD raises a
+   families go into `assets/fonts/` by hand; `artec doctor` is RED and TEXT CARD raises a
    named error until they exist. No font bytes are fetched or committed by the build.
 
 9. **`app/stages/doctor.py` and `app/stages/cycle.py`** are added beyond the §12 layout —
@@ -67,9 +67,9 @@ unless marked.
    Likewise `app/integrations/fakes.py` holds the dry-run/test fakes.
 
 10. **SEO_SEEDS ships empty.** The prompt left it `<<STILL BLANK>>`. It is seeded as `[]`;
-    `hermes doctor` warns and `hermes ideate` refuses to run with a named operator error
-    until 5–15 seeds are set (`hermes config seed --file config.yaml` or
-    `hermes config set seo_seeds '["…"]'`).
+    `artec doctor` warns and `artec ideate` refuses to run with a named operator error
+    until 5–15 seeds are set (`artec config seed --file config.yaml` or
+    `artec config set seo_seeds '["…"]'`).
 
 11. **Stripe signature verification is hand-rolled** (HMAC-SHA256 over `t.payload`,
     constant-time compare, 5-minute tolerance) because the stripe SDK is not in the locked
@@ -81,7 +81,7 @@ unless marked.
     POST_ID_START=1482) incremented inside the insert transaction with a row lock on
     Postgres; monotonic, gap-tolerant.
 
-13. **Idempotent ideate**: re-running `hermes ideate` for the same week only tops up each
+13. **Idempotent ideate**: re-running `artec ideate` for the same week only tops up each
     channel to its cadence count (counting existing non-REJECTED posts for that week), so a
     re-run never duplicates a plan.
 
@@ -101,7 +101,7 @@ unless marked.
     (it must not be; ONE SERVICE rule).
 
 18. **`ENVIRONMENT=test` never selects fakes implicitly.** Fakes are injected explicitly by
-    `hermes cycle --dry-run` and the test suite; production code paths always construct real
+    `artec cycle --dry-run` and the test suite; production code paths always construct real
     clients.
 
 19. **Aspect derivation:** width/height ratio < 0.9 → vertical, ≤ 1.1 → square, else
@@ -136,6 +136,6 @@ unless marked.
       `drive_root_marker`; when the configured root changes, it auto-resets the changes
       cursor and forces a full rescan, marking all pre-migration assets `missing`.
 
-22. **`hermes measure --csv` from the smoke-run example is not implemented** — the locked
+22. **`artec measure --csv` from the smoke-run example is not implemented** — the locked
     decision table says "No channel APIs, no CSV files"; measure is interactive, `--json`,
     or `POST /commands/measure`. The RUNBOOK shows the correct invocation.

@@ -1,4 +1,4 @@
-"""In-process fakes for `hermes cycle --dry-run` and the test suite.
+"""In-process fakes for `artec cycle --dry-run` and the test suite.
 
 Explicitly injected only (DECISIONS.md #18) — production code paths never select these.
 """

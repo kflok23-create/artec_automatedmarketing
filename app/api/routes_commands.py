@@ -131,5 +131,5 @@ def doctor_cmd():
 def gate_cmd():
     raise HTTPException(
         status_code=409,
-        detail="gate is an interactive Telegram session — run `hermes gate` from the CLI",
+        detail="gate is an interactive Telegram session — run `artec gate` from the CLI",
     )

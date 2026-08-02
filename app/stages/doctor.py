@@ -49,10 +49,15 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
     checks.append(_check("ffmpeg on PATH", lambda: shutil.which("ffmpeg") or (_ for _ in ()).throw(RuntimeError("not found")),
                          "nixpacks.toml installs ffmpeg on Railway; locally: install ffmpeg"))
     fonts = OPERATOR_CONSTANTS["fonts"]
-    missing_fonts = [f for f in set(fonts.values()) if not (FONTS_DIR / f).exists()]
-    checks.append(Check("brand fonts committed", not missing_fonts,
-                        "ok" if not missing_fonts else f"missing: {missing_fonts}",
-                        "commit the STATIC .ttf files to assets/fonts/ (see docs/ASSET_BANK.md)"))
+    missing_fonts = sorted(f for f in set(fonts.values()) if not (FONTS_DIR / f).exists())
+    found_fonts = sorted(p.name for p in FONTS_DIR.iterdir()) if FONTS_DIR.is_dir() else []
+    checks.append(Check(
+        "brand fonts committed", not missing_fonts,
+        f"ok ({FONTS_DIR})" if not missing_fonts
+        else f"dir: {FONTS_DIR} · expected: {missing_fonts} · found: {found_fonts}",
+        "commit the STATIC .ttf files to assets/fonts/ with exactly the config.fonts "
+        "filenames (see docs/ASSET_BANK.md); compare expected vs found above",
+    ))
 
     # --- Anthropic ---------------------------------------------------------------------
     def _anthropic():
@@ -151,9 +156,12 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                          "check BILLPLZ_API_KEY and BILLPLZ_COLLECTION_ID"))
 
     # --- Drive: auth, taxonomy folders, _generated write probe -------------------------
+    # Two modes: Shared Drive (GOOGLE_SHARED_DRIVE_ID set) or My Drive (empty — personal
+    # Gmail, bank folder shared directly with the service account as Editor).
     def _drive():
         from app.integrations.drive_client import DriveClient
         drive = DriveClient(settings)
+        mode = "My Drive mode" if drive.my_drive_mode else "Shared Drive"
         children = drive.list_children(drive.root_id)
         folder_names = {c["name"] for c in children
                         if c["mimeType"] == "application/vnd.google-apps.folder"}
@@ -168,10 +176,23 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
             missing_subs = sorted({"parent-child", "child-face", "assembled"} - subs)
             if missing_subs:
                 raise RuntimeError(f"{parent}/ missing subfolders: {missing_subs}")
-        drive.probe_write()
-        return "auth + 11 folders + _generated write probe ok"
+        try:
+            drive.probe_write()
+        except Exception as e:
+            msg = str(e).lower()
+            if "quota" in msg or "storagequota" in msg:
+                raise RuntimeError(
+                    "write probe hit a storage-quota error: in My Drive mode, files the "
+                    "service account uploads count against the SERVICE ACCOUNT'S own Drive "
+                    "quota, not yours — delete old service-account-owned files in "
+                    "_generated/ to free space, or move the bank to a Workspace Shared Drive"
+                ) from e
+            raise
+        return f"auth + 11 folders + _generated write probe ok ({mode})"
     checks.append(_check("google drive bank", _drive,
-                         "Shared Drive: add the service account as Content Manager; build the folder tree per docs/ASSET_BANK.md; check GOOGLE_* env vars"))
+                         "share the bank folder with the service account as Editor (My Drive "
+                         "mode) or add it as Content Manager (Shared Drive); build the folder "
+                         "tree per docs/ASSET_BANK.md; check GOOGLE_* env vars"))
 
     # --- config-level warnings ---------------------------------------------------------
     if session is not None:

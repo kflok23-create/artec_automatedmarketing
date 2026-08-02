@@ -111,6 +111,18 @@ unless marked.
     false only `has_person = true` rows are excluded; UGC's unknown (`NULL`) stays eligible.
     Flip the config key when releases are settled.
 
-21. **`hermes measure --csv` from the smoke-run example is not implemented** — the locked
+21. **The asset bank lives in My Drive, not a Shared Drive** (revised at CHECKPOINT 3,
+    operator decision). The account is personal Gmail; Shared Drives are Workspace-only.
+    `Artec Assets Bank` is a My Drive folder shared directly with the service account as
+    **Editor**, and `GOOGLE_SHARED_DRIVE_ID` is optional and empty. The Drive client runs
+    in "My Drive mode": queries go by parent folder id only (no `corpora`/`driveId`), while
+    `supportsAllDrives`/`includeItemsFromAllDrives` are kept on list/changes calls —
+    harmless on My Drive and preserving the Shared Drive path if the bank ever moves to
+    Workspace. Known risk, surfaced by name in `hermes doctor`: files the service account
+    uploads into `_generated/` are owned by the service account and count against ITS Drive
+    quota; a quota failure gets a specific remedy (delete old service-account-owned
+    renders, or move to a Shared Drive) instead of a generic error.
+
+22. **`hermes measure --csv` from the smoke-run example is not implemented** — the locked
     decision table says "No channel APIs, no CSV files"; measure is interactive, `--json`,
     or `POST /commands/measure`. The RUNBOOK shows the correct invocation.

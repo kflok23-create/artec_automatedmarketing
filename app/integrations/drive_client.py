@@ -61,17 +61,28 @@ class DriveClient:
             creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
             self.service = build("drive", "v3", credentials=creds, cache_discovery=False)
         self.root_id = settings.GOOGLE_DRIVE_ROOT_FOLDER_ID
-        self.drive_id = settings.GOOGLE_SHARED_DRIVE_ID
+        # Empty drive_id = My Drive mode: the bank is a personal-Gmail My Drive folder
+        # shared with the service account as Editor (Shared Drives are Workspace-only).
+        # Queries then go by parent folder id only — no corpora/driveId scoping.
+        self.drive_id = settings.GOOGLE_SHARED_DRIVE_ID or ""
+
+    @property
+    def my_drive_mode(self) -> bool:
+        return not self.drive_id
 
     # -- reads ---------------------------------------------------------------------------
 
     def _list_kwargs(self) -> dict[str, Any]:
-        return {
+        # supportsAllDrives / includeItemsFromAllDrives stay in BOTH modes — harmless on
+        # My Drive, and they preserve the Shared Drive path if the bank moves to Workspace.
+        kwargs: dict[str, Any] = {
             "supportsAllDrives": True,
             "includeItemsFromAllDrives": True,
-            "corpora": "drive",
-            "driveId": self.drive_id,
         }
+        if self.drive_id:
+            kwargs["corpora"] = "drive"
+            kwargs["driveId"] = self.drive_id
+        return kwargs
 
     def list_children(self, folder_id: str) -> list[dict]:
         files: list[dict] = []
@@ -148,11 +159,10 @@ class DriveClient:
     # -- changes API (incremental sync) --------------------------------------------------
 
     def get_start_page_token(self) -> str:
-        resp = (
-            self.service.changes()
-            .getStartPageToken(driveId=self.drive_id, supportsAllDrives=True)
-            .execute()
-        )
+        kwargs: dict[str, Any] = {"supportsAllDrives": True}
+        if self.drive_id:
+            kwargs["driveId"] = self.drive_id
+        resp = self.service.changes().getStartPageToken(**kwargs).execute()
         return resp["startPageToken"]
 
     def list_changes(self, page_token: str) -> tuple[list[dict], str]:
@@ -161,17 +171,15 @@ class DriveClient:
         token = page_token
         new_start = page_token
         while token:
-            resp = (
-                self.service.changes()
-                .list(
-                    pageToken=token,
-                    supportsAllDrives=True,
-                    includeItemsFromAllDrives=True,
-                    driveId=self.drive_id,
-                    fields=f"nextPageToken,newStartPageToken,changes(fileId,removed,file({FILE_FIELDS}))",
-                )
-                .execute()
-            )
+            kwargs: dict[str, Any] = {
+                "pageToken": token,
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+                "fields": f"nextPageToken,newStartPageToken,changes(fileId,removed,file({FILE_FIELDS}))",
+            }
+            if self.drive_id:
+                kwargs["driveId"] = self.drive_id
+            resp = self.service.changes().list(**kwargs).execute()
             changes.extend(resp.get("changes", []))
             new_start = resp.get("newStartPageToken", new_start)
             token = resp.get("nextPageToken")

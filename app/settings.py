@@ -40,10 +40,13 @@ class Settings(BaseSettings):
     # fal.ai
     FAL_KEY: str
 
-    # Google Drive (service account JSON is a raw JSON string, never a file path)
+    # Google Drive (service account JSON is a raw JSON string, never a file path).
+    # GOOGLE_SHARED_DRIVE_ID is OPTIONAL: empty = My Drive mode (personal Gmail — the bank
+    # folder is shared directly with the service account as Editor). Set it only if the
+    # bank ever moves to a Workspace Shared Drive.
     GOOGLE_SERVICE_ACCOUNT_JSON: str
     GOOGLE_DRIVE_ROOT_FOLDER_ID: str
-    GOOGLE_SHARED_DRIVE_ID: str
+    GOOGLE_SHARED_DRIVE_ID: str = ""
 
     # Upload-Post
     UPLOAD_POST_API_KEY: str

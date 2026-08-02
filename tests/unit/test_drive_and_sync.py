@@ -68,6 +68,26 @@ def test_every_drive_call_site_passes_shared_drive_kwargs():
             assert "fields" in kw, f"{name} missing explicit fields="
 
 
+def test_my_drive_mode_omits_drive_scoping_but_keeps_all_drives_flags(monkeypatch):
+    # Empty GOOGLE_SHARED_DRIVE_ID = My Drive mode (personal Gmail): query by parent only,
+    # no corpora/driveId — but keep the AllDrives flags so a future Workspace move is free.
+    monkeypatch.setenv("GOOGLE_SHARED_DRIVE_ID", "")
+    rec = _Recorder()
+    client = DriveClient(Settings(), service=rec)
+    assert client.my_drive_mode is True
+    client.list_children("folder1")
+    client.get_file("f1")
+    client.get_start_page_token()
+
+    for name, kw in rec.calls:
+        assert "driveId" not in kw, f"{name} must not scope to a drive in My Drive mode"
+        assert "corpora" not in kw, f"{name} must not pass corpora in My Drive mode"
+        assert kw.get("supportsAllDrives") is True
+        if name == "files.list":
+            assert kw.get("includeItemsFromAllDrives") is True
+            assert kw["q"] == "'folder1' in parents and trashed = false"
+
+
 class _SyncDrive:
     """Fixture-tree drive for sync tests."""
 

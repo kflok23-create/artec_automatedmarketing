@@ -54,9 +54,13 @@ An unrecognised path imports as `subject='unknown'` with a warning — never a g
    `allow_person_assets` is flipped to `true` (once model releases are settled).
 4. **`_generated/` belongs to HERMES.** Every render is uploaded to
    `_generated/{week_start}/{post_id}.{ext}`; don't file your own media there.
-5. **Shared Drive, not My Drive.** A service account has zero storage quota of its own —
-   if the bank sits in a personal My Drive, every HERMES write fails. The bank must live
-   in a Shared Drive with the service account as **Content Manager**.
+5. **My Drive mode (current setup — personal Gmail, Shared Drives are Workspace-only).**
+   The bank is a My Drive folder shared directly with the service account as **Editor**;
+   `GOOGLE_SHARED_DRIVE_ID` stays empty. Caveat: files HERMES uploads into `_generated/`
+   are owned by the service account and count against the service account's OWN Drive
+   quota — if `hermes doctor`'s write probe ever fails on quota, delete old
+   service-account-owned renders or move the bank to a Workspace Shared Drive (then set
+   `GOOGLE_SHARED_DRIVE_ID`; the client switches modes automatically).
 
 ## The rhythm
 

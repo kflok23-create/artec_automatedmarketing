@@ -64,13 +64,35 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
-def migration_current() -> bool:
-    """True when the DB's alembic_version matches the repo's head revision."""
-    try:
-        from alembic.config import Config as AlembicConfig
-        from alembic.script import ScriptDirectory
+def script_head_revision() -> str | None:
+    """Head revision of the migration scripts, resolved from the INSTALLED package first.
 
-        head = ScriptDirectory.from_config(AlembicConfig("alembic.ini")).get_current_head()
+    Migrations live inside the `app` package (app/migrations/) so the wheel ships them and
+    this works regardless of CWD — reading alembic.ini from CWD only worked on Railway
+    because the source tree happened to sit at /app. The alembic.ini fallback remains for
+    odd invocation contexts.
+    """
+    from alembic.script import ScriptDirectory
+
+    try:
+        from pathlib import Path
+
+        import app as _app
+
+        migrations_dir = Path(_app.__file__).resolve().parent / "migrations"
+        if migrations_dir.is_dir():
+            return ScriptDirectory(str(migrations_dir)).get_current_head()
+    except Exception:
+        pass
+    from alembic.config import Config as AlembicConfig
+
+    return ScriptDirectory.from_config(AlembicConfig("alembic.ini")).get_current_head()
+
+
+def migration_current() -> bool:
+    """True when the DB's alembic_version matches the packaged head revision."""
+    try:
+        head = script_head_revision()
         with get_engine().connect() as conn:
             current = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
         return current is not None and current == head

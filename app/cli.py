@@ -59,8 +59,12 @@ def doctor():
 
 
 @config_app.command("seed")
-def config_seed(file: str = typer.Option(None, "--file", help="optional YAML/JSON overrides")):
-    """Load §0 operator constants into the config table. Idempotent upsert."""
+def config_seed(
+    file: str = typer.Option(None, "--file", help="optional JSON overrides (explicitly overwrite those keys)"),
+    force: bool = typer.Option(False, "--force", help="overwrite operator-set values with shipped defaults"),
+):
+    """Load §0 operator constants. NON-DESTRUCTIVE: adds missing keys, keeps existing
+    values, and prints anything it left alone. --force overwrites (runtime state never)."""
     _boot()
     from app.config import seed_config
 
@@ -68,9 +72,14 @@ def config_seed(file: str = typer.Option(None, "--file", help="optional YAML/JSO
     if file:
         raw = open(file, encoding="utf-8").read()
         overrides = json_lib.loads(raw)
-    with record_run("config seed", {"file": file}) as (session, rec):
-        n = seed_config(session, overrides)
-        rec.log(f"config seed: {n} keys written/updated")
+    with record_run("config seed", {"file": file, "force": force}) as (session, rec):
+        result = seed_config(session, overrides, force=force)
+        rec.log(f"config seed: added {len(result['added'])} keys")
+        if result["kept"]:
+            rec.log("kept operator values (differ from shipped defaults, NOT overwritten): "
+                    + ", ".join(result["kept"]) + "  — use --force to reset them")
+        if result["overwritten"]:
+            rec.log("OVERWROTE: " + ", ".join(result["overwritten"]))
 
 
 @config_app.command("set")

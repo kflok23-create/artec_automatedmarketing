@@ -16,7 +16,11 @@ import anthropic
 
 from app.settings import Settings
 
-PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
+# Package-relative on purpose: prompts live INSIDE the `app` package (app/prompts/) so
+# they ship in the wheel and resolve identically from the source tree and site-packages.
+# A three-parents repo-root walk breaks under `pip install .` — same failure class as the
+# fonts (see app/toolbox/text_card.py); tests/unit/test_packaging.py guards the class.
+PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 

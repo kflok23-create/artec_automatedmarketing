@@ -74,12 +74,12 @@ the single join key across posts, orders, events, and metrics.
 | `app/api/routes_commands.py` | authenticated POST mirrors of the CLI stages |
 | `app/main.py` | FastAPI app; boot validation; /healthz |
 | `app/cli.py` | Typer CLI `hermes` |
-| `prompts/learn_v1.md` | qualitative learn pass |
-| `prompts/ideate_v1.md` | 7-day plan generation |
-| `prompts/toolbox_route_v1.md` | tool/asset routing |
-| `prompts/caption_v1.md` | captions + email variables |
-| `prompts/wishlist_v1.md` | structured wishlist authoring |
-| `migrations/…` | Alembic env + `0001_initial` (tables + v_brief view) |
+| `app/prompts/learn_v1.md` | qualitative learn pass (in-package: ships in the wheel) |
+| `app/prompts/ideate_v1.md` | 7-day plan generation |
+| `app/prompts/toolbox_route_v1.md` | tool/asset routing |
+| `app/prompts/caption_v1.md` | captions + email variables |
+| `app/prompts/wishlist_v1.md` | structured wishlist authoring |
+| `app/migrations/…` | Alembic env + `0001_initial` (in-package so runtime head checks work when installed) |
 | `app/assets/fonts/README.md` | the three static .ttf families live inside the package so the wheel ships them (doctor checks) |
 | `tests/…` | acceptance tests §15 (unit + integration, offline via fakes) |
 | `docs/RUNBOOK.md` | the exact manual cycle, copy-pasteable |

@@ -34,6 +34,10 @@ jobs:
             --exclude-dir=.git --exclude-dir=.venv --exclude=ci.yml .
       - name: Unit + acceptance tests
         run: uv run pytest
+      - name: Wheel packaging check (installed-artifact runtime resources)
+        run: |
+          uv build --wheel
+          uv run python tests/wheel_contents_check.py
       - name: Mocked full cycle
         run: uv run hermes cycle --dry-run
         env:

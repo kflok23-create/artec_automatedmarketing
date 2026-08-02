@@ -127,26 +127,49 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
 }
 
 
-def seed_config(session: Session, overrides: dict[str, Any] | None = None) -> int:
-    """Idempotent upsert of §0 constants. Existing values win for mutable runtime keys
-    (counters, cursors, gates) so re-seeding never rewinds state."""
-    preserve = {"post_id_counter", "drive_page_token", "drive_root_marker",
-                "confirm_first_publish", "text_card_pairing_idx"}
+# Runtime state keys are NEVER overwritten by seeding, not even with --force.
+RUNTIME_KEYS = frozenset({
+    "post_id_counter", "drive_page_token", "drive_root_marker",
+    "confirm_first_publish", "text_card_pairing_idx",
+})
+
+
+def seed_config(
+    session: Session,
+    overrides: dict[str, Any] | None = None,
+    force: bool = False,
+) -> dict[str, list[str]]:
+    """NON-DESTRUCTIVE seed of §0 constants: adds missing keys only.
+
+    Existing keys whose stored value differs from the shipped default are KEPT and
+    reported — re-seeding must never silently clobber operator-set values (seo_seeds once
+    died this way). Overwriting requires `--force`, or passing the key explicitly via
+    `--file` overrides (an explicit override is operator intent). Runtime state keys
+    (counters, cursors, gates) are never touched either way.
+    """
+    forced_keys = set(overrides or {})
     data = dict(OPERATOR_CONSTANTS)
     if overrides:
         data.update(overrides)
-    written = 0
+    added: list[str] = []
+    kept: list[str] = []
+    overwritten: list[str] = []
     for key, value in data.items():
         row = session.get(Config, key)
         if row is None:
             session.add(Config(key=key, value=value, updated_at=datetime.now(UTC)))
-            written += 1
-        elif key not in preserve and row.value != value:
+            added.append(key)
+            continue
+        if row.value == value or key in RUNTIME_KEYS:
+            continue
+        if force or key in forced_keys:
             row.value = value
             row.updated_at = datetime.now(UTC)
-            written += 1
+            overwritten.append(key)
+        else:
+            kept.append(key)
     session.flush()
-    return written
+    return {"added": sorted(added), "kept": sorted(kept), "overwritten": sorted(overwritten)}
 
 
 def get_config(session: Session, key: str, default: Any = _RAISE) -> Any:

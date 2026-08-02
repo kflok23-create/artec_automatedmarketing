@@ -44,13 +44,19 @@ app.include_router(commands_router)
 def healthz():
     from app.config import OPERATOR_CONSTANTS as _oc
     from app.db import db_ok, migration_current
+    from app.integrations.anthropic_client import PROMPTS_DIR
     from app.toolbox.text_card import FONTS_DIR
 
     database = db_ok()
     migrations = migration_current()
-    # fonts_packaged verifies the INSTALLED package carries the .ttf files — this resolves
-    # from site-packages at runtime, exactly where a wheel-packaging regression would show.
-    fonts = all((FONTS_DIR / f).exists() for f in set(_oc["fonts"].values()))
+    # resources_packaged verifies the INSTALLED package carries every runtime resource —
+    # resolved from site-packages at runtime, exactly where a wheel regression would show
+    # (fonts and prompts both reached production missing before this guard existed).
+    resources = (
+        all((FONTS_DIR / f).exists() for f in set(_oc["fonts"].values()))
+        and all((PROMPTS_DIR / p).exists() for p in
+                ("learn_v1.md", "ideate_v1.md", "toolbox_route_v1.md", "caption_v1.md", "wishlist_v1.md"))
+    )
     status = "ok" if database and migrations else "degraded"
     return {"status": status, "db": database, "migrations_current": migrations,
-            "fonts_packaged": fonts}
+            "resources_packaged": resources}

@@ -16,6 +16,10 @@ hermes config seed
 hermes config set seo_seeds '["stem toys singapore", "artec blocks", "educational toys malaysia", "logic puzzle kids", "screen free play"]'
 hermes assets sync --full
 ```
+
+`config seed` is NON-DESTRUCTIVE: it adds missing keys, never overwrites values you have
+set, and prints what it kept. `--force` resets kept keys to shipped defaults (runtime
+state — counters, cursors, the first-publish gate — is never touched).
 `assets sync` prints an inventory table — confirm the counts match what you see in Drive.
 
 ## 1. The weekly cycle (typically Sunday morning, but any time you choose)

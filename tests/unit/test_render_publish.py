@@ -85,6 +85,38 @@ def test_publish_photo_flow_sets_external_id(session):
     assert post.tracked_url in uploader.calls[0]["title"]  # the spine rides the caption
 
 
+def test_failed_publish_records_reason_and_never_lost_the_media(session):
+    # A publish failure keeps the render (media ids intact) and records why, so
+    # `hermes post retry` can flip it back to RENDERED for another attempt.
+    post = _approved(session, pid="post_1501")
+    post.status = "RENDERED"
+    post.media_drive_file_id = "gen_1"
+    post.caption = "hello"
+    session.flush()
+    set_config(session, "confirm_first_publish", False)
+
+    class _BoomUploader(FakeUploadPost):
+        def upload_photo(self, platform, photo_path, title):
+            raise TypeError("sequence item 1: expected a bytes-like object, tuple found")
+
+    out = publish(session, FakeDrive(), FakeFal(), _BoomUploader(), FakeBrevo(),
+                  all_rendered=True, confirm=False, log=lambda *_: None)
+    assert out["published"] == 0
+    assert post.status == "FAILED"
+    assert "TypeError" in post.park_reason
+    assert post.external_post_id is None          # nothing went live → retry is safe
+    assert post.media_drive_file_id == "gen_1"    # render preserved
+
+    # The retry transition itself (what `hermes post retry` performs):
+    post.status = "RENDERED"
+    post.park_reason = None
+    session.flush()
+    out = publish(session, FakeDrive(), FakeFal(), FakeUploadPost(), FakeBrevo(),
+                  all_rendered=True, confirm=False, log=lambda *_: None)
+    assert out["published"] == 1
+    assert post.status == "PUBLISHED" and post.external_post_id
+
+
 def test_email_publish_uses_template_contract(session):
     post = _approved(session, pid="post_1499", channel="email")
     post.status = "RENDERED"

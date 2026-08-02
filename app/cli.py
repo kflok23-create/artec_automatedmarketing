@@ -17,9 +17,11 @@ cli = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_
 config_app = typer.Typer(no_args_is_help=True)
 assets_app = typer.Typer(no_args_is_help=True)
 wishlist_app = typer.Typer(no_args_is_help=True)
+post_app = typer.Typer(no_args_is_help=True)
 cli.add_typer(config_app, name="config")
 cli.add_typer(assets_app, name="assets")
 cli.add_typer(wishlist_app, name="wishlist")
+cli.add_typer(post_app, name="post")
 
 
 def _boot():
@@ -249,6 +251,54 @@ def wishlist_fulfil(
 
     with record_run("wishlist fulfil", {"post_id": post_id}) as (session, rec):
         fulfil(session, post_id, drive_file_id, log=rec.log)
+
+
+@post_app.command("retry")
+def post_retry(post_id: str = typer.Option(..., "--post-id")):
+    """Return a FAILED post to RENDERED so `hermes publish` can retry it.
+
+    Refuses if the post ever received an external_post_id — that means the surface
+    accepted it and a retry would double-publish (the most expensive possible bug)."""
+    _boot()
+    from app.models import Post
+
+    with record_run("post retry", {"post_id": post_id}) as (session, rec):
+        post = session.get(Post, post_id)
+        if post is None:
+            rec.log(f"{post_id}: not found")
+            raise typer.Exit(code=2)
+        if post.external_post_id:
+            rec.log(f"{post_id}: REFUSED — external_post_id={post.external_post_id} means the "
+                    "platform accepted it; retrying would double-publish")
+            raise typer.Exit(code=2)
+        if post.status != "FAILED":
+            rec.log(f"{post_id}: status is {post.status}, nothing to retry")
+            raise typer.Exit(code=2)
+        rec.log(f"{post_id}: last failure was: {post.park_reason or '<none recorded>'}")
+        post.status = "RENDERED"
+        post.park_reason = None
+        session.flush()
+        rec.log(f"{post_id}: FAILED → RENDERED — re-run `hermes publish --post-id {post_id}`")
+
+
+@post_app.command("show")
+def post_show(post_id: str = typer.Option(..., "--post-id")):
+    """Print one post's full state (status, genome, media ids, spine, failure reason)."""
+    _boot()
+    from app.db import session_scope
+    from app.models import Post
+
+    with session_scope() as session:
+        post = session.get(Post, post_id)
+        if post is None:
+            typer.echo(f"{post_id}: not found", err=True)
+            raise typer.Exit(code=2)
+        for field in ("post_id", "week_start", "channel", "status", "angle", "hook", "cta_type",
+                      "cta_placement", "slot", "keywords", "visual_tools", "source_asset_ids",
+                      "media_drive_file_id", "media_url", "tracked_url", "external_post_id",
+                      "posted_at", "park_reason"):
+            typer.echo(f"{field:20} {getattr(post, field)}")
+        typer.echo(f"{'caption':20} {post.caption}")
 
 
 @cli.command()

@@ -46,9 +46,11 @@ Already committed — no dashboard action needed:
      do not reuse or modify that one. Stripe delivers to both. Copy the NEW endpoint's
      `whsec_…` into `STRIPE_WEBHOOK_SECRET`.
    - **Billplz** → collection callback URL: `https://<domain>/webhooks/billplz`.
-3. On artec.my: append `?client_reference_id={post_id}` to the Stripe payment link and set
-   `reference_1={post_id}` on the Billplz link (the stored post_id from the spine URL).
-   Without this the revenue lane stays permanently empty.
+3. On artec.my: append `?client_reference_id={post_id}` to the Stripe payment link
+   (post_id = the spine URL's `utm_campaign` value). For MY, checkout.php POSTs an
+   `order_created` event to `https://<domain>/event` at bill creation carrying bill_id +
+   post_id; the paid callback is forwarded to `/webhooks/billplz` verbatim (x_signature
+   intact). Without these the revenue lane stays permanently empty.
 4. Point the site's `/event` beacon at `https://<domain>/event` (CORS allows the
    artec.my origin only).
 

@@ -84,6 +84,6 @@ hermes wishlist fulfil --post-id post_1490 --drive-file-id <id>   # manual overr
 | `template is missing in-body variable(s)` | Template was edited in Brevo — restore the six `{{variables}}` |
 | Renders park with "no tool chain can hit the match" | The bank lacks the needed subject/medium — `hermes wishlist show` tells you what to shoot |
 | `LoRA … not Qwen-Image-2512 compatible` in doctor | Retrain that LoRA on `fal-ai/qwen-image-2512-trainer` |
-| MY orders all UNATTRIBUTED | The Billplz link is not passing `reference_1` = post_id (see DECISIONS.md #3) |
+| MY orders all UNATTRIBUTED | checkout.php's `order_created` POST to `/event` is failing or missing — the paid callback found no pending row for that bill_id (see DECISIONS.md #3) |
 | SG orders all UNATTRIBUTED | artec.my is not appending `?client_reference_id=post_XXXX` to the Stripe payment link |
 | Double-publish error | Correct behaviour — that post already went live; it will never publish twice |

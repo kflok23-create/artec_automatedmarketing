@@ -17,15 +17,19 @@ unless marked.
    `includeItemsFromAllDrives=true`, `corpora='drive'` + `driveId`; every get/create/delete
    passes `supportsAllDrives=true`. The acceptance test asserts exactly this split.
 
-3. **Billplz attribution (verified against Billplz API docs).** Bill callbacks do NOT carry
-   `reference_1`; it exists only on the Bill object. The webhook therefore verifies
-   X-Signature (HMAC-SHA256 over pipe-joined, case-insensitively sorted `key+value` pairs,
-   excluding `x_signature`), then fetches `GET /api/v3/bills/{id}` with BILLPLZ_API_KEY and
-   reads `reference_1` as the post_id. Missing/non-`post_` values → order stored with
-   post_id NULL (UNATTRIBUTED). **Operator action:** the Billplz catalog link must set
-   `reference_1` to the post_id (artec.my appends it, mirroring the Stripe
-   `client_reference_id` flow); confirm your catalog link supports it — if it does not, MY
-   revenue reports as UNATTRIBUTED, never guessed.
+3. **Billplz attribution joins on bill_id, not reference_1** (revised at CHECKPOINT 2,
+   operator decision). artec.my's live checkout already occupies BOTH reference slots —
+   `reference_1` = discount code (read by billplz-callback.php and thank-you.html),
+   `reference_2` = pack (single/twin) — so neither can carry a post_id without breaking the
+   existing order flow. Flow now: checkout.php POSTs a server-side `order_created` event to
+   `/event` the moment the bill is created (before payment), carrying bill_id + post_id
+   (read from the spine's `utm_campaign` param) + code/value/pack/market/utm. HERMES stores
+   it as a pending row in `events` keyed `order_created|billplz|{bill_id}`. The paid
+   callback (forwarded verbatim from artec.my with x_signature intact, verified
+   independently) joins on bill_id to resolve post_id. No matching pending row — direct
+   Billplz link or failed pre-payment POST — → UNATTRIBUTED, never guessed. The
+   bill-fetch-for-reference_1 path is deleted; the webhook now performs no external HTTP,
+   which keeps it comfortably inside Billplz's 20-second / 5-retry callback contract.
 
 4. **Seedance endpoint slugs are config, not code — and unverified.** fal.ai rate-limited
    the model page during the build, so the operator-supplied slugs

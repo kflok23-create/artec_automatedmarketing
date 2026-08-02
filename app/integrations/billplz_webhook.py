@@ -4,10 +4,17 @@ X-Signature (verified against Billplz API docs): HMAC-SHA256 over the callback's
 pairs (excluding x_signature), sorted case-insensitively by key, each pair concatenated as
 `key` + `value`, pairs joined with '|', keyed with BILLPLZ_XSIGNATURE_KEY.
 
-Attribution: the callback body does NOT carry reference_1 — it lives on the Bill object.
-After verification we fetch GET /api/v3/bills/{id} and read reference_1 as the post_id
-(artec.my sets it, mirroring Stripe's client_reference_id). Missing / non-post_ values →
-post_id NULL (UNATTRIBUTED); never guessed. See DECISIONS.md #3.
+Attribution — bill_id join (DECISIONS.md #3): artec.my's live checkout already uses BOTH
+Billplz reference slots (reference_1 = discount code, reference_2 = pack), so the bill's
+reference fields can never carry a post_id. Instead, checkout.php POSTs an `order_created`
+event to /event the moment the bill is created (before payment), keyed on bill_id. The paid
+callback joins against that pending row to resolve post_id. No matching pending row — a
+direct Billplz link, or the pre-payment POST failed — means UNATTRIBUTED; never guessed.
+
+Latency contract: Billplz drops a callback after 5 failed retries and every failure
+degrades the account's webhook rank, so this handler must 200 well inside 20 seconds. It
+performs no external HTTP — one signature HMAC and two indexed DB lookups — so it responds
+synchronously in milliseconds.
 """
 
 from __future__ import annotations
@@ -16,18 +23,19 @@ import hashlib
 import hmac
 from datetime import UTC, datetime
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Order
-from app.settings import Settings
-
-BILLS_BASE = "https://www.billplz.com/api/v3"
+from app.models import Event, Order
 
 
 class BillplzSignatureError(RuntimeError):
     pass
+
+
+def pending_order_key(bill_id: str, gateway: str = "billplz") -> str:
+    """Dedupe key for the pre-payment `order_created` event — the bill_id join key."""
+    return f"order_created|{gateway}|{bill_id}"
 
 
 def verify_x_signature(form: dict[str, str], xsignature_key: str) -> None:
@@ -41,18 +49,13 @@ def verify_x_signature(form: dict[str, str], xsignature_key: str) -> None:
         raise BillplzSignatureError("x_signature verification failed")
 
 
-def fetch_bill_reference(settings: Settings, bill_id: str) -> str | None:
-    try:
-        with httpx.Client(timeout=30, auth=(settings.BILLPLZ_API_KEY, "")) as client:
-            resp = client.get(f"{BILLS_BASE}/bills/{bill_id}")
-        if resp.status_code >= 400:
-            return None
-        return resp.json().get("reference_1")
-    except httpx.HTTPError:
-        return None
+def find_pending_order(session: Session, bill_id: str) -> Event | None:
+    return session.execute(
+        select(Event).where(Event.dedupe_key == pending_order_key(bill_id))
+    ).scalar_one_or_none()
 
 
-def handle_callback(session: Session, settings: Settings, form: dict[str, str]) -> str:
+def handle_callback(session: Session, form: dict[str, str]) -> str:
     """Process one verified Billplz callback. Returns a short disposition string."""
     bill_id = form.get("id")
     if not bill_id:
@@ -66,8 +69,10 @@ def handle_callback(session: Session, settings: Settings, form: dict[str, str]) 
     if existing is not None:
         return "duplicate"
 
-    ref = fetch_bill_reference(settings, bill_id)
-    post_id = ref if isinstance(ref, str) and ref.startswith("post_") else None
+    pending = find_pending_order(session, bill_id)
+    post_id = pending.post_id if pending is not None and pending.post_id else None
+    code = pending.code if pending is not None else None
+
     paid_amount = form.get("paid_amount") or form.get("amount")
     email = (form.get("email") or "").strip().lower()
     paid_at_raw = form.get("paid_at")
@@ -82,12 +87,17 @@ def handle_callback(session: Session, settings: Settings, form: dict[str, str]) 
             source="billplz",
             external_id=bill_id,
             post_id=post_id,
-            code=None,
+            code=code,
             amount_minor=int(paid_amount) if paid_amount and str(paid_amount).isdigit() else None,
             currency="MYR",
             customer_email_hash=hashlib.sha256(email.encode()).hexdigest() if email else None,
             occurred_at=occurred or datetime.now(UTC),
-            raw={"id": bill_id, "collection_id": form.get("collection_id"), "state": form.get("state")},
+            raw={
+                "id": bill_id,
+                "collection_id": form.get("collection_id"),
+                "state": form.get("state"),
+                "pending_match": pending is not None,
+            },
         )
     )
     session.flush()

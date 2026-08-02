@@ -68,16 +68,67 @@ def test_billplz_signature_roundtrip():
         billplz_webhook.verify_x_signature(form, key)
 
 
-def test_billplz_callback_idempotent_and_fetches_reference(session, monkeypatch):
-    monkeypatch.setattr(billplz_webhook, "fetch_bill_reference", lambda s, b: "post_1483")
-    from app.settings import get_settings
+def _order_created_beacon(bill_id="bill9", post_id="post_1483", code="SOCIAL50"):
+    from app.schemas import EventBeacon
 
+    return EventBeacon(
+        event_type="order_created", bill_id=bill_id, post_id=post_id,
+        url="https://artec.my/", code=code, value=449, currency="MYR", pack="single",
+        market="MY", gateway="billplz", ts=datetime(2026, 8, 1, 9, 59, tzinfo=UTC),
+    )
+
+
+def test_order_created_stored_as_pending_keyed_on_bill_id(session):
+    from app.api.routes_capture import ingest_event
+
+    out = ingest_event(session, _order_created_beacon())
+    assert out["deduped"] is False
+    # checkout.php may retry — the pending row is idempotent on bill_id.
+    assert ingest_event(session, _order_created_beacon())["deduped"] is True
+    row = session.execute(select(Event)).scalar_one()
+    assert row.dedupe_key == billplz_webhook.pending_order_key("bill9")
+    assert row.post_id == "post_1483"
+    assert row.code == "SOCIAL50"
+    assert row.payload["pack"] == "single" and row.payload["bill_id"] == "bill9"
+
+
+def test_order_created_requires_bill_id_and_browser_events_require_session():
+    from pydantic import ValidationError
+
+    from app.schemas import EventBeacon
+
+    with pytest.raises(ValidationError):
+        EventBeacon(event_type="order_created")
+    with pytest.raises(ValidationError):
+        EventBeacon(event_type="page_view")
+
+
+def test_billplz_callback_joins_pending_row_and_is_idempotent(session):
+    from app.api.routes_capture import ingest_event
+
+    ingest_event(session, _order_created_beacon())
     form = {"id": "bill9", "paid": "true", "paid_amount": "44900", "email": "x@y.my",
             "paid_at": "2026-08-01 10:00:00 +0800"}
-    assert billplz_webhook.handle_callback(session, get_settings(), form) == "attributed"
-    assert billplz_webhook.handle_callback(session, get_settings(), form) == "duplicate"
+    assert billplz_webhook.handle_callback(session, form) == "attributed"
+    assert billplz_webhook.handle_callback(session, form) == "duplicate"
     order = session.execute(select(Order)).scalar_one()
     assert order.post_id == "post_1483" and order.currency == "MYR"
+    assert order.code == "SOCIAL50"
+    assert order.amount_minor == 44900
+
+
+def test_billplz_callback_without_pending_row_is_unattributed(session):
+    # Direct Billplz link, or the pre-payment POST failed — never guessed.
+    form = {"id": "bill_direct", "paid": "true", "paid_amount": "44900"}
+    assert billplz_webhook.handle_callback(session, form) == "unattributed"
+    order = session.execute(select(Order)).scalar_one()
+    assert order.post_id is None and order.raw["pending_match"] is False
+
+
+def test_billplz_webhook_module_does_no_external_http(repo_root):
+    # 20-second / 5-retry Billplz contract: the handler must not call out.
+    source = (repo_root / "app" / "integrations" / "billplz_webhook.py").read_text(encoding="utf-8")
+    assert "httpx" not in source and "requests" not in source
 
 
 def test_event_beacon_dedupe_key_truncates_to_second(session):

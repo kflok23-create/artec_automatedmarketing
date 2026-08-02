@@ -100,6 +100,33 @@ def wishlist_match_cmd():
         return match(session, log=rec.log)
 
 
+@router.post("/doctor")
+def doctor_cmd():
+    """CHECKPOINT 3 mirror: full green/red verification, incl. the live LoRA probes and
+    the Drive write probe. Returns the table as JSON; `ok` is the overall verdict."""
+    from app.db import get_session_factory
+    from app.stages.doctor import run_doctor
+
+    session = None
+    try:
+        session = get_session_factory()()
+    except Exception:
+        pass
+    try:
+        checks = run_doctor(get_settings(), session=session)
+    finally:
+        if session is not None:
+            session.close()
+    return {
+        "ok": all(c.ok or c.warn for c in checks),
+        "checks": [
+            {"name": c.name, "status": "GREEN" if c.ok else ("YELLOW" if c.warn else "RED"),
+             "detail": c.detail, "remedy": c.remedy if not c.ok else ""}
+            for c in checks
+        ],
+    }
+
+
 @router.post("/gate")
 def gate_cmd():
     raise HTTPException(

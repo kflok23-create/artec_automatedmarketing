@@ -67,7 +67,10 @@ class UploadPost:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Apikey {self._key}"}
 
-    def _post(self, path: str, data: list[tuple[str, str]], files: list[tuple[str, tuple]]) -> dict:
+    def _post(self, path: str, data: dict, files: list[tuple[str, tuple]]) -> dict:
+        # httpx multipart contract: `data` MUST be a dict (list values for repeated fields
+        # like platform[]); a list of tuples silently mis-encodes and the body join blows
+        # up with "expected a bytes-like object, tuple found" at request time.
         with httpx.Client(timeout=600) as client:
             resp = client.post(f"{BASE}{path}", headers=self._headers(), data=data, files=files)
         if resp.status_code >= 400:
@@ -79,15 +82,15 @@ class UploadPost:
         return body
 
     def upload_photo(self, platform: str, photo_path: str, title: str) -> dict:
-        data = [("user", self._user), ("platform[]", platform), ("title", title)]
+        data = {"user": self._user, "platform[]": [platform], "title": title}
         with open(photo_path, "rb") as fh:
-            files = [("photos[]", (os.path.basename(photo_path), fh.read()))]
+            files = [("photos[]", (os.path.basename(photo_path), fh.read(), "image/jpeg"))]
         return self._post("/upload_photos", data, files)
 
     def upload_video(self, platform: str, video_path: str, title: str) -> dict:
-        data = [("user", self._user), ("platform[]", platform), ("title", title)]
+        data = {"user": self._user, "platform[]": [platform], "title": title}
         with open(video_path, "rb") as fh:
-            files = [("video", (os.path.basename(video_path), fh.read()))]
+            files = [("video", (os.path.basename(video_path), fh.read(), "video/mp4"))]
         return self._post("/upload", data, files)
 
     def list_profiles(self) -> dict:

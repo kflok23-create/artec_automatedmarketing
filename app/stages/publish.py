@@ -13,6 +13,7 @@ Hard rules:
 from __future__ import annotations
 
 import json
+import traceback
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -33,11 +34,15 @@ class FirstPublishNotConfirmed(RuntimeError):
 
 
 def _first_publish_preview(session: Session, post: Post, brevo) -> str:
+    caption = post.caption or ""
+    caption_preview = caption if len(caption) <= 280 else (
+        f"{caption[:280]}… [preview truncated — full caption is {len(caption)} chars and publishes in full]"
+    )
     lines = [
         "CHECKPOINT 4 — FIRST LIVE PUBLISH on this install",
         f"  post_id:     {post.post_id}",
         f"  channel:     {post.channel}",
-        f"  caption:     {(post.caption or '')[:280]}",
+        f"  caption:     {caption_preview}",
         f"  media:       drive:{post.media_drive_file_id or '-'} (fallback {post.media_url or '-'})",
         f"  tracked URL: {post.tracked_url}",
     ]
@@ -144,4 +149,7 @@ def publish(session: Session, drive, fal, uploader, brevo,
             post.park_reason = f"publish: {type(e).__name__}: {e}"[:500]
             session.flush()
             log(f"{post.post_id}: publish FAILED — {type(e).__name__}: {e}")
+            # Surface the failing call site — a message alone gives nothing to locate a
+            # bug by (the redaction filter still guards every line).
+            log(traceback.format_exc())
     return {"published": published}

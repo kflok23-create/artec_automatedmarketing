@@ -32,6 +32,11 @@ class Fal:
             raise FalError("FAL_KEY is not set")
 
     def run(self, endpoint: str, arguments: dict, timeout_s: int = 600) -> dict:
+        # v3 Rule 0, enforced at the transport so no call site can forget it: no prompt to
+        # any image or video endpoint may ask a model to render words, numbers or prices.
+        from app.toolbox.text_guard import assert_no_text_render
+
+        assert_no_text_render(str(arguments.get("prompt", "")), endpoint)
         handle = fal_sdk.submit(endpoint, arguments=arguments)
         deadline = time.monotonic() + timeout_s
         last_note = 0.0

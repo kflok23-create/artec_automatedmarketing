@@ -1,4 +1,13 @@
-"""§7.2 GENERATE — fal-ai/qwen-image-2512/lora with the two artec-blocks LoRAs. Stills only.
+"""GENERATE — DORMANT since v3 (Rule 3: do not generate what we can photograph).
+
+The bank holds 479 real assets including 109 assembled-product photos; bank-first became
+BANK-ONLY for anything depicting the product, so the selector no longer routes here and
+`config.generate_enabled` is false. The module stays on disk, tested and reversible — the
+operator can overturn the decision with one config flip, not a code dig. If re-enabled,
+every guard below still applies, plus v3 Rule 5 (exactly one LoRA per call, asserted at
+the call site) and the Rule 0 text guard inside Fal.run.
+
+Original contract: fal-ai/qwen-image-2512/lora with the two artec-blocks LoRAs. Stills only.
 
 Trigger rules (the collision is real: "artec block" is a substring of
 "artec blocks assembled"):
@@ -70,6 +79,9 @@ def build_generate_request(
         # cannot tell which concept is invoked.
         "loras": [{"path": lora["path"], "scale": lora["scale"]}],
     }
+    # v3 Rule 5 — asserted AT THE CALL SITE, in addition to the trigger-collision guard.
+    if len(arguments["loras"]) != 1:
+        raise GenerateError(f"exactly one LoRA per call; got {len(arguments['loras'])}")
     return endpoint, arguments
 
 

@@ -69,6 +69,11 @@ class Post(Base):
     external_post_id: Mapped[str | None] = mapped_column(Text)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # v3: which planner authored this row ('bespoke' | 'agent'), recorded at insert; and
+    # the gate verdict WITH the edit deltas — the deltas are what train taste.
+    plan_source: Mapped[str | None] = mapped_column(Text)
+    gate_action: Mapped[dict | None] = mapped_column(JSONVariant)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -175,6 +180,44 @@ class Config(Base):
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[dict | list | str | int | bool | None] = mapped_column(JSONVariant)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PlanShadow(Base):
+    """v3 shadow mode: the non-live planner's output, for `artec plan-diff`. Mirrors the
+    planning columns of posts. Nothing here ever publishes."""
+
+    __tablename__ = "plans_shadow"
+    __table_args__ = (
+        UniqueConstraint("week_start", "channel", "slot", "source", name="uq_shadow_week_channel_slot_src"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    week_start: Mapped[date] = mapped_column(Date, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    angle: Mapped[str | None] = mapped_column(Text)
+    hook: Mapped[str | None] = mapped_column(Text)
+    cta_type: Mapped[str | None] = mapped_column(Text)
+    cta_placement: Mapped[str | None] = mapped_column(Text)
+    keywords: Mapped[list | None] = mapped_column(JSONVariant)
+    slot: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text, nullable=False)  # 'agent' | 'bespoke'
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AgentRun(Base):
+    """v3: one row per hermes-agent job run — observability for the Sunday brain."""
+
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    job: Mapped[str | None] = mapped_column(Text)          # learn_ideate | weekly_gate
+    session_id: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str | None] = mapped_column(Text)
+    tools_called: Mapped[list | None] = mapped_column(JSONVariant)
+    tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cost_cents: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class Run(Base):

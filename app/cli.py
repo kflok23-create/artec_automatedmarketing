@@ -305,6 +305,42 @@ def post_show(post_id: str = typer.Option(..., "--post-id")):
         typer.echo(f"{'caption':20} {post.caption}")
 
 
+@cli.command("plan-diff")
+def plan_diff(week: str = typer.Option(..., "--week", help="YYYY-MM-DD (Monday)")):
+    """Shadow mode: bespoke vs agent plans side by side, with per-field agreement.
+    Read this for 2–3 Sundays before flipping plan_source."""
+    _boot()
+    from app.stages.plan_diff import build_diff, print_diff
+
+    with record_run("plan-diff", {"week": week}) as (session, rec):
+        print_diff(build_diff(session, _parse_week(week)), log=rec.log)
+
+
+@cli.command("audit-memory")
+def audit_memory_cmd(
+    path: list[str] = typer.Option(None, "--path", help="file/dir to scan (default: $HERMES_HOME)"),  # noqa: B008
+):
+    """Scan agent memory + skills for metric-shaped content. Numbers live in Postgres only."""
+    _boot()
+    from pathlib import Path
+
+    from app.stages.agent_review import audit_memory
+
+    paths = [Path(p) for p in path] if path else None
+    hits = audit_memory(paths, log=typer.echo)
+    if hits:
+        raise typer.Exit(code=1)
+
+
+@cli.command("agent-review")
+def agent_review_cmd():
+    """Monthly first-Sunday session: print the agent's skill list and MEMORY.md."""
+    _boot()
+    from app.stages.agent_review import agent_review
+
+    agent_review(log=typer.echo)
+
+
 @cli.command()
 def cycle(dry_run: bool = typer.Option(False, "--dry-run")):
     """--dry-run: full cycle against mocked externals (CI). Live cycles are run stage by stage."""

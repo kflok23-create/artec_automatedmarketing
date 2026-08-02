@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_CHAT_ID: str
 
+    # v3: hermes-brain volume root. Set ONLY on the hermes-brain service (/data/hermes);
+    # empty elsewhere. When set, `artec doctor` hard-fails unless it is a writable mounted
+    # directory whose marker file survives redeploys.
+    HERMES_HOME: str = ""
+
     # Stripe (SG)
     STRIPE_SECRET_KEY: str
     STRIPE_WEBHOOK_SECRET: str

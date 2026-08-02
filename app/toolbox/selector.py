@@ -1,12 +1,16 @@
-"""§7 tool selection — one documented, independently unit-testable function returning an
-ordered tool list plus chosen asset ids.
+"""v3 tool selection — BANK-ONLY for anything depicting the product.
 
-The model proposes; `validate_plan` (pure) enforces the hard rules:
-- BANK-FIRST: a plan may only reach GENERATE when the bank offered no usable candidate.
-- Only known tools, in a sensible order; chosen asset ids must come from the candidates.
-- ENHANCE never terminates a video chain (it is image-only; the executor re-checks).
-If the model's plan is invalid, the deterministic fallback replaces it — a defect in the
-model's routing must never turn into a defect in the render.
+The model proposes; `validate_plan` (pure) enforces the hard rules; the deterministic
+fallback replaces invalid plans. There is NO generate tool in the routing vocabulary: a
+product-depicting idea with no matching bank asset PARKs — it never reaches generation
+(v3 Rule 3; `generate.py` is dormant behind `generate_enabled=false`).
+
+Tools:
+  asset      — a real bank photograph / clip is the base (bank-only for the product)
+  enhance    — whitelisted quality pass on a real photo (image only)
+  overlay    — Pillow caption/price on a still (Python renders letterforms, Rule 0)
+  video_edit — the ffmpeg pipeline over raw-video/ footage (edited, never generated)
+  text_card  — brand-background Pillow card; the only asset-free option, product-free
 """
 
 from __future__ import annotations
@@ -14,8 +18,11 @@ from __future__ import annotations
 from app.models import Asset
 from app.schemas import ToolPlan
 
-VALID_TOOLS = ("asset", "edit_combine", "generate", "enhance", "text_card")
-GENERATABLE_SUBJECTS = ("loose_blocks", "assembled_blocks")
+VALID_TOOLS = ("asset", "enhance", "overlay", "video_edit", "text_card")
+
+# Every bank subject depicts the product or real people with it — all are BANK-ONLY.
+PRODUCT_SUBJECTS = ("loose_blocks", "assembled_blocks", "parent_child", "child_face",
+                    "classroom", "lesson_book", "lesson_pdf", "ugc")
 
 
 class PlanError(RuntimeError):
@@ -26,6 +33,7 @@ def validate_plan(plan: dict, candidates: list[Asset], allow_person: bool) -> To
     p = ToolPlan.model_validate(plan)
     unknown = [t for t in p.tools if t not in VALID_TOOLS]
     if unknown:
+        # 'generate' lands here by construction — it is not in the vocabulary.
         raise PlanError(f"unknown tool(s) {unknown}; valid: {VALID_TOOLS}")
 
     candidate_ids = {c.drive_file_id for c in candidates}
@@ -33,16 +41,17 @@ def validate_plan(plan: dict, candidates: list[Asset], allow_person: bool) -> To
     if bad_ids:
         raise PlanError(f"plan references asset ids not in the offered candidates: {bad_ids}")
 
-    if "asset" in p.tools and not p.asset_ids:
-        raise PlanError("plan uses 'asset' but chose no asset ids")
+    if ("asset" in p.tools or "video_edit" in p.tools) and not p.asset_ids:
+        raise PlanError("asset/video_edit plans must consume a bank asset")
 
-    # BANK-FIRST HARD RULE: generating while usable bank candidates exist and none are
-    # consumed wastes both the curation and the spend.
-    if "generate" in p.tools and candidates and not p.asset_ids:
-        raise PlanError("bank-first violation: candidates exist but the plan generates from scratch")
+    if p.subject in PRODUCT_SUBJECTS and "text_card" not in p.tools and not p.asset_ids:
+        raise PlanError(
+            f"BANK-ONLY: subject {p.subject!r} depicts the product and the plan consumes "
+            "no bank asset — park, never generate"
+        )
 
-    if "generate" in p.tools and p.subject not in GENERATABLE_SUBJECTS:
-        raise PlanError(f"GENERATE cannot produce subject {p.subject!r} (LoRAs cover {GENERATABLE_SUBJECTS})")
+    if "enhance" in p.tools and "video_edit" in p.tools:
+        raise PlanError("enhance is image-only; it cannot ride a video chain")
 
     if not allow_person:
         flagged = [c.drive_file_id for c in candidates
@@ -57,16 +66,15 @@ def fallback_plan(subject: str, candidates: list[Asset], media_kind: str) -> Too
     """Deterministic plan when the model's routing is invalid. None → park."""
     if candidates:
         chosen = candidates[0]
-        tools = ["asset"]
-        if media_kind == "photo" and chosen.medium == "photo":
-            tools.append("enhance")
-        return ToolPlan(subject=subject, tools=tools, asset_ids=[chosen.drive_file_id], prompt="")
-    if media_kind == "photo" and subject in GENERATABLE_SUBJECTS:
-        return ToolPlan(subject=subject, tools=["generate"], asset_ids=[],
-                        prompt="clean studio product photograph, soft daylight")
-    if media_kind == "photo":
+        if media_kind == "video":
+            return ToolPlan(subject=subject, tools=["asset", "video_edit"],
+                            asset_ids=[chosen.drive_file_id], prompt="")
+        return ToolPlan(subject=subject, tools=["asset", "enhance"],
+                        asset_ids=[chosen.drive_file_id], prompt="")
+    if media_kind == "photo" and subject not in PRODUCT_SUBJECTS:
+        # Product-free idea (pure message) — the zero-asset brand card.
         return ToolPlan(subject=subject, tools=["text_card"], asset_ids=[], prompt="")
-    return None  # video with an empty bank → park (no video generation without references)
+    return None  # product-depicting with an empty bank, or video with no footage → PARK
 
 
 def select_tools(llm, post_genome: dict, candidates: list[Asset], media_kind: str,

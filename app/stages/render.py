@@ -1,13 +1,15 @@
-"""RENDER — runs the visual toolbox (§7) for APPROVED posts.
+"""RENDER v3 — Python first, bank-only for the product, budgeted model calls.
 
 Order of operations per post:
   1. platform pre-validation (caption rules) BEFORE any spend
-  2. BANK-FIRST asset matching against the `assets` table
-  3. model tool routing (validated; deterministic fallback)
-  4. execute the chain (download bank bytes → fal → local framing)
-  5. upload the result to Drive `_generated/{week}/{post_id}.{ext}` (the canonical home;
-     the fal URL is only a fallback), persist genome + media ids, status=RENDERED
-  6. any toolbox failure → PARKED with a structured wishlist — never a weak visual
+  2. BANK-ONLY asset matching against the `assets` table
+  3. tool routing (validated; deterministic fallback; no generate tool exists)
+  4. execute the chain — Pillow/ffmpeg primary; the one surviving model call (enhance
+     upscale) passes the text guard and the budget on every call
+  5. upload to Drive `_generated/{week}/{post_id}.{ext}`, persist genome, status=RENDERED
+  6. no chain hits the match → PARKED with a structured wishlist — never generation
+  7. budget cap reached → the current AND all remaining posts PARK with a wishlist entry;
+     the run never proceeds past the cap (v3 Rule 4)
 """
 
 from __future__ import annotations
@@ -21,19 +23,14 @@ from app.config import get_config
 from app.integrations.upload_post_client import PlatformValidationError, validate_for_platform
 from app.models import Post
 from app.toolbox.asset_match import find_candidates, mark_used
-from app.toolbox.edit_combine import (
-    edit_images,
-    edit_video,
-    fit_image_aspect,
-    trim_clip,
-)
+from app.toolbox.budget import GuardedFal, RenderBudget, RunBudgetExceeded
+from app.toolbox.edit_combine import edit_video_pipeline, fit_image_aspect
 from app.toolbox.enhance import enhance_image
-from app.toolbox.generate import generate_image
+from app.toolbox.overlay import overlay_caption
 from app.toolbox.park import park_post
 from app.toolbox.selector import select_tools
-from app.toolbox.text_card import next_pairing, render_text_card
+from app.toolbox.text_card import FONTS_DIR, next_pairing, render_text_card
 
-# Genome subjects the router may ask the bank for, in preference order per angle keywords.
 DEFAULT_SUBJECT_BY_MEDIA = {"photo": "assembled_blocks", "video": "assembled_blocks"}
 
 
@@ -56,7 +53,6 @@ def _caption_for(llm, post: Post, media_spec: dict) -> str:
         },
     )
     if post.channel == "email":
-        # Email copy is structured; stored as JSON in posts.caption (DECISIONS.md #15).
         return json.dumps(data, ensure_ascii=False)
     caption = data.get("caption") if isinstance(data, dict) else None
     if not caption:
@@ -64,12 +60,12 @@ def _caption_for(llm, post: Post, media_spec: dict) -> str:
     return caption
 
 
-def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, fal, cfg) -> tuple[str, str]:
-    """Run the ordered tool chain; returns (local_path, extension)."""
-    endpoints = cfg["image_endpoints"]
-    family = cfg["video_family"]
+def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, gfal, cfg) -> tuple[str, str]:
+    """Run the ordered tool chain; returns (local_path, extension). gfal is the GuardedFal
+    — text guard + budget on every model call."""
     media_kind = media_spec["media"]
     aspect = media_spec["aspect"]
+    fonts = cfg["fonts"]
     chosen = []
     if plan.asset_ids:
         from app.models import Asset
@@ -78,7 +74,6 @@ def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, f
         chosen = [c for c in chosen if c is not None]
 
     local: str | None = None
-    public_url: str | None = None
 
     for tool in plan.tools:
         if tool == "asset":
@@ -86,39 +81,30 @@ def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, f
                 raise RenderFailure("plan selected 'asset' but no candidate resolved")
             suffix = ".mp4" if chosen[0].medium == "video" else ".jpg"
             local = drive.download(chosen[0].drive_file_id, suffix=suffix)
-        elif tool == "edit_combine":
-            if media_kind == "video":
-                urls = []
-                for c in chosen:
-                    src = drive.download(c.drive_file_id, suffix=".mp4")
-                    src = trim_clip(src, max_s=family.get("duration_range_s", [4, 15])[1])
-                    urls.append(fal.upload_public(src))
-                local = edit_video(
-                    fal, family, plan.prompt or (post.hook or ""), urls,
-                    duration_s=media_spec.get("duration_s", 12),
-                    aspect_ratio=media_spec.get("aspect_ratio", "9:16"),
-                    resolution=media_spec.get("resolution", "720p"),
-                )
-            else:
-                urls = []
-                for c in chosen:
-                    src = drive.download(c.drive_file_id, suffix=".jpg")
-                    urls.append(fal.upload_public(src))
-                if local and not urls:
-                    urls = [fal.upload_public(local)]
-                local = edit_images(fal, endpoints, plan.prompt or (post.hook or ""), urls)
-        elif tool == "generate":
-            local = generate_image(fal, plan.prompt or (post.hook or ""), plan.subject,
-                                   cfg["loras"], aspect, endpoints["lora"])
+        elif tool == "video_edit":
+            if local is None:
+                raise RenderFailure("video_edit reached with no source clip in the chain")
+            # The first-class v3 video path: ffmpeg only, zero model calls.
+            local = edit_video_pipeline(
+                local,
+                duration_s=media_spec.get("duration_s", 12),
+                aspect_ratio=media_spec.get("aspect_ratio", "9:16"),
+                caption=post.hook,
+                font_path=str(FONTS_DIR / fonts["display"]),
+            )
         elif tool == "enhance":
             if local is None:
-                raise RenderFailure("ENHANCE reached with no prior image in the chain")
-            public_url = fal.upload_public(local)
-            local = enhance_image(fal, endpoints, public_url, "photo" if media_kind == "photo" else media_kind)
+                raise RenderFailure("enhance reached with no prior image in the chain")
+            local = enhance_image(gfal, cfg["model_endpoints"], cfg["enhance_whitelist"],
+                                  "upscale", local, "photo" if media_kind == "photo" else media_kind)
+        elif tool == "overlay":
+            if local is None:
+                raise RenderFailure("overlay reached with no prior image in the chain")
+            local = overlay_caption(local, post.hook or "", fonts)
         elif tool == "text_card":
             pairing = next_pairing(session)
             local = render_text_card(post.hook or post.angle or "Artec blocks",
-                                     pairing, cfg["fonts"], aspect=aspect)
+                                     pairing, fonts, aspect=aspect)
         else:
             raise RenderFailure(f"unknown tool {tool!r}")
 
@@ -135,29 +121,50 @@ def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, f
     return local, "mp4"
 
 
+def _budget_wishlist(media_spec: dict) -> list[dict]:
+    folder = "raw-video/assembled" if media_spec["media"] == "video" else "raw-photo/assembled"
+    return [{
+        "target_folder": folder,
+        "medium": media_spec["media"],
+        "aspect": media_spec["aspect"],
+        "description": "render budget cap reached this run — no new asset needed; re-run "
+                       "render next cycle and this post renders first",
+    }]
+
+
 def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
            all_approved: bool = False, log=print) -> dict:
-    cfg_keys = ("image_endpoints", "video_family", "loras", "fonts", "channel_media",
-                "allow_person_assets", "text_card_pairings")
+    cfg_keys = ("model_endpoints", "enhance_whitelist", "loras", "fonts", "channel_media",
+                "allow_person_assets", "text_card_pairings", "endpoint_prices_cents",
+                "render_budget_cents", "per_call_ceiling_cents")
     cfg = {k: get_config(session, k) for k in cfg_keys}
+    budget = RenderBudget(cfg["endpoint_prices_cents"], cfg["render_budget_cents"],
+                          cfg["per_call_ceiling_cents"], log=log)
+    gfal = GuardedFal(fal, budget)
 
     q = select(Post).where(Post.status == "APPROVED").order_by(Post.post_id)
     posts = [p for p in session.execute(q).scalars()
              if all_approved or (post_ids and p.post_id in post_ids)]
     if not posts:
         log("render: no APPROVED posts selected")
-        return {"rendered": 0, "parked": 0}
+        return {"rendered": 0, "parked": 0, "spent_cents": 0}
 
     rendered = parked = 0
+    budget_exhausted = False
     for post in posts:
         media_spec = cfg["channel_media"].get(post.channel)
         if media_spec is None:
             log(f"{post.post_id}: unknown channel {post.channel} — skipped")
             continue
+        if budget_exhausted:
+            park_post(session, post, reason="render budget cap reached earlier in this run",
+                      wishlist=_budget_wishlist(media_spec))
+            parked += 1
+            log(f"{post.post_id}: PARKED — budget cap reached earlier in this run")
+            continue
         try:
             caption = _caption_for(llm, post, media_spec)
             if post.channel != "email":
-                # Money-guard: validate BEFORE any render spend.
                 full_caption = f"{caption}\n{post.tracked_url}"
                 validate_for_platform(post.channel, media_spec["media"], full_caption,
                                       duration_s=media_spec.get("duration_s"))
@@ -177,9 +184,9 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
             plan = select_tools(llm, genome, candidates, media_spec["media"],
                                 bool(cfg["allow_person_assets"]))
             if plan is None:
-                raise RenderFailure("no tool chain can hit the match")
+                raise RenderFailure("no bank asset and no Python path hits the match")
 
-            local, ext = _execute_plan(session, plan, post, media_spec, drive, fal, cfg)
+            local, ext = _execute_plan(session, plan, post, media_spec, drive, gfal, cfg)
 
             drive_file_id = drive.upload_generated(local, str(post.week_start), f"{post.post_id}.{ext}")
             post.media_drive_file_id = drive_file_id
@@ -188,6 +195,12 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
             session.flush()
             rendered += 1
             log(f"{post.post_id}: rendered via {plan.tools} → drive:{drive_file_id}")
+        except RunBudgetExceeded as e:
+            # v3 Rule 4: refuse the call, park this AND everything after it.
+            budget_exhausted = True
+            park_post(session, post, reason=str(e)[:500], wishlist=_budget_wishlist(media_spec))
+            parked += 1
+            log(f"{post.post_id}: PARKED — {e}")
         except PlatformValidationError as e:
             log(f"{post.post_id}: platform validation failed pre-spend — {e}")
             post.status = "FAILED"
@@ -220,4 +233,5 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
                 post.park_reason = f"{type(e).__name__}: {e}"[:500]
                 session.flush()
                 log(f"{post.post_id}: FAILED (park also failed: {park_err})")
-    return {"rendered": rendered, "parked": parked}
+    log(f"render: spent {budget.spent_cents}¢ of {budget.run_cap}¢ this run")
+    return {"rendered": rendered, "parked": parked, "spent_cents": budget.spent_cents}

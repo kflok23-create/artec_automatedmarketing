@@ -136,6 +136,58 @@ unless marked.
       `drive_root_marker`; when the configured root changes, it auto-resets the changes
       cursor and forces a full rescan, marking all pre-migration assets `missing`.
 
-22. **`artec measure --csv` from the smoke-run example is not implemented** — the locked
+22. **v3 — WHY the toolbox was locked down, not just the rules** (each rule earned by a
+    production failure in one cycle):
+    - **Models cannot render text.** A diffusion model asked to place words produced
+      "Robotics class 1 termı $15" and "One box of blucks $9%" on real posts. No prompt
+      tuning fixes letterforms — so all words, numbers and prices go through Pillow and
+      ffmpeg drawtext with the four committed brand fonts, and a guard inside `Fal.run`
+      raises on any prompt smuggling text (quoted strings, price patterns, the words
+      text/caption/title/label/write/says). There is no fallback to a model when the
+      Python path is inconvenient.
+    - **Generated video is expensive and off-brand.** One generative-video call cost USD 8
+      and returned blocks that are not our product; the output also failed to play
+      (missing leading moov atom). All generative video endpoints are deleted from code
+      and config; video is EDITED from real `raw-video/` footage with ffmpeg only, every
+      output written `-movflags +faststart`.
+    - **479 real photographs exist and should be used before anything is synthesised.**
+      Bank-first became BANK-ONLY for anything depicting the product; no match → PARK
+      with a wishlist. GENERATE via the artec LoRAs is disabled (`generate_enabled=false`)
+      with config rows retained — reversible by one flip, and doctor reports it DORMANT.
+    - **The budget is structural, not advisory.** Config price table in integer cents; a
+      per-call ceiling AND a per-run USD 1.00 cap, both tested; unknown endpoints are
+      uncallable; spend prints after every call; over-cap parks the remainder.
+    - **The governing sentence:** the agent does interpretation and generation; SQL does
+      arithmetic; Python does pixels.
+
+23. **v3 — the agent seam is a capability boundary, not a policy.** hermes-agent (pinned
+    `v2026.7.30`, never `main`, never `hermes update` on a schedule) gets exactly six
+    tools in `plugins/artec_hermes.py`: four reads, `write_plan`, `record_gate_decision`.
+    No tool writes orders/events/metrics/config; no SQL tool; file-write and shell are
+    disabled in the profile. A simulated attempt to write an order fails with "no such
+    tool" — the capability does not exist to be permitted. The plugin is self-contained
+    (sqlalchemy textual SQL only) so the brain image never imports the artec codebase.
+    The bespoke CLI was renamed `artec` because hermes-agent's own CLI collides on
+    `doctor` and `update`.
+
+24. **v3 — the four scheduled jobs are the entire lift of the no-scheduler rule.** SUN
+    07:00 agent LEARN→IDEATE and SUN 09:00 agent gate (hermes-agent cron, Asia/Singapore);
+    daily publish-by-slot and daily 06:30 measure prompt (`python -m app.scheduler`, a
+    plain 30-second loop — still no APScheduler/celery/cron imports). `slot` became a real
+    firing time via config `slot_times` AND remains a learned lever. A test counts exactly
+    four jobs across both codebases. The daily measure job sends the unmeasured-post list
+    to Telegram; figures still enter through `artec measure` (no channel APIs, no CSVs).
+
+25. **v3 — shadow mode is the cutover instrument.** `plan_source` starts and stays on
+    `shadow`: the agent plans into `plans_shadow`, the gate presents the bespoke plan,
+    nothing the agent produces goes live. `artec plan-diff --week` (per-field agreement on
+    channel/angle/hook/cta_type/slot, paired on channel+slot) is the operator's evidence
+    for 2–3 Sundays. Flip to `agent` reverses the mirror; flip to `bespoke` is full
+    rollback — one config row, no redeploy, agent cron output ignored. Edit deltas are
+    stored in `posts.gate_action` because the deltas, not the verdicts, train taste.
+    `artec audit-memory` makes metric leakage into agent memory visible (it cannot be
+    perfect); numbers live in Postgres only.
+
+26. **`artec measure --csv` from the smoke-run example is not implemented** — the locked
     decision table says "No channel APIs, no CSV files"; measure is interactive, `--json`,
     or `POST /commands/measure`. The RUNBOOK shows the correct invocation.

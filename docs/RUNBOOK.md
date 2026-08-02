@@ -1,7 +1,37 @@
-# HERMES RUNBOOK — the exact manual cycle
+# HERMES RUNBOOK — v3
 
-Every command below is run by a human. Nothing fires on a clock. All commands are
-idempotent — re-running is always safe.
+The CLI is `artec` (the `hermes` command belongs to the Nous agent on hermes-brain).
+Exactly FOUR things fire on a clock (Asia/Singapore); everything else stays manual and
+idempotent:
+
+| When | What | Where |
+|---|---|---|
+| SUN 07:00 | agent LEARN → IDEATE (six tools; shadow mode → plans_shadow) | hermes-brain cron |
+| SUN 09:00 | agent WEEKLY GATE over Telegram | hermes-brain cron |
+| daily, per `slot_times` | publish every RENDERED post whose slot arrived (never one with an external_post_id) | artec-scheduler |
+| daily 06:30 | measure prompt — unmeasured posts to Telegram; figures enter via `artec measure` | artec-scheduler |
+
+## v3 weekly rhythm (shadow mode)
+
+```bash
+artec plan-diff --week 2026-08-10   # bespoke vs agent, per-field agreement — read this
+                                    # for 2–3 Sundays before touching plan_source
+artec render --all-approved         # Python-first; USD 1.00 cap; over-cap → PARK
+```
+
+Cutover, when the diffs earn it: `artec config set plan_source '"agent"'`.
+Rollback, any time, no redeploy:   `artec config set plan_source '"bespoke"'`.
+
+## Monthly first-Sunday session
+
+```bash
+artec agent-review     # skill list + MEMORY.md
+artec audit-memory     # metric-shaped content in agent memory → every hit printed
+# in the hermes-brain shell: hermes curator
+```
+
+Every command below is run by a human. All commands are idempotent — re-running is always
+safe.
 
 ## 0. One-time setup (after deploy, secrets set, webhooks registered)
 

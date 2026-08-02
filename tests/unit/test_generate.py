@@ -1,4 +1,8 @@
-"""Acceptance 2, 2d, 2g — LoRA triggers, one-LoRA rule, NSFW retry-then-park."""
+"""LoRA triggers, one-LoRA rule (v3 acceptance 10), NSFW retry-then-park.
+
+The GENERATE path is DORMANT in v3 (generate_enabled=false; the selector cannot route
+here) but stays on disk, tested and reversible — these tests keep the guards honest for
+the day the operator overturns the decision."""
 
 import pytest
 
@@ -11,7 +15,19 @@ from app.toolbox.generate import (
 )
 
 LORAS = OPERATOR_CONSTANTS["loras"]
-ENDPOINT = OPERATOR_CONSTANTS["image_endpoints"]["lora"]
+ENDPOINT = OPERATOR_CONSTANTS["model_endpoints"]["lora_generate"]
+
+
+def test_generate_is_dormant_in_v3():
+    assert OPERATOR_CONSTANTS["generate_enabled"] is False
+    # Config rows retained (reversible), endpoint still priced if ever re-enabled.
+    assert ENDPOINT in OPERATOR_CONSTANTS["endpoint_prices_cents"]
+
+
+def test_exactly_one_lora_asserted_at_call_site():
+    # v3 acceptance 10 — len(loras) == 1 at the call site, not just by construction.
+    _, args = build_generate_request("x", "assembled_blocks", LORAS, "square", ENDPOINT)
+    assert len(args["loras"]) == 1
 
 
 def test_trigger_word_boundary_not_substring():

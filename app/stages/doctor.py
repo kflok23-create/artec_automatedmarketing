@@ -34,6 +34,35 @@ def _check(name: str, fn, remedy: str) -> Check:
         return Check(name, False, f"{type(e).__name__}: {e}", remedy)
 
 
+def check_hermes_home(hermes_home: str) -> Check:
+    """v3 §5: the mounted volume is a hard requirement ON HERMES-BRAIN. A marker file
+    written on first check and read back on later ones is the survives-redeploy proof:
+    if the marker predates this boot, the volume outlived at least one deploy."""
+    name = "hermes-brain volume"
+    remedy = ("mount a Railway volume at /data/hermes on hermes-brain, set "
+              "HERMES_HOME=/data/hermes, and ensure it is writable")
+    if not hermes_home:
+        return Check(name, True, "HERMES_HOME unset — not the hermes-brain service", warn=True)
+    from pathlib import Path
+
+    root = Path(hermes_home)
+    if not root.is_dir():
+        return Check(name, False, f"{hermes_home} is missing or not a directory", remedy)
+    marker = root / ".artec-volume-marker"
+    try:
+        if marker.exists():
+            born = marker.read_text(encoding="utf-8").strip()
+            return Check(name, True, f"writable; marker present since {born} — survived redeploy(s)")
+        from datetime import UTC, datetime
+
+        marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+        return Check(name, True,
+                     "writable; marker WRITTEN this run — redeploy and re-run doctor to "
+                     "prove the volume survives")
+    except OSError as e:
+        return Check(name, False, f"volume is not writable: {type(e).__name__}: {e}", remedy)
+
+
 def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # noqa: C901
     checks: list[Check] = []
 
@@ -88,11 +117,21 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                          "verify FAL_KEY; if a base-model mismatch is named, retrain the LoRA on fal-ai/qwen-image-2512-trainer"))
     checks.append(_check("fal LoRA probe: unassembled", lambda: _lora_probe("unassembled"),
                          "verify FAL_KEY; if a base-model mismatch is named, retrain the LoRA on fal-ai/qwen-image-2512-trainer"))
-    vf = OPERATOR_CONSTANTS["video_family"]
-    checks.append(Check("video family verified", bool(vf.get("verified")),
-                        f"{vf['name']} ({vf['reference_to_video']})",
-                        "endpoint slugs are operator-supplied and unverified — confirm on the fal model page and update config.video_family",
-                        warn=True))
+    checks.append(Check("generate path", True,
+                        "DORMANT (generate_enabled=false, v3 Rule 3 — bank-only for the product)",
+                        warn=False))
+
+    # v3 Rule 4: every surviving model endpoint must be priced or it is uncallable.
+    endpoints = set(OPERATOR_CONSTANTS["model_endpoints"].values())
+    prices = set(OPERATOR_CONSTANTS["endpoint_prices_cents"])
+    unpriced = sorted(endpoints - prices)
+    checks.append(Check("endpoint price table", not unpriced,
+                        "every model endpoint priced" if not unpriced else f"unpriced: {unpriced}",
+                        "add the endpoint to config.endpoint_prices_cents — unpriced endpoints are uncallable"))
+
+    # v3 §5: the hermes-brain volume. HERMES_HOME set → hard requirements; unset → this
+    # service is not hermes-brain, note and move on.
+    checks.append(check_hermes_home(settings.HERMES_HOME))
 
     # --- Upload-Post -------------------------------------------------------------------
     def _upload_post():

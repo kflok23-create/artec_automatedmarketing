@@ -24,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
+      - name: Install ffmpeg (v3 video pipeline end-to-end test)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install
         run: uv sync --group dev
       - name: Lint

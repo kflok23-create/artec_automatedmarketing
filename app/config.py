@@ -83,26 +83,35 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
         "linkedin":  {"media": "photo", "aspect": "landscape", "max_caption": 3000},
         "email":     {"media": "photo", "aspect": "landscape"},
     },
-    # Image endpoints — locked set.
-    "image_endpoints": {
-        "lora": "fal-ai/qwen-image-2512/lora",
-        "kontext_t2i": "fal-ai/flux-pro/kontext/text-to-image",
-        "kontext_single": "fal-ai/flux-pro/kontext",
-        "kontext_multi": "fal-ai/flux-pro/kontext/multi",
+    # v3 TOOLBOX — Python first; the ONLY surviving model endpoints. Generative video and
+    # every prompt-to-pixels / multi-image-combine endpoint are REMOVED (not flagged):
+    # models cannot render letterforms, generated video was expensive and off-brand, and
+    # 479 real photographs exist. The agent interprets, SQL calculates, Python does pixels.
+    "model_endpoints": {
         "upscaler": "fal-ai/clarity-upscaler",
+        "lora_generate": "fal-ai/qwen-image-2512/lora",  # dormant — see generate_enabled
     },
-    # Video family — endpoint ids and prompt-reference syntax live TOGETHER so they can
-    # never drift apart. reference_syntax: "bracket" → [Image1] [Video1]; "at" → @Video1.
-    "video_family": {
-        "name": "seedance-2.0",
-        "text_to_video": "bytedance/seedance-2.0/text-to-video",
-        "reference_to_video": "bytedance/seedance-2.0/reference-to-video",
-        "reference_syntax": "bracket",
-        "max_ref_videos": 3,
-        "duration_range_s": [4, 15],
-        "resolutions": ["480p", "720p"],
-        "verified": False,  # doctor flips after first successful call
+    # GENERATE via the artec LoRAs is DISABLED (v3 Rule 3: do not generate what we can
+    # photograph). The lora rows below are retained so the operator can overturn this with
+    # one config flip — reversible, not archaeology.
+    "generate_enabled": False,
+    # ENHANCE whitelist — anything off this list is not callable. Image only.
+    # upscale = fal clarity (low creativity); color_correct/autocontrast = Pillow, zero cost.
+    "enhance_whitelist": ["upscale", "color_correct", "autocontrast"],
+    # v3 Rule 4 — the budget. USD in integer cents (no floats near money, ever).
+    # An endpoint absent from the price table is UNCALLABLE — that is the point.
+    "endpoint_prices_cents": {
+        "fal-ai/clarity-upscaler": 4,
+        "fal-ai/qwen-image-2512/lora": 3,
     },
+    "render_budget_cents": 100,      # USD 1.00 per render run, hard cap
+    "per_call_ceiling_cents": 50,    # a single USD 8 call is structurally impossible
+    # v3 §9 — slot becomes a real firing time (Asia/Singapore) AND stays a learned lever.
+    "slot_times": {"morning": "09:00", "lunch": "12:30", "evening": "19:00", "weekend": "10:00"},
+    "measure_reminder_time": "06:30",
+    # v3 §11 — shadow-mode cutover. Starts and stays on 'shadow' until the operator flips
+    # it after 2–3 Sundays of plan-diff. 'bespoke' is full rollback, no redeploy.
+    "plan_source": "shadow",
     # LoRAs — registered in config, never hardcoded. One LoRA, one trigger, one request.
     "loras": {
         "assembled": {
@@ -133,6 +142,11 @@ RUNTIME_KEYS = frozenset({
     "confirm_first_publish", "text_card_pairing_idx",
 })
 
+# Keys DELETED from live config on seed — v3 removed these capabilities outright
+# (all generative-video and prompt-to-pixels/combine endpoints). Removal is what makes the
+# repo scan meaningful: those endpoints exist nowhere, not even in a dormant row.
+REMOVED_KEYS = ("image_endpoints", "video_family")
+
 
 def seed_config(
     session: Session,
@@ -154,6 +168,12 @@ def seed_config(
     added: list[str] = []
     kept: list[str] = []
     overwritten: list[str] = []
+    removed: list[str] = []
+    for key in REMOVED_KEYS:
+        row = session.get(Config, key)
+        if row is not None:
+            session.delete(row)
+            removed.append(key)
     for key, value in data.items():
         row = session.get(Config, key)
         if row is None:
@@ -169,7 +189,8 @@ def seed_config(
         else:
             kept.append(key)
     session.flush()
-    return {"added": sorted(added), "kept": sorted(kept), "overwritten": sorted(overwritten)}
+    return {"added": sorted(added), "kept": sorted(kept),
+            "overwritten": sorted(overwritten), "removed": sorted(removed)}
 
 
 def get_config(session: Session, key: str, default: Any = _RAISE) -> Any:

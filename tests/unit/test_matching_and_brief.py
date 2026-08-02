@@ -63,11 +63,18 @@ def test_v_brief_capped_at_40_rows(session):
     assert 0 < len(rows) <= 40
 
 
-def test_selector_bank_first_violation(session):
+def test_selector_generate_is_not_a_tool(session):
+    # v3: 'generate' is not in the routing vocabulary at all — unknown, not gated.
     candidates = [_asset(1)]
-    with pytest.raises(PlanError, match="bank-first"):
+    with pytest.raises(PlanError, match="unknown tool"):
         validate_plan({"subject": "assembled_blocks", "tools": ["generate"], "asset_ids": [],
                        "prompt": "x"}, candidates, allow_person=False)
+
+
+def test_selector_bank_only_for_product():
+    with pytest.raises(PlanError, match="BANK-ONLY"):
+        validate_plan({"subject": "assembled_blocks", "tools": ["overlay"], "asset_ids": [],
+                       "prompt": ""}, [], allow_person=False)
 
 
 def test_selector_rejects_foreign_asset_ids_and_gated_person():
@@ -80,11 +87,13 @@ def test_selector_rejects_foreign_asset_ids_and_gated_person():
                       candidates, allow_person=False)
 
 
-def test_fallback_plan_prefers_bank_then_generate_then_text_card():
-    with_bank = fallback_plan("assembled_blocks", [_asset(1)], "photo")
-    assert with_bank.tools[0] == "asset" and with_bank.asset_ids == ["a1"]
-    empty_generatable = fallback_plan("assembled_blocks", [], "photo")
-    assert empty_generatable.tools == ["generate"]
-    empty_other = fallback_plan("classroom", [], "photo")
-    assert empty_other.tools == ["text_card"]
-    assert fallback_plan("child_face", [], "video") is None  # video + empty bank → park
+def test_fallback_plan_bank_only_never_generates():
+    photo = fallback_plan("assembled_blocks", [_asset(1)], "photo")
+    assert photo.tools == ["asset", "enhance"] and photo.asset_ids == ["a1"]
+    video = fallback_plan("assembled_blocks", [_asset(1, medium="video")], "video")
+    assert video.tools == ["asset", "video_edit"]
+    # v3 acceptance 11: product-depicting with an empty bank → None → PARK, never generate.
+    assert fallback_plan("assembled_blocks", [], "photo") is None
+    assert fallback_plan("child_face", [], "video") is None
+    # Product-free message post — the zero-asset brand card survives.
+    assert fallback_plan("brand_message", [], "photo").tools == ["text_card"]

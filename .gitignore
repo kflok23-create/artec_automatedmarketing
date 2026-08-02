@@ -1,0 +1,27 @@
+# Secrets — never committed
+.env
+.env.*
+!.env.example
+*.pem
+*service-account*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Scratch
+/tmp/
+*.log

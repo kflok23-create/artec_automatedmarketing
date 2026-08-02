@@ -1,0 +1,263 @@
+"""Google Drive client — Shared Drive rules are non-negotiable (§4.2).
+
+- Auth: service account JSON from GOOGLE_SERVICE_ACCOUNT_JSON (raw string, not a path).
+- Every files.list / changes.list call passes supportsAllDrives=true AND
+  includeItemsFromAllDrives=true with corpora='drive' + driveId. Omitting them returns an
+  empty list with no error — the #1 Drive integration bug.
+- files.get / files.create / files.delete pass supportsAllDrives=true
+  (includeItemsFromAllDrives is a list-only parameter; the API rejects it elsewhere —
+  see DECISIONS.md #2).
+- Explicit fields= on every call; never the default field set.
+- Downloads stream to /tmp and are discarded; Drive share links are NEVER handed to
+  Upload-Post or Brevo.
+- WRITES ONLY INSIDE _generated/. The taxonomy is read-only.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import tempfile
+from collections.abc import Iterator
+from typing import Any
+
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+
+from app.settings import Settings
+from app.taxonomy import GENERATED_FOLDER
+
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+FILE_FIELDS = (
+    "id,name,mimeType,size,md5Checksum,description,modifiedTime,trashed,parents,"
+    "imageMediaMetadata(width,height),videoMediaMetadata(width,height,durationMillis)"
+)
+LIST_FIELDS = f"nextPageToken,files({FILE_FIELDS})"
+
+
+class DriveError(RuntimeError):
+    pass
+
+
+class DriveWriteBoundaryError(DriveError):
+    """Raised on any attempted write outside _generated/ — a defect, not a retry case."""
+
+
+class DriveClient:
+    def __init__(self, settings: Settings, service: Any | None = None):
+        if service is not None:
+            self.service = service
+        else:
+            try:
+                info = json.loads(settings.GOOGLE_SERVICE_ACCOUNT_JSON)
+            except json.JSONDecodeError as e:
+                raise DriveError(
+                    "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON (it must be the raw key "
+                    "file contents, not a file path)"
+                ) from e
+            creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+            self.service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        self.root_id = settings.GOOGLE_DRIVE_ROOT_FOLDER_ID
+        self.drive_id = settings.GOOGLE_SHARED_DRIVE_ID
+
+    # -- reads ---------------------------------------------------------------------------
+
+    def _list_kwargs(self) -> dict[str, Any]:
+        return {
+            "supportsAllDrives": True,
+            "includeItemsFromAllDrives": True,
+            "corpora": "drive",
+            "driveId": self.drive_id,
+        }
+
+    def list_children(self, folder_id: str) -> list[dict]:
+        files: list[dict] = []
+        token = None
+        while True:
+            resp = (
+                self.service.files()
+                .list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    fields=LIST_FIELDS,
+                    pageSize=1000,
+                    pageToken=token,
+                    **self._list_kwargs(),
+                )
+                .execute()
+            )
+            files.extend(resp.get("files", []))
+            token = resp.get("nextPageToken")
+            if not token:
+                return files
+
+    def walk(self) -> Iterator[tuple[str, dict]]:
+        """Yield (relative_folder_path, file_meta) for every non-folder file in the bank,
+        skipping the _generated/ subtree (HERMES output is not bank inventory)."""
+        stack: list[tuple[str, str]] = [("", self.root_id)]
+        while stack:
+            rel_path, folder_id = stack.pop()
+            for f in self.list_children(folder_id):
+                if f["mimeType"] == "application/vnd.google-apps.folder":
+                    child_rel = f"{rel_path}/{f['name']}".strip("/")
+                    if child_rel.split("/")[0] == GENERATED_FOLDER:
+                        continue
+                    stack.append((child_rel, f["id"]))
+                else:
+                    yield rel_path, f
+
+    def get_file(self, file_id: str) -> dict:
+        return (
+            self.service.files()
+            .get(fileId=file_id, fields=FILE_FIELDS, supportsAllDrives=True)
+            .execute()
+        )
+
+    def resolve_path(self, file_meta: dict) -> str:
+        """Walk the parents chain up to the bank root; '' if the file is outside it."""
+        segments: list[str] = []
+        parents = file_meta.get("parents") or []
+        guard = 0
+        while parents and guard < 20:
+            guard += 1
+            pid = parents[0]
+            if pid == self.root_id:
+                return "/".join(reversed(segments))
+            meta = (
+                self.service.files()
+                .get(fileId=pid, fields="id,name,parents", supportsAllDrives=True)
+                .execute()
+            )
+            segments.append(meta["name"])
+            parents = meta.get("parents") or []
+        return ""
+
+    def download(self, file_id: str, suffix: str = "") -> str:
+        """Stream a file to /tmp (scratch only) and return the local path."""
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        with os.fdopen(fd, "wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _status, done = downloader.next_chunk()
+        return path
+
+    # -- changes API (incremental sync) --------------------------------------------------
+
+    def get_start_page_token(self) -> str:
+        resp = (
+            self.service.changes()
+            .getStartPageToken(driveId=self.drive_id, supportsAllDrives=True)
+            .execute()
+        )
+        return resp["startPageToken"]
+
+    def list_changes(self, page_token: str) -> tuple[list[dict], str]:
+        """Return (changes, new_start_page_token)."""
+        changes: list[dict] = []
+        token = page_token
+        new_start = page_token
+        while token:
+            resp = (
+                self.service.changes()
+                .list(
+                    pageToken=token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    driveId=self.drive_id,
+                    fields=f"nextPageToken,newStartPageToken,changes(fileId,removed,file({FILE_FIELDS}))",
+                )
+                .execute()
+            )
+            changes.extend(resp.get("changes", []))
+            new_start = resp.get("newStartPageToken", new_start)
+            token = resp.get("nextPageToken")
+        return changes, new_start
+
+    # -- writes: _generated/ ONLY --------------------------------------------------------
+
+    def _find_child_folder(self, parent_id: str, name: str) -> str | None:
+        for f in self.list_children(parent_id):
+            if f["name"] == name and f["mimeType"] == "application/vnd.google-apps.folder":
+                return f["id"]
+        return None
+
+    def generated_folder_id(self) -> str:
+        fid = self._find_child_folder(self.root_id, GENERATED_FOLDER)
+        if fid is None:
+            raise DriveError(
+                f"'{GENERATED_FOLDER}/' folder not found under the bank root — create it in "
+                "Drive (HERMES writes into it but the taxonomy build is operator groundwork)"
+            )
+        return fid
+
+    def _ensure_generated_subfolder(self, name: str) -> str:
+        gen_id = self.generated_folder_id()
+        fid = self._find_child_folder(gen_id, name)
+        if fid:
+            return fid
+        resp = (
+            self.service.files()
+            .create(
+                body={
+                    "name": name,
+                    "mimeType": "application/vnd.google-apps.folder",
+                    "parents": [gen_id],
+                },
+                fields="id",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        return resp["id"]
+
+    def upload_generated(self, local_path: str, week_start: str, filename: str) -> str:
+        """Upload a render to _generated/{week_start}/{filename}; return drive_file_id.
+        This is the ONLY Drive write path in HERMES."""
+        if not filename or "/" in filename or "\\" in filename:
+            raise DriveWriteBoundaryError(f"invalid generated filename: {filename!r}")
+        folder_id = self._ensure_generated_subfolder(week_start)
+        media = MediaFileUpload(local_path, resumable=True)
+        resp = (
+            self.service.files()
+            .create(
+                body={"name": filename, "parents": [folder_id]},
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        return resp["id"]
+
+    def probe_write(self) -> bool:
+        """doctor: create then delete a tiny probe file inside _generated/."""
+        gen_id = self.generated_folder_id()
+        media = MediaIoBaseUploadShim(b"hermes-probe")
+        resp = (
+            self.service.files()
+            .create(
+                body={"name": "_hermes_probe.txt", "parents": [gen_id]},
+                media_body=media.media(),
+                fields="id",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        self.service.files().delete(fileId=resp["id"], supportsAllDrives=True).execute()
+        return True
+
+
+class MediaIoBaseUploadShim:
+    """Tiny in-memory upload helper for the write probe."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def media(self):
+        from googleapiclient.http import MediaIoBaseUpload
+
+        return MediaIoBaseUpload(io.BytesIO(self._data), mimetype="text/plain")

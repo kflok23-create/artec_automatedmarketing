@@ -42,6 +42,17 @@ class DriveError(RuntimeError):
     pass
 
 
+def _http_status(e: Exception) -> int | None:
+    """googleapiclient HttpError status across library versions."""
+    status = getattr(e, "status_code", None)
+    if status:
+        return int(status)
+    resp = getattr(e, "resp", None)
+    if resp is not None and getattr(resp, "status", None):
+        return int(resp.status)
+    return None
+
+
 class DriveWriteBoundaryError(DriveError):
     """Raised on any attempted write outside _generated/ — a defect, not a retry case."""
 
@@ -241,8 +252,19 @@ class DriveClient:
         )
         return resp["id"]
 
-    def probe_write(self) -> bool:
-        """doctor: create then delete a tiny probe file inside _generated/."""
+    def probe_write(self) -> str:
+        """doctor: create then delete a tiny probe file inside _generated/.
+
+        Drive is NOT read-after-write consistent on Shared Drives: a delete (or get) by id
+        immediately after create can 404 even though the create returned an id. The create
+        succeeding is what proves write capability; cleanup retries with short backoff and,
+        if the id still hasn't propagated, is deferred rather than failed — an orphaned
+        13-byte probe file is harmless.
+        """
+        import time
+
+        from googleapiclient.errors import HttpError
+
         gen_id = self.generated_folder_id()
         media = MediaIoBaseUploadShim(b"hermes-probe")
         resp = (
@@ -255,8 +277,19 @@ class DriveClient:
             )
             .execute()
         )
-        self.service.files().delete(fileId=resp["id"], supportsAllDrives=True).execute()
-        return True
+        probe_id = resp["id"]
+        for delay in (1, 2, 2, None):  # ~3 retries over ~5 s
+            try:
+                self.service.files().delete(fileId=probe_id, supportsAllDrives=True).execute()
+                return "write + cleanup ok"
+            except HttpError as e:
+                if _http_status(e) == 404:
+                    if delay is None:
+                        return "write ok (probe cleanup deferred — Drive propagation lag)"
+                    time.sleep(delay)
+                    continue
+                raise
+        return "write ok"
 
 
 class MediaIoBaseUploadShim:

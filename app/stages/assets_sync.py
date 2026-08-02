@@ -68,6 +68,18 @@ def _upsert_file(session: Session, folder_path: str, meta: dict, now: datetime) 
 
 def sync(session: Session, drive, full: bool = False, log=print) -> dict:
     now = datetime.now(UTC)
+
+    # Stale-id guard: if the bank root changed (e.g. a My Drive → Shared Drive migration),
+    # every persisted cursor and file id predates the move. Force a full rescan — the walk
+    # marks all pre-migration assets missing and re-indexes from the new root.
+    marker = get_config(session, "drive_root_marker", None)
+    if marker != drive.root_id:
+        if marker is not None:
+            log(f"bank root changed ({marker} → {drive.root_id}) — resetting sync cursor, forcing full rescan")
+        full = True
+        set_config(session, "drive_page_token", None)
+        set_config(session, "drive_root_marker", drive.root_id)
+
     token = get_config(session, "drive_page_token", None)
     counts: Counter[str] = Counter()
 

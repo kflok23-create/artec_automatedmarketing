@@ -91,8 +91,9 @@ def test_my_drive_mode_omits_drive_scoping_but_keeps_all_drives_flags(monkeypatc
 class _SyncDrive:
     """Fixture-tree drive for sync tests."""
 
-    def __init__(self, tree):
+    def __init__(self, tree, root_id="rootA"):
         self.tree = tree  # list of (folder_path, meta)
+        self.root_id = root_id
 
     def walk(self):
         yield from self.tree
@@ -136,6 +137,85 @@ def test_removed_file_becomes_missing_not_deleted(session):
     assert v1 is not None, "missing files are marked, never deleted"
     assert v1.status == "missing"
     assert session.get(Asset, "a1").status == "active"
+
+
+def test_root_migration_resets_cursor_and_marks_old_assets_missing(session):
+    # A bank migration retires every persisted Drive id: sync must detect the root change,
+    # force a full rescan even without --full, and mark pre-migration assets missing.
+    from app.config import get_config
+
+    sync(session, _SyncDrive(FIXTURE_TREE, root_id="rootA"), full=True, log=lambda *_: None)
+    assert get_config(session, "drive_root_marker") == "rootA"
+    assert session.get(Asset, "a1").status == "active"
+
+    new_tree = [("raw-photo/assembled", {"id": "new_a", "name": "n.jpg", "mimeType": "image/jpeg",
+                                         "imageMediaMetadata": {"width": 1080, "height": 1080}})]
+    sync(session, _SyncDrive(new_tree, root_id="rootB"), full=False, log=lambda *_: None)
+    assert get_config(session, "drive_root_marker") == "rootB"
+    assert session.get(Asset, "a1").status == "missing"   # stale id from the old bank
+    assert session.get(Asset, "v1").status == "missing"
+    assert session.get(Asset, "new_a").status == "active"
+
+
+class _RaisingExec:
+    def __init__(self, err):
+        self._err = err
+
+    def execute(self):
+        raise self._err
+
+
+def _http_404():
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    return HttpError(httplib2.Response({"status": "404"}), b"File not found: probe1")
+
+
+class _ProbeService:
+    """files().list finds _generated; create succeeds; delete 404s `fail_deletes` times
+    (Shared Drive propagation lag) before succeeding."""
+
+    def __init__(self, fail_deletes):
+        self.fail_deletes = fail_deletes
+        self.delete_attempts = 0
+
+    def files(self):
+        return self
+
+    def list(self, **kw):
+        return _Exec({"files": [{"id": "gen1", "name": "_generated",
+                                 "mimeType": "application/vnd.google-apps.folder"}]})
+
+    def create(self, **kw):
+        return _Exec({"id": "probe1"})
+
+    def delete(self, **kw):
+        self.delete_attempts += 1
+        if self.delete_attempts <= self.fail_deletes:
+            return _RaisingExec(_http_404())
+        return _Exec({})
+
+
+def _probe_client(service, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    return DriveClient(Settings(), service=service)
+
+
+def test_probe_write_retries_delete_through_propagation_lag(monkeypatch):
+    svc = _ProbeService(fail_deletes=2)
+    note = _probe_client(svc, monkeypatch).probe_write()
+    assert svc.delete_attempts == 3
+    assert note == "write + cleanup ok"
+
+
+def test_probe_write_defers_cleanup_when_id_never_propagates(monkeypatch):
+    # create returned an id → write capability is proven; an orphaned probe file is
+    # harmless. The probe passes with a note instead of failing on the 404.
+    svc = _ProbeService(fail_deletes=99)
+    note = _probe_client(svc, monkeypatch).probe_write()
+    assert svc.delete_attempts == 4  # initial + 3 retries
+    assert "cleanup deferred" in note
 
 
 def test_aspect_derivation():

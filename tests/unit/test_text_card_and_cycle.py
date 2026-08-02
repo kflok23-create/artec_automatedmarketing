@@ -21,6 +21,22 @@ def test_pairing_rotation_never_repeats_consecutively(session):
     assert set(seen) == {p["bg"] for p in get_config(session, "text_card_pairings")}
 
 
+def test_fonts_ship_inside_the_app_package():
+    # The wheel packages only `app/` (hatchling packages=["app"]). FONTS_DIR must resolve
+    # from the INSTALLED package, so the fonts live at app/assets/fonts/ — a repo-root
+    # assets/ path silently vanishes under `pip install .` (that was a live doctor RED).
+    from pathlib import Path
+
+    import app
+    from app.toolbox.text_card import FONTS_DIR
+
+    pkg_root = Path(app.__file__).resolve().parent
+    assert FONTS_DIR == pkg_root / "assets" / "fonts"
+    missing = [f for f in set(OPERATOR_CONSTANTS["fonts"].values())
+               if not (FONTS_DIR / f).exists()]
+    assert not missing, f"fonts missing from the package: {missing}"
+
+
 def test_cycle_dry_run_green():
     from app.stages.cycle import cycle_dry_run
 

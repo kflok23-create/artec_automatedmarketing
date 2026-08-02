@@ -31,8 +31,12 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
     "post_id_prefix": "post_",
     "post_id_start": 1482,
     "post_id_counter": 1482,  # next id to hand out; monotonic
-    "drive_root_folder_id": "1XjChLEO2WBLKemZ_7E9srIFa8fuFM0eN",
+    # Informational mirror only — GOOGLE_DRIVE_ROOT_FOLDER_ID (env) is authoritative.
+    # Post-migration Shared Drive id (techup.my Workspace); the old personal-Drive id
+    # 1XjChLEO2WBLKemZ_7E9srIFa8fuFM0eN is retired.
+    "drive_root_folder_id": "17gYS0IbakBLNVDLfX8-wZIpL61gOoXSr",
     "drive_generated_folder": "_generated",
+    "drive_root_marker": None,  # set by assets sync; a root change forces a full rescan
     "allow_person_assets": False,
     # Pricing — integer minor units, no floats anywhere.
     "sg_price_minor": 14900,
@@ -126,7 +130,8 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
 def seed_config(session: Session, overrides: dict[str, Any] | None = None) -> int:
     """Idempotent upsert of §0 constants. Existing values win for mutable runtime keys
     (counters, cursors, gates) so re-seeding never rewinds state."""
-    preserve = {"post_id_counter", "drive_page_token", "confirm_first_publish", "text_card_pairing_idx"}
+    preserve = {"post_id_counter", "drive_page_token", "drive_root_marker",
+                "confirm_first_publish", "text_card_pairing_idx"}
     data = dict(OPERATOR_CONSTANTS)
     if overrides:
         data.update(overrides)

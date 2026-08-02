@@ -42,9 +42,15 @@ app.include_router(commands_router)
 
 @app.get("/healthz")
 def healthz():
+    from app.config import OPERATOR_CONSTANTS as _oc
     from app.db import db_ok, migration_current
+    from app.toolbox.text_card import FONTS_DIR
 
     database = db_ok()
     migrations = migration_current()
+    # fonts_packaged verifies the INSTALLED package carries the .ttf files — this resolves
+    # from site-packages at runtime, exactly where a wheel-packaging regression would show.
+    fonts = all((FONTS_DIR / f).exists() for f in set(_oc["fonts"].values()))
     status = "ok" if database and migrations else "degraded"
-    return {"status": status, "db": database, "migrations_current": migrations}
+    return {"status": status, "db": database, "migrations_current": migrations,
+            "fonts_packaged": fonts}

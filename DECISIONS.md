@@ -111,17 +111,30 @@ unless marked.
     false only `has_person = true` rows are excluded; UGC's unknown (`NULL`) stays eligible.
     Flip the config key when releases are settled.
 
-21. **The asset bank lives in My Drive, not a Shared Drive** (revised at CHECKPOINT 3,
-    operator decision). The account is personal Gmail; Shared Drives are Workspace-only.
-    `Artec Assets Bank` is a My Drive folder shared directly with the service account as
-    **Editor**, and `GOOGLE_SHARED_DRIVE_ID` is optional and empty. The Drive client runs
-    in "My Drive mode": queries go by parent folder id only (no `corpora`/`driveId`), while
-    `supportsAllDrives`/`includeItemsFromAllDrives` are kept on list/changes calls —
-    harmless on My Drive and preserving the Shared Drive path if the bank ever moves to
-    Workspace. Known risk, surfaced by name in `hermes doctor`: files the service account
-    uploads into `_generated/` are owned by the service account and count against ITS Drive
-    quota; a quota failure gets a specific remedy (delete old service-account-owned
-    renders, or move to a Shared Drive) instead of a generic error.
+21. **The asset bank is a Shared Drive on the techup.my Google Workspace account** (final
+    state after two CHECKPOINT-3 revisions), with the service account as **Content
+    Manager**. `GOOGLE_SHARED_DRIVE_ID` (`0ACcG7AD2xK67Uk9PVA`) and
+    `GOOGLE_DRIVE_ROOT_FOLDER_ID` (`17gYS0IbakBLNVDLfX8-wZIpL61gOoXSr`) are both set, to
+    different values — the drive id is not the folder id. History and lessons, kept
+    because each cost a doctor cycle:
+    - **My Drive mode was tried and abandoned: service accounts have ZERO Drive storage
+      quota**, so every upload the service account makes into a My Drive folder fails on
+      `storageQuota` regardless of how the folder is shared. The My Drive code path
+      (empty `GOOGLE_SHARED_DRIVE_ID` → parent-only queries, no `corpora`/`driveId`)
+      remains implemented and tested, but it is **read-only in practice** — unusable for
+      `_generated/` writes.
+    - **The service account's GCP project must have the Drive API explicitly enabled**
+      (console → APIs & Services → enable "Google Drive API"). A fresh project does not
+      have it on by default; the failure reads as an API error, not a permissions one.
+    - **Drive is not read-after-write consistent on Shared Drives**: a get/delete by id
+      immediately after `files.create` can 404 even though create returned the id. The
+      doctor write probe treats the successful create as proof of write capability,
+      retries cleanup ~3 times over ~5 s, and defers cleanup (pass, with a note) if the
+      id still hasn't propagated. Doctor distinguishes 404 (stale/unpropagated id) from
+      403 (permission) from quota errors, each with its own remedy.
+    - **A bank migration invalidates every persisted Drive id.** `assets sync` stores a
+      `drive_root_marker`; when the configured root changes, it auto-resets the changes
+      cursor and forces a full rescan, marking all pre-migration assets `missing`.
 
 22. **`hermes measure --csv` from the smoke-run example is not implemented** — the locked
     decision table says "No channel APIs, no CSV files"; measure is interactive, `--json`,

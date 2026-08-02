@@ -80,7 +80,7 @@ the single join key across posts, orders, events, and metrics.
 | `prompts/caption_v1.md` | captions + email variables |
 | `prompts/wishlist_v1.md` | structured wishlist authoring |
 | `migrations/…` | Alembic env + `0001_initial` (tables + v_brief view) |
-| `assets/fonts/README.md` | operator commits the three static .ttf families here (doctor checks) |
+| `app/assets/fonts/README.md` | the three static .ttf families live inside the package so the wheel ships them (doctor checks) |
 | `tests/…` | acceptance tests §15 (unit + integration, offline via fakes) |
 | `docs/RUNBOOK.md` | the exact manual cycle, copy-pasteable |
 | `docs/RAILWAY_SETUP.md` | dashboard steps, reference variables, pre-deploy migration |

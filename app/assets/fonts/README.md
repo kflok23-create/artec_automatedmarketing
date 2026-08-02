@@ -1,5 +1,11 @@
 # Brand fonts — operator-committed (all SIL Open Font License)
 
+This directory lives INSIDE the `app` package on purpose: hatchling ships everything under
+`app/`, so the fonts travel with the wheel and `FONTS_DIR` resolves correctly from
+site-packages (where `pip install .` deployments actually import from) as well as from the
+source tree. Do not move them back to a repo-root `assets/` — that path silently vanishes
+at deploy time.
+
 Commit the **STATIC** .ttf instances here, with exactly these filenames (they are referenced
 by name in the `config.fonts` map):
 

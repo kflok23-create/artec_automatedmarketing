@@ -159,16 +159,24 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
     # Two modes: Shared Drive (GOOGLE_SHARED_DRIVE_ID set) or My Drive (empty — personal
     # Gmail, bank folder shared directly with the service account as Editor).
     def _drive():
-        from app.integrations.drive_client import DriveClient
+        from app.integrations.drive_client import DriveClient, DriveError, _http_status
         drive = DriveClient(settings)
         mode = "My Drive mode" if drive.my_drive_mode else "Shared Drive"
         children = drive.list_children(drive.root_id)
         folder_names = {c["name"] for c in children
                         if c["mimeType"] == "application/vnd.google-apps.folder"}
-        expected_top = {f.split("/")[0] for f in EXPECTED_FOLDERS} | {GENERATED_FOLDER}
+        expected_top = {f.split("/")[0] for f in EXPECTED_FOLDERS}
         missing = sorted(expected_top - folder_names)
         if missing:
             raise RuntimeError(f"taxonomy folders missing at bank root: {missing}")
+        # _generated/ is checked by name BEFORE the write probe so a missing folder is
+        # reported as exactly that, never as a downstream 404.
+        if GENERATED_FOLDER not in folder_names:
+            raise RuntimeError(
+                f"'{GENERATED_FOLDER}/' does not exist at the bank root "
+                f"({settings.GOOGLE_DRIVE_ROOT_FOLDER_ID}) — create it in Drive; the write "
+                "probe was not attempted"
+            )
         for parent in ("raw-photo", "raw-video"):
             pid = next(c["id"] for c in children if c["name"] == parent)
             subs = {c["name"] for c in drive.list_children(pid)
@@ -177,18 +185,35 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
             if missing_subs:
                 raise RuntimeError(f"{parent}/ missing subfolders: {missing_subs}")
         try:
-            drive.probe_write()
+            probe_note = drive.probe_write()
+        except DriveError:
+            raise
         except Exception as e:
             msg = str(e).lower()
+            status = _http_status(e)
             if "quota" in msg or "storagequota" in msg:
                 raise RuntimeError(
-                    "write probe hit a storage-quota error: in My Drive mode, files the "
-                    "service account uploads count against the SERVICE ACCOUNT'S own Drive "
-                    "quota, not yours — delete old service-account-owned files in "
-                    "_generated/ to free space, or move the bank to a Workspace Shared Drive"
+                    "write probe hit a storage-quota error: files uploaded by the service "
+                    "account count against the SERVICE ACCOUNT'S own quota in My Drive mode "
+                    "(service accounts have zero) — use a Workspace Shared Drive, or free "
+                    "service-account-owned files in _generated/"
+                ) from e
+            if status == 403:
+                raise RuntimeError(
+                    "write probe PERMISSION DENIED (403): the service account can read but "
+                    "not write — it needs Content Manager on the Shared Drive (Editor on a "
+                    "My Drive folder)"
+                ) from e
+            if status == 404:
+                raise RuntimeError(
+                    "write probe FILE NOT FOUND (404): the id being written under no longer "
+                    "exists — usually a stale Drive id from before a bank migration. Verify "
+                    "GOOGLE_DRIVE_ROOT_FOLDER_ID and GOOGLE_SHARED_DRIVE_ID are the "
+                    "post-migration values, then run `hermes assets sync --full` (a root "
+                    "change auto-resets the sync cursor)"
                 ) from e
             raise
-        return f"auth + 11 folders + _generated write probe ok ({mode})"
+        return f"auth + 11 folders ok · {probe_note} ({mode})"
     checks.append(_check("google drive bank", _drive,
                          "share the bank folder with the service account as Editor (My Drive "
                          "mode) or add it as Content Manager (Shared Drive); build the folder "

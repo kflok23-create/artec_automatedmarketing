@@ -18,7 +18,13 @@ from sqlalchemy.orm import Session
 
 from app.config import get_config, set_config
 
-FONTS_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "fonts"
+# Package-relative on purpose: the fonts live INSIDE the `app` package
+# (app/assets/fonts/) so they ship in the wheel and resolve identically from the source
+# tree and from site-packages. nixpacks runs `pip install .`, and at runtime imports come
+# from /opt/venv/.../site-packages — a repo-root-relative path would silently miss the
+# installed copy (that divergence was a live doctor RED). Doctor imports this same
+# constant, so the runtime loader and the check can never diverge.
+FONTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 
 CANVAS = {"vertical": (1080, 1920), "square": (1080, 1080), "landscape": (1920, 1080)}
 

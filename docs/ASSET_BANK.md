@@ -54,13 +54,16 @@ An unrecognised path imports as `subject='unknown'` with a warning — never a g
    `allow_person_assets` is flipped to `true` (once model releases are settled).
 4. **`_generated/` belongs to HERMES.** Every render is uploaded to
    `_generated/{week_start}/{post_id}.{ext}`; don't file your own media there.
-5. **My Drive mode (current setup — personal Gmail, Shared Drives are Workspace-only).**
-   The bank is a My Drive folder shared directly with the service account as **Editor**;
-   `GOOGLE_SHARED_DRIVE_ID` stays empty. Caveat: files HERMES uploads into `_generated/`
-   are owned by the service account and count against the service account's OWN Drive
-   quota — if `hermes doctor`'s write probe ever fails on quota, delete old
-   service-account-owned renders or move the bank to a Workspace Shared Drive (then set
-   `GOOGLE_SHARED_DRIVE_ID`; the client switches modes automatically).
+5. **Shared Drive on the techup.my Workspace (current setup).** The service account is a
+   **Content Manager**; both `GOOGLE_SHARED_DRIVE_ID` and `GOOGLE_DRIVE_ROOT_FOLDER_ID`
+   are set (they are different ids — drive vs folder). Why not My Drive: service accounts
+   have ZERO Drive quota of their own, so every HERMES upload into a My Drive folder
+   fails on storageQuota no matter how the folder is shared. (The My Drive code path
+   still exists for reads — leave `GOOGLE_SHARED_DRIVE_ID` empty — but it cannot host
+   `_generated/`.) Also required: the service account's GCP project must have the
+   **Drive API explicitly enabled**; fresh projects don't. If the bank ever migrates
+   again, just update the two env vars — `hermes assets sync` detects the root change and
+   forces a full rescan automatically.
 
 ## The rhythm
 
@@ -75,6 +78,8 @@ step between what the agent asks for and where you put the file.
 
 ## Fonts (also operator-committed, in the repo)
 
-See `assets/fonts/README.md` — the three families (Bricolage Grotesque Bold, Hanken
+See `app/assets/fonts/README.md` — the three families (Bricolage Grotesque Bold, Hanken
 Grotesk Regular + SemiBold, Space Mono Regular) must be committed as **static** .ttf
-files; variable fonts render the wrong weight in Pillow.
+files; variable fonts render the wrong weight in Pillow. They live INSIDE the `app`
+package so the wheel ships them — `pip install .` deployments resolve fonts from
+site-packages, not the source tree.

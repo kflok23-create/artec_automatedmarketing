@@ -64,6 +64,26 @@ def _log_run(conn, tool: str, args: dict) -> None:
     )
 
 
+def _allocate_post_id(conn, prefix: str = "post_") -> str:
+    """Allocate a post id from the `post_id_seq` SEQUENCE — NEVER from `config`.
+
+    v4 §2: no tool writes config. Stage 2a incremented a config row here, which breached
+    that invariant on every injection. Postgres `nextval` is non-transactional and so is
+    race-safe without a lock; SQLite (tests) uses an atomic UPDATE … RETURNING.
+    """
+    if conn.engine.dialect.name == "postgresql":
+        n = conn.execute(text("SELECT nextval('post_id_seq')")).scalar()
+    else:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS post_id_seq (next_value INTEGER NOT NULL)"))
+        if conn.execute(text("SELECT next_value FROM post_id_seq")).first() is None:
+            conn.execute(text("INSERT INTO post_id_seq (next_value) VALUES (1482)"))
+        n = conn.execute(text(
+            "UPDATE post_id_seq SET next_value = next_value + 1 "
+            "RETURNING next_value - 1")).first()[0]
+    return f"{prefix}{int(n)}"
+
+
 def _config(conn, key: str, default: Any = None) -> Any:
     row = conn.execute(text("SELECT value FROM config WHERE key = :k"), {"k": key}).first()
     if row is None:
@@ -203,11 +223,8 @@ def _write_plan_impl(week_start: str, posts: list[dict], engine: Engine | None =
                     {"w": week, "c": channel, "s": slot}).first()
                 if exists_post is not None:
                     continue
-                n = int(_config(conn, "post_id_counter", 1482))
-                conn.execute(
-                    _jtext("UPDATE config SET value = :v WHERE key = 'post_id_counter'", "v"),
-                    {"v": n + 1})
-                post_id = f"post_{n}"
+                post_id = _allocate_post_id(
+                    conn, str(_config(conn, "post_id_prefix", "post_")))
                 medium = "email" if channel == "email" else "organic"
                 site = _config(conn, "site_base_url", "https://artec.my")
                 code = _config(conn, "email_code" if medium == "email" else "social_code", "SOCIAL50")
@@ -244,10 +261,7 @@ def _inject_new_post(conn, edits: dict | None) -> dict:
             f"slot {slot!r} is not a key of slot_times {sorted(slot_times)} — a post with an "
             "unknown slot would never publish and never error"
         )
-    n = int(_config(conn, "post_id_counter", 1482))
-    conn.execute(_jtext("UPDATE config SET value = :v WHERE key = 'post_id_counter'", "v"),
-                 {"v": n + 1})
-    post_id = f"post_{n}"
+    post_id = _allocate_post_id(conn, str(_config(conn, "post_id_prefix", "post_")))
     medium = "email" if channel == "email" else "organic"
     site = _config(conn, "site_base_url", "https://artec.my")
     code = _config(conn, "email_code" if medium == "email" else "social_code", "SOCIAL50")

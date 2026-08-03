@@ -167,6 +167,43 @@ def test_record_metrics_upsert_never_zeroes_an_existing_field(session, tools, en
 
 # ---- acceptance 6B: no approval without delivery -----------------------------------------
 
+def test_handlers_never_raise_and_refusals_are_ok_false_envelopes(session, tools, engine):
+    """§0.1 — the documented contract is (args, **kwargs) -> str returning a JSON envelope
+    ALWAYS, never raising. A raising handler would break the tool loop and could take down
+    the gate session. The missing-receipt refusal raises INTERNALLY; the envelope converts
+    it to ok:false. Assert the boundary behaviour, not the internal mechanism."""
+    session.add(Post(post_id="post_6099", week_start=WEEK, channel="tiktok",
+                     status="RENDERED", hook="h", slot="evening"))
+    session.commit()
+
+    raw = tools.HANDLERS["review_video"](
+        {"post_id": "post_6099", "decision": "approve"}, engine=engine)
+    assert isinstance(raw, str), "handler must return a string, never raise"
+    body = json.loads(raw)
+    assert body["ok"] is False                      # unambiguous failure to the agent
+    assert "deliver_video" in body["error"]
+
+    # Every handler, hit with junk, still returns a parseable envelope rather than raising.
+    for name, handler in tools.HANDLERS.items():
+        out = handler({}, engine=engine)
+        assert isinstance(out, str), f"{name} raised instead of returning an envelope"
+        assert "ok" in json.loads(out), f"{name} returned a non-envelope payload"
+
+
+def test_post_ids_come_from_the_sequence_not_config(session, tools, engine):
+    """§0 — the injection path must not touch config. Two injections take consecutive ids
+    from the allocator and leave no post_id_counter row behind."""
+    from app.models import Config
+
+    a = call(tools, "record_gate_decision", engine, post_id=None, action="inject",
+             edits={"channel": "instagram", "hook": "first", "slot": "evening"})
+    b = call(tools, "record_gate_decision", engine, post_id=None, action="inject",
+             edits={"channel": "instagram", "hook": "second", "slot": "evening"})
+    assert int(b["post_id"].split("_")[1]) == int(a["post_id"].split("_")[1]) + 1
+    session.expire_all()
+    assert session.get(Config, "post_id_counter") is None
+
+
 def test_review_video_refused_without_a_delivery_receipt(session, tools, engine):
     session.add(Post(post_id="post_6100", week_start=WEEK, channel="tiktok",
                      status="RENDERED", hook="h", slot="evening",

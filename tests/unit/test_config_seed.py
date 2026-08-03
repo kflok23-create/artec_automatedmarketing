@@ -28,9 +28,12 @@ def test_explicit_override_wins_without_force(session):
 
 
 def test_runtime_state_never_overwritten_even_with_force(session):
-    set_config(session, "post_id_counter", 9999)
+    # post_id_counter left config entirely in v4 Stage 2b — ids come from post_id_seq so
+    # that no tool ever writes config. Runtime state that remains must still survive force.
+    set_config(session, "drive_page_token", "tok-abc")
     set_config(session, "confirm_first_publish", False)
     seed_config(session, force=True)
-    assert get_config(session, "post_id_counter") == 9999
+    assert get_config(session, "drive_page_token") == "tok-abc"
     assert get_config(session, "confirm_first_publish") is False
-    assert "post_id_counter" in RUNTIME_KEYS
+    assert "drive_page_token" in RUNTIME_KEYS
+    assert "post_id_counter" not in RUNTIME_KEYS

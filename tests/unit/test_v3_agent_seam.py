@@ -57,15 +57,14 @@ def test_fifteen_handlers_and_none_touch_orders_events_or_config(tools, repo_roo
         (repo_root / "plugins" / "artec" / name).read_text(encoding="utf-8")
         for name in ("tools.py", "tools_v4.py")
     )
-    for table in ("orders", "events"):
+    for table in ("orders", "events", "config"):
         for verb in ("INSERT INTO", "UPDATE", "DELETE FROM"):
-            assert f"{verb} {table}" not in seam, f"the seam must never {verb} {table}"
-    # config is readable but never writable — except the post_id counter, which is an id
-    # allocator rather than policy, and is the only permitted exception.
-    config_writes = [line.strip() for line in seam.splitlines()
-                     if "UPDATE config" in line or "INSERT INTO config" in line]
-    assert all("post_id_counter" in line for line in config_writes), \
-        f"unexpected config write in the seam: {config_writes}"
+            offending = [line.strip() for line in seam.splitlines()
+                         if f"{verb} {table}" in line]
+            # ZERO. Not "zero except the allocator" — post ids come from post_id_seq now
+            # (migration 0004), because an id allocator living in config made every
+            # injection a config write.
+            assert not offending, f"the seam must never {verb} {table}: {offending}"
 
 
 def test_handlers_return_json_string_and_never_raise(tools, engine):

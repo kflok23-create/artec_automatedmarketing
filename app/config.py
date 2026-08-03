@@ -30,7 +30,8 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
     "timezone": "Asia/Singapore",
     "post_id_prefix": "post_",
     "post_id_start": 1482,
-    "post_id_counter": 1482,  # next id to hand out; monotonic
+    # post_id_counter REMOVED in v4 Stage 2b — ids come from the post_id_seq sequence so
+    # that no tool ever writes config. See app/post_ids.py and migration 0004.
     # Informational mirror only — GOOGLE_DRIVE_ROOT_FOLDER_ID (env) is authoritative.
     # Post-migration Shared Drive id (techup.my Workspace); the old personal-Drive id
     # 1XjChLEO2WBLKemZ_7E9srIFa8fuFM0eN is retired.
@@ -169,7 +170,7 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
 
 # Runtime state keys are NEVER overwritten by seeding, not even with --force.
 RUNTIME_KEYS = frozenset({
-    "post_id_counter", "drive_page_token", "drive_root_marker",
+    "drive_page_token", "drive_root_marker",
     "confirm_first_publish", "text_card_pairing_idx",
 })
 
@@ -180,7 +181,7 @@ RUNTIME_KEYS = frozenset({
 # write prices without any tool writing config) and video_pipeline_proven (superseded by the
 # `proofs` manifest — a per-capability dated proof, not a boolean).
 REMOVED_KEYS = ("image_endpoints", "video_family", "endpoint_prices_cents",
-                "video_pipeline_proven", "render_budget_cents")
+                "video_pipeline_proven", "render_budget_cents", "post_id_counter")
 
 
 # ---------------------------------------------------------------------------------------
@@ -192,7 +193,7 @@ REQUIRED_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
     # keys every service needs to function at all
     "common": (
         "site_base_url", "social_code", "email_code", "timezone",
-        "post_id_prefix", "post_id_counter",
+        "post_id_prefix",
         "drive_root_folder_id", "drive_generated_folder",
         "channel_cadence", "channel_media", "kpi_weights",
         "sg_price_minor", "my_price_minor", "sg_currency", "my_currency",
@@ -319,16 +320,17 @@ def all_config(session: Session) -> dict[str, Any]:
 
 
 def next_post_id(session: Session) -> str:
-    """Monotonic post ids: post_1482, post_1483, … Counter lives in config."""
-    row = session.get(Config, "post_id_counter")
-    if row is None:
-        raise OperatorError("config key 'post_id_counter' missing — run `artec config seed`")
-    n = int(row.value)
-    row.value = n + 1
-    row.updated_at = datetime.now(UTC)
-    session.flush()
+    """Monotonic post ids: post_1482, post_1483, …
+
+    Allocated from the `post_id_seq` SEQUENCE, never from `config` — allocation is state,
+    not policy, and keeping it in config made every injection a config write (§2 breach).
+    """
+    from app.post_ids import allocate_post_id
+
     prefix = get_config(session, "post_id_prefix", "post_")
-    return f"{prefix}{n}"
+    post_id = allocate_post_id(session.connection(), prefix)
+    session.flush()
+    return post_id
 
 
 # ---------------------------------------------------------------------------------------

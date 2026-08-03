@@ -11,7 +11,10 @@ unless marked otherwise.
 ## Create the service
 
 1. Railway → project → New Service → **Deploy from GitHub repo** (this repo).
-2. Settings → Build: **Dockerfile path** = `deploy/hermes-brain/Dockerfile`.
+2. Settings → **Config-as-code → Config File Path** = `railway.hermes-brain.json`.
+   This is MANDATORY: without it Railway applies the root `railway.json`, whose
+   `preDeployCommand: alembic upgrade head` fails on this image (no alembic) — the
+   "Pre deploy command failed" error. The config file also carries the Dockerfile path.
 3. Settings → **Volumes → Add volume**, mount path `/data/hermes`. MANDATORY.
 4. Variables (the agent receives NO payment/Drive/fal/Brevo secret):
    ```

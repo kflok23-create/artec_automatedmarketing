@@ -68,6 +68,23 @@ def test_no_other_timed_execution_in_app(repo_root):
     assert not offenders, f"timed loops outside the scheduler: {offenders}"
 
 
+def test_only_artec_api_runs_the_migration_predeploy(repo_root):
+    # Root railway.json applies repo-wide unless a service's Config File Path overrides it.
+    # The scheduler and brain configs must never inherit the alembic pre-deploy (the brain
+    # image has no alembic — this failed a live deploy).
+    import json as jsonlib
+
+    root = jsonlib.loads((repo_root / "railway.json").read_text(encoding="utf-8"))
+    assert root["deploy"]["preDeployCommand"] == "alembic upgrade head"
+    for fname in ("railway.scheduler.json", "railway.hermes-brain.json"):
+        cfg = jsonlib.loads((repo_root / fname).read_text(encoding="utf-8"))
+        assert "preDeployCommand" not in cfg.get("deploy", {}), f"{fname} must not migrate"
+    sched = jsonlib.loads((repo_root / "railway.scheduler.json").read_text(encoding="utf-8"))
+    assert sched["deploy"]["startCommand"] == "python -m app.scheduler"
+    brain = jsonlib.loads((repo_root / "railway.hermes-brain.json").read_text(encoding="utf-8"))
+    assert brain["build"]["dockerfilePath"] == "deploy/hermes-brain/Dockerfile"
+
+
 # ---- acceptance 21: the publish scheduler never republishes ----------------------------
 
 def test_scheduler_selection_excludes_published_posts(session):

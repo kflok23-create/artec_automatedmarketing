@@ -136,6 +136,25 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
     # --- local tooling -----------------------------------------------------------------
     checks.append(_check("ffmpeg on PATH", lambda: shutil.which("ffmpeg") or (_ for _ in ()).throw(RuntimeError("not found")),
                          "nixpacks.toml installs ffmpeg on Railway; locally: install ffmpeg"))
+    # ffprobe is a SEPARATE binary. The publish pre-flight cannot verify a single video
+    # without it, and "ffmpeg is present" is an inference, not evidence. Packaging class.
+    checks.append(_check("ffprobe on PATH", lambda: shutil.which("ffprobe") or (_ for _ in ()).throw(RuntimeError("not found")),
+                         "the ffmpeg package bundles ffprobe — if ffmpeg is green and this "
+                         "is red, the container has a partial install and video pre-flight "
+                         "cannot run"))
+
+    # v4: advisory locks, sequences and jsonb are Postgres-only. A deployed service on any
+    # other dialect would silently lose those guarantees, so this is RED, never a warning.
+    def _dialect():
+        from app.db import get_engine
+
+        name = get_engine().dialect.name
+        if name != "postgresql":
+            raise RuntimeError(f"connected database is {name}, not postgresql")
+        return "postgresql"
+    checks.append(_check("database is postgres", _dialect,
+                         "advisory locks (job de-duplication), post_id_seq and jsonb all "
+                         "require PostgreSQL — a non-Postgres database silently voids them"))
     fonts = OPERATOR_CONSTANTS["fonts"]
     missing_fonts = sorted(f for f in set(fonts.values()) if not (FONTS_DIR / f).exists())
     found_fonts = sorted(p.name for p in FONTS_DIR.iterdir()) if FONTS_DIR.is_dir() else []

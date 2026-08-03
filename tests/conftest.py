@@ -66,3 +66,68 @@ def repo_root():
     from pathlib import Path
 
     return Path(__file__).resolve().parent.parent
+
+
+# ---------------------------------------------------------------------------------------
+# Real-Postgres substrate. Postgres-only semantics (advisory locks, sequences, jsonb) have
+# NO SQLite equivalent — a SQLite test for them proves nothing, which is the exact
+# tested-one-way/deployed-another class that has already put defects into production.
+# CI sets TEST_DATABASE_URL to the throwaway Postgres it already stands up.
+# ---------------------------------------------------------------------------------------
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+
+
+def _normalize_pg(url: str) -> str:
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+_DISPOSABLE_MARKERS = ("hermes_ci", "test", "scratch", "localhost", "127.0.0.1")
+
+
+def _assert_disposable(url: str) -> None:
+    """This fixture DROPS SCHEMA public CASCADE. Pointing TEST_DATABASE_URL at production
+    would destroy it. Refuse anything that does not look unmistakably disposable — an
+    irreversible action must not be one environment variable away."""
+    lowered = url.lower()
+    if not any(token in lowered for token in _DISPOSABLE_MARKERS):
+        pytest.fail(
+            "TEST_DATABASE_URL does not look like a disposable test database "
+            f"(expected one of {_DISPOSABLE_MARKERS} in the URL). This fixture drops the "
+            "public schema; refusing to run against a database that might be real."
+        )
+    for danger in ("railway.app", "rlwy.net", "amazonaws.com", "supabase"):
+        if danger in lowered:
+            pytest.fail(
+                f"TEST_DATABASE_URL points at a hosted database ({danger}). This fixture "
+                "drops the public schema — never run it against hosted infrastructure."
+            )
+
+
+@pytest.fixture
+def pg_engine():
+    """A real Postgres engine with the full schema. Skips when unavailable rather than
+    silently falling back to SQLite — a skipped test is honest, a fallback is a lie."""
+    if not TEST_DATABASE_URL:
+        pytest.skip("TEST_DATABASE_URL not set — Postgres-only test")
+    _assert_disposable(TEST_DATABASE_URL)
+    eng = create_engine(_normalize_pg(TEST_DATABASE_URL), poolclass=StaticPool)
+    with eng.begin() as conn:
+        conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    Base.metadata.create_all(eng)
+    with eng.begin() as conn:
+        conn.execute(text(V_BRIEF_SQL))
+    yield eng
+    eng.dispose()
+
+
+@pytest.fixture
+def pg_session(pg_engine):
+    with Session(pg_engine, expire_on_commit=False) as s:
+        seed_config(s)
+        s.commit()
+        yield s

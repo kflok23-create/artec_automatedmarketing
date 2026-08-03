@@ -34,8 +34,15 @@ jobs:
         run: |
           ! grep -rInE "(sk-ant-api[0-9A-Za-z_-]{10,}|whsec_[0-9A-Za-z]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----|[0-9]{8,10}:AA[0-9A-Za-z_-]{30,})" \
             --exclude-dir=.git --exclude-dir=.venv --exclude=ci.yml .
-      - name: Unit + acceptance tests
+      - name: Unit + acceptance tests (SQLite substrate)
         run: uv run pytest
+      - name: Postgres-substrate tests (advisory locks, sequences, jsonb)
+        # These have no SQLite equivalent. Running them against the same throwaway Postgres
+        # the migration step uses is what stops a Postgres-only feature from shipping with
+        # only a SQLite test behind it.
+        run: uv run pytest -m pg -v
+        env:
+          TEST_DATABASE_URL: postgresql://hermes:hermes@localhost:5432/hermes_ci
       - name: Wheel packaging check (installed-artifact runtime resources)
         run: |
           uv build --wheel

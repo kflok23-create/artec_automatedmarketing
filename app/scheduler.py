@@ -46,6 +46,29 @@ def select_due_posts(session, slot: str) -> list:
     ).scalars())
 
 
+def sweep_orphaned_slots(session) -> list[dict]:
+    """v4 §7·A7, second guard: RENDERED posts whose slot matches no key of `slot_times`
+    will never be selected by any slot pass — they would sit forever, silently. Both
+    guards exist because write-time validation cannot fix rows written before it existed,
+    or rows orphaned by an operator editing slot_times.
+
+    Returns them for the digest. Reporting, not deleting — the operator decides.
+    """
+    from app.config import get_config
+    from app.models import Post
+
+    slot_times = get_config(session, "slot_times", {}) or {}
+    orphans = session.execute(
+        select(Post).where(Post.status == "RENDERED", Post.external_post_id.is_(None))
+    ).scalars()
+    return [
+        {"post_id": p.post_id, "channel": p.channel, "slot": p.slot,
+         "reason": f"slot {p.slot!r} is not in slot_times {sorted(slot_times)}"}
+        for p in orphans
+        if p.slot not in slot_times
+    ]
+
+
 def run_publish_job(session, slot: str, log=print) -> dict:
     from app.config import get_config
     from app.integrations.brevo_client import Brevo

@@ -18,8 +18,18 @@ deploys, so a partially-built branch cannot strand a post.
 The CI job *Postgres-substrate tests (advisory locks, sequences, jsonb)* is the gate.
 Draft PR: kflok23-create/artec_automatedmarketing#1. A CI job that runs but does not gate
 is a job that will eventually be ignored — **make this a required status check on `main`
-in GitHub branch protection** (repo Settings → Branches → add rule for `main` → require
-status check `test`). That is an operator action; I cannot set branch protection.
+in GitHub branch protection**.
+
+**BLOCKED, and not by me.** `GET /repos/.../branches/main/protection` returns
+**HTTP 403: "Upgrade to GitHub Pro or make this repository public to enable this
+feature."** Branch protection is unavailable on a private repo on the free plan, so the
+second half of the merge condition — "every pg test green AND the CI check required" —
+**cannot currently be satisfied by anyone**. Three ways out, operator's call:
+  1. GitHub Pro on this account (protection becomes available; nothing else changes);
+  2. make the repo public (NO — it carries the marketing plan and infrastructure layout);
+  3. accept a written manual gate: **no merge to `main` without a green CI run on the
+     merging commit, checked by hand.** Weaker, and it should be written down as the
+     deliberate exception it is rather than left as an assumption.
 
 **CI status at `1fa6553`: fully green.**
 - SQLite substrate: **224 passed**, 12 skipped (ffmpeg-dependent locally, present in CI)
@@ -283,3 +293,24 @@ No auto-approve and no expire-to-send exists to be requested. `artec sweep-revie
 §B made `APPROVED_TO_SEND` a RESTING state — a post sits there up to a day — and it
 appeared in NO section of the digest. `assert_complete` failed, which is exactly what it is
 for. Added as `queued` in WENT OUT TODAY: "⏳ approved, goes out at the next <slot> slot".
+
+
+---
+
+## Why 2b-iii did NOT merge
+
+Two conditions were set: every `pg` test executed and green, **and** the CI check required.
+
+  * pg: **11 executed, 11 green** in CI run 30859841222 at `e4909b1`. Satisfied.
+  * required check: **impossible on this plan** — see the 403 above. Not satisfied.
+
+Two deployment preconditions also stand, and merging before they are met would ship a
+system where two paths refuse in production:
+
+| Precondition | Until it is done |
+|---|---|
+| `ARTEC_API_BASE` + `HERMES_API_TOKEN` on artec-brain | `deliver_video` refuses and says so — it never falls back to a URL, so no video review can complete |
+| Verify the hermes-agent transcript store path on a real session | agent-relayed `record_metrics` refuses and names `artec measure` — fails closed, loudly, by design |
+
+Neither is a bug; both are the fail-closed behaviour working. But merging with them open
+means the Monday digest has two dead paths, and that is a worse outcome than waiting.

@@ -285,6 +285,7 @@ def seed_config(
     overwritten: list[str] = []
     removed: list[str] = []
     upgraded: list[str] = []
+    needs_decision: list[str] = []
     for key in REMOVED_KEYS:
         row = session.get(Config, key)
         if row is not None:
@@ -293,19 +294,33 @@ def seed_config(
     for key, value in data.items():
         row = session.get(Config, key)
         if row is None:
-            session.add(Config(key=key, value=value, updated_at=datetime.now(UTC)))
+            session.add(Config(key=key, value=value, updated_at=datetime.now(UTC),
+                               set_by="seed"))
             added.append(key)
             continue
         if row.value == value or key in RUNTIME_KEYS:
             continue
         if row.value in SUPERSEDED_DEFAULTS.get(key, ()):
-            row.value = value
-            row.updated_at = datetime.now(UTC)
-            upgraded.append(key)
-            continue
+            # Only a value this seeder wrote may be corrected. An operator's choice is
+            # never overwritten, and an UNKNOWN provenance is not treated as permission —
+            # it is reported, and the operator decides.
+            if row.set_by == "seed":
+                row.value = value
+                row.updated_at = datetime.now(UTC)
+                upgraded.append(key)
+                continue
+            if row.set_by is None:
+                needs_decision.append(
+                    f"{key}: stored {row.value!r} is a superseded default and the shipped "
+                    f"value is now {value!r}, but this row predates provenance tracking so "
+                    f"it cannot be told from a deliberate choice — take it with "
+                    f"`artec config set {key} {value!r}` or leave it")
+                kept.append(key)
+                continue
         if force or key in forced_keys:
             row.value = value
             row.updated_at = datetime.now(UTC)
+            row.set_by = "operator" if key in forced_keys else "seed"
             overwritten.append(key)
         else:
             kept.append(key)
@@ -317,7 +332,8 @@ def seed_config(
     session.flush()
     return {"added": sorted(added), "kept": sorted(kept),
             "overwritten": sorted(overwritten), "removed": sorted(removed),
-            "upgraded": sorted(upgraded), "prices_seeded": priced}
+            "upgraded": sorted(upgraded), "needs_decision": sorted(needs_decision),
+            "prices_seeded": priced}
 
 
 def get_config(session: Session, key: str, default: Any = _RAISE) -> Any:
@@ -329,13 +345,18 @@ def get_config(session: Session, key: str, default: Any = _RAISE) -> Any:
     return row.value
 
 
-def set_config(session: Session, key: str, value: Any) -> None:
+def set_config(session: Session, key: str, value: Any, set_by: str | None = None) -> None:
+    """`set_by='operator'` marks a deliberate choice, which supersession may never
+    overwrite. Runtime state (cursors, gates, last_doctor) leaves provenance alone."""
     row = session.get(Config, key)
     if row is None:
-        session.add(Config(key=key, value=value, updated_at=datetime.now(UTC)))
+        session.add(Config(key=key, value=value, updated_at=datetime.now(UTC),
+                           set_by=set_by))
     else:
         row.value = value
         row.updated_at = datetime.now(UTC)
+        if set_by:
+            row.set_by = set_by
     session.flush()
 
 

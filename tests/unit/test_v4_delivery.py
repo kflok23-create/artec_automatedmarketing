@@ -10,6 +10,7 @@ prompt is a request and a refusal is a property:
   * nothing is written from a figure the operator has not seen echoed back.
 """
 
+import hashlib
 import importlib.util
 import json
 from datetime import UTC, date, datetime
@@ -107,33 +108,86 @@ def test_read_digest_hands_over_the_presplit_messages(session, tools, engine):
 
 # ---- video is delivered natively, and the receipt is what unlocks the decision -----------
 
+MEDIA_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"the exact bytes publish streams" * 40
+MEDIA_SHA = hashlib.sha256(MEDIA_BYTES).hexdigest()
+MEDIA_API = "https://artec-api.test"
+
+
+@pytest.fixture(autouse=True)
+def media_endpoint(monkeypatch):
+    monkeypatch.setenv("ARTEC_API_BASE", MEDIA_API)
+    monkeypatch.setenv("HERMES_API_TOKEN", "test-token")
+
+
+def _mock_media(body: bytes = MEDIA_BYTES, status: int = 200, sha: str | None = None):
+    return respx.get(url__regex=rf"{MEDIA_API}/commands/media/.*").mock(
+        return_value=httpx.Response(
+            status, content=body if status == 200 else b"media-not-in-drive",
+            headers={"X-Artec-Media-SHA256": sha if sha is not None else MEDIA_SHA,
+                     "X-Artec-Media-Filename": "post_9101.mp4"}))
+
+
 def _pending_video(session, pid="post_9101"):
     session.add(Post(post_id=pid, week_start=TARGET, channel="tiktok", status="RENDERED",
                      slot="evening", caption="Two blocks, four seconds, and the moment it clicks.",
-                     media_drive_file_id="gen_9101.mp4",
-                     video_review={"public_url": "https://v3.fal.media/files/x/gen_9101.mp4"}))
+                     media_drive_file_id="gen_9101.mp4"))
     session.commit()
     return pid
 
 
 @respx.mock
-def test_video_goes_out_as_a_native_telegram_video_never_a_link(session, tools, engine):
+def test_the_video_is_uploaded_as_bytes_never_as_a_url(session, tools, engine):
+    """The operator must watch the artefact that ships. A URL — fal's or Drive's — has
+    Telegram fetching somebody else's copy, which is a filename with extra steps."""
     pid = _pending_video(session)
+    media = _mock_media()
     route = respx.post(url__regex=rf"{API}/bot.*/sendVideo").mock(
         return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 8801}}))
 
     out = call(tools, "deliver_video", engine, post_id=pid)
     assert out["telegram_message_id"] == 8801
+    assert media.called, "the bytes come from the app's media endpoint, i.e. from Drive"
 
-    assert route.called, "sendVideo, not sendMessage — a link is not a viewing"
-    sent = dict(httpx.QueryParams(route.calls.last.request.content.decode()))
-    assert sent["video"].endswith(".mp4")
-    assert "drive.google.com" not in sent["video"]
-    assert sent["supports_streaming"] == "true"
-    assert pid in sent["caption"]
+    request = route.calls.last.request
+    body = request.content
+    assert request.headers["content-type"].startswith("multipart/form-data")
+    assert MEDIA_BYTES in body, "the multipart payload carries the publish bytes themselves"
+    assert b'name="video"; filename=' in body
+    assert b"https://" not in body.split(b'name="video"')[1][:200], "no URL in the video part"
+    assert b'name="supports_streaming"' in body and b"true" in body
+    assert pid.encode() in body
+
+    # byte-identity with what publish would stream, proven rather than assumed
+    assert out["sha256"] == MEDIA_SHA
+    assert out["bytes"] == len(MEDIA_BYTES)
 
     session.expire_all()
     assert session.get(Post, pid).video_review["telegram_message_id"] == 8801
+
+
+@respx.mock
+def test_a_digest_mismatch_refuses_rather_than_showing_an_unidentified_file(
+        session, tools, engine):
+    pid = _pending_video(session, "post_9106")
+    _mock_media(sha="0" * 64)
+    send = respx.post(url__regex=rf"{API}/bot.*/sendVideo").mock(
+        return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 1}}))
+    out = call(tools, "deliver_video", engine, post_id=pid)
+    assert "digest mismatch" in out["error"]
+    assert not send.called
+
+
+@respx.mock
+def test_a_missing_drive_file_parks_and_never_falls_back(session, tools, engine):
+    pid = _pending_video(session, "post_9107")
+    _mock_media(status=404)
+    send = respx.post(url__regex=rf"{API}/bot.*/sendVideo").mock(
+        return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 1}}))
+    out = call(tools, "deliver_video", engine, post_id=pid)
+    assert out["parked"] is True and "not in Drive" in out["error"]
+    assert not send.called, "a silent fallback is the divergence this closes"
+    session.expire_all()
+    assert session.get(Post, pid).status == "PARKED"
 
 
 @respx.mock
@@ -142,6 +196,7 @@ def test_review_video_is_refused_until_the_operator_has_actually_seen_it(session
     message = err(tools, "review_video", engine, post_id=pid, decision="approve")
     assert "deliver_video" in message
 
+    _mock_media()
     respx.post(url__regex=rf"{API}/bot.*/sendVideo").mock(
         return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 8802}}))
     call(tools, "deliver_video", engine, post_id=pid)
@@ -154,6 +209,7 @@ def test_telegram_refusing_the_upload_parks_the_post(session, tools, engine):
     """Telegram's refusal is independent evidence the file is malformed, and more
     trustworthy than our own pre-flight pass — so it parks rather than retries."""
     pid = _pending_video(session, "post_9103")
+    _mock_media()
     respx.post(url__regex=rf"{API}/bot.*/sendVideo").mock(
         return_value=httpx.Response(400, json={"ok": False,
                                                "description": "Bad Request: VIDEO_CONTENT_TYPE_INVALID"}))
@@ -172,6 +228,7 @@ def test_telegram_refusing_the_upload_parks_the_post(session, tools, engine):
 @respx.mock
 def test_a_transient_network_error_does_not_park(session, tools, engine):
     pid = _pending_video(session, "post_9104")
+    _mock_media()
     respx.post(url__regex=rf"{API}/bot.*/sendVideo").mock(side_effect=httpx.ConnectTimeout("x"))
     out = call(tools, "deliver_video", engine, post_id=pid)
     assert out["parked"] is False
@@ -182,6 +239,7 @@ def test_a_transient_network_error_does_not_park(session, tools, engine):
 @respx.mock
 def test_delivery_is_idempotent_within_a_session(session, tools, engine):
     pid = _pending_video(session, "post_9105")
+    _mock_media()
     route = respx.post(url__regex=rf"{API}/bot.*/sendVideo").mock(
         return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 8805}}))
     call(tools, "deliver_video", engine, post_id=pid)
@@ -268,19 +326,21 @@ def test_confirming_writes_exactly_what_was_echoed(session, tools, engine):
     assert row.source == "operator_via_agent"
 
 
-def test_the_hook_polices_an_ordered_line_exactly_like_a_figures_dict(session, tools, engine):
+def test_the_hook_polices_an_ordered_line_exactly_like_a_figures_dict(tools, operator_session):
+    task = operator_session("task_d1", "4200 impressions and 45 saves", "yes")
     verdict = tools.pre_tool_call("record_metrics", args={
         "post_id": "post_9203", "channel": "tiktok", "metric_date": str(TARGET),
-        "figures_line": "4200, , , 45, , 118",
-        "operator_message": "4200 impressions and 45 saves",     # 118 never typed
-    })
+        "figures_line": "4200, , , 45, , 118",                   # 118 never typed
+        "operator_message": "4200 impressions and 45 saves",
+    }, task_id=task)
     assert verdict and verdict["action"] == "block"
     assert "clicks=118" in verdict["message"]
 
 
-def test_the_hook_passes_a_line_the_operator_actually_typed(session, tools, engine):
+def test_the_hook_passes_a_line_the_operator_actually_typed(tools, operator_session):
+    task = operator_session("task_d2", "4200, , , 45, , 118", "yes")
     assert tools.pre_tool_call("record_metrics", args={
         "post_id": "post_9204", "channel": "tiktok", "metric_date": str(TARGET),
         "figures_line": "4200, , , 45, , 118",
         "operator_message": "4200, , , 45, , 118",
-    }) is None
+    }, task_id=task) is None

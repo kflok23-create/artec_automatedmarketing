@@ -319,3 +319,61 @@ unless marked.
     positions and shift every later figure into the wrong column, which is worse than no
     reading at all. The transcription hook polices an ordered line exactly like a figures
     dict.
+
+39. **v4 · the transcription guard was CIRCULAR and is now transcript-backed.** As shipped
+    in 06d3d79 the `pre_tool_call` hook compared the agent's `figures` against the agent's
+    own `operator_message` ARGUMENT — the agent supplied both sides, so the check compared
+    something against itself and reported green. Same shape as the StaticPool advisory-lock
+    test. Demonstrated live: a call carrying figures the operator never sent returned
+    `None` (permitted). The guard now reads hermes-agent's session transcript
+    (`plugins/artec/transcript.py`), which the agent does not author.
+    **The rule, stated because it is no longer "the immediately preceding message":** every
+    digit submitted must appear in SOME message the OPERATOR sent in this session, and
+    `operator_message` must itself be one of those messages. The window widened because the
+    confirm flow makes the last operator turn "yes" — and it widened only across the
+    operator's own turns; assistant turns are never a source.
+    **Fail closed:** the transcript store LAYOUT is not verified against a live
+    hermes-agent (VERIFY.md carries no such fact), so the module discovers it at runtime
+    and returns None when it finds nothing — and None REFUSES, naming `artec measure` as
+    the fallback. An unverifiable transcription is not a verified one.
+
+40. **v4 · `deliver_video` uploads the PUBLISH BYTES multipart; it never sends a URL.**
+    The first build handed Telegram the fal URL, which broke both halves of the design: the
+    operator approved fal's copy while publish streams the Drive copy (§7.9), and Telegram's
+    rejection of a malformed file — the independent validity check the gate rests on — was
+    validating somebody else's bytes. The brain holds no Drive credentials and must not
+    grow any, so it reads them from the app's authenticated `GET /commands/media/{post_id}`,
+    which resolves through `publish_media_path`, the function publish itself calls.
+    Byte-identity is proven by sha256, not assumed. A missing Drive file PARKS; there is no
+    fal fallback, because a silent fallback is precisely the divergence being closed. New
+    env on artec-brain: `ARTEC_API_BASE`, `HERMES_API_TOKEN`.
+
+41. **v4 · `config` rows carry provenance (`set_by`), so supersession cannot overwrite
+    intent.** Without it, `SUPERSEDED_DEFAULTS` could not tell a stored 500 written by an
+    old seed from a stored 500 the operator chose — config-silence inside the mechanism
+    built to prevent it. `set_by` is 'seed' | 'operator' | NULL(unknown). Only 'seed' is
+    corrected. NULL is REPORTED under `needs_decision` with the exact `artec config set`
+    command, never taken silently. Migration 0006.
+
+42. **v4 · §B — the two skip rules are evaluated as rules, not as ordering.**
+    `skip_reason(session, post)` is pure and runs for every post on every publish pass:
+    email never publishes unless APPROVED_TO_SEND **and** `email_review.decision ==
+    'approve'`; video never publishes unless APPROVED_TO_SEND **and** a delivery
+    `telegram_message_id` exists **and** the decision is approve. Status alone is not the
+    gate — a status is reachable by routes the review never took; a receipt is not.
+    APPROVED_TO_SEND enters `select_due_posts` and nowhere earlier, so an approval at 21:15
+    waits for the next occurrence of its slot.
+
+43. **v4 · §5.3 pre-flight is wired into publish and is BLOCKING.** First point at which A
+    is load-bearing. It runs before the upload, parks with a wishlist entry on failure, and
+    resolves ffprobe via `shutil.which` in-process. Consequence accepted: `FakeDrive` now
+    returns realistic media (1080×1080 noise, and the artefact actually uploaded where one
+    exists) because pre-flight measures CONTENT — a 64×64 flat swatch would have let the
+    fixture decide the test.
+
+44. **v4 · the pg marker was over-applied and the counts double-counted two tests.**
+    `pytestmark = pytest.mark.pg` marked the whole file, including `lock_key` (pure hashing)
+    and the test that asserts NotPostgres on SQLite — neither needs a database, so the
+    SQLite job ran them too and "13 pg + 273 SQLite" counted them twice. The marker is now
+    per-test: **329 total = 318 non-pg + 11 pg**, and every pg test genuinely requires
+    Postgres.

@@ -68,6 +68,25 @@ def repo_root():
     return Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture
+def operator_session(tmp_path, monkeypatch):
+    """A hermes-agent session transcript the agent did not author. The transcription guard
+    reads THIS, not the operator_message argument the agent passes in — a check the agent
+    supplies both sides of proves nothing."""
+    import json as json_lib
+
+    monkeypatch.setenv("ARTEC_TRANSCRIPT_DIR", str(tmp_path))
+
+    def _write(task_id: str, *operator_turns: str, assistant: tuple = ()) -> str:
+        rows = [{"role": "user", "content": t} for t in operator_turns]
+        rows += [{"role": "assistant", "content": t} for t in assistant]
+        (tmp_path / f"{task_id}.jsonl").write_text(
+            "\n".join(json_lib.dumps(r) for r in rows), encoding="utf-8")
+        return task_id
+
+    return _write
+
+
 # ---------------------------------------------------------------------------------------
 # Real-Postgres substrate. Postgres-only semantics (advisory locks, sequences, jsonb) have
 # NO SQLite equivalent — a SQLite test for them proves nothing, which is the exact

@@ -109,6 +109,58 @@ def digest_prepare_cmd(body: CommandRequest):
         return {"payload": payload, "text": render_digest_text(payload)}
 
 
+@router.get("/media/{post_id}")
+def media_cmd(post_id: str):
+    """THE bytes publish() will stream, served to the one caller that must show the
+    operator the real artefact: `deliver_video` on the brain.
+
+    The brain has no Drive credentials and must not grow any, so it reads through here —
+    and because both sides call `publish_media_path`, "the operator approved one file and a
+    different one went live" is not expressible. The sha256 is returned so the caller can
+    prove byte-identity rather than assume it. A missing Drive file is a 404, never a
+    fal-URL fallback: a silent fallback is exactly the divergence this closes.
+    """
+    import hashlib
+
+    from fastapi import Response
+
+    from app.db import get_session_factory
+    from app.integrations.drive_client import DriveClient
+    from app.models import Post
+    from app.stages.publish import MediaNotInDrive, publish_media_path
+
+    session = get_session_factory()()
+    try:
+        post = session.get(Post, post_id)
+        if post is None:
+            raise HTTPException(status_code=404, detail=f"no such post: {post_id}")
+        try:
+            local = publish_media_path(session, DriveClient(get_settings()), post)
+        except MediaNotInDrive as e:
+            raise HTTPException(status_code=404, detail=f"media-not-in-drive: {e}") from None
+        with open(local, "rb") as fh:
+            data = fh.read()
+    finally:
+        session.close()
+    kind = "video/mp4" if local.endswith(".mp4") else "image/jpeg"
+    return Response(
+        content=data, media_type=kind,
+        headers={"X-Artec-Media-SHA256": hashlib.sha256(data).hexdigest(),
+                 "X-Artec-Media-Filename": f"{post_id}{local[local.rfind('.'):]}"},
+    )
+
+
+@router.post("/sweep-reviews")
+def sweep_reviews_cmd():
+    """v4 §E — park every review nobody answered inside its window. No auto-approve and no
+    expire-to-send exists to be requested."""
+    from app.scheduler import sweep_expired_reviews
+
+    with record_run("sweep reviews", {}) as (session, rec):
+        expired = sweep_expired_reviews(session, log=rec.log)
+        return {"expired": expired, "count": len(expired)}
+
+
 @router.post("/plan-diff")
 def plan_diff_cmd(body: CommandRequest):
     """Shadow-mode artefact: bespoke vs agent plans with per-field agreement and learning

@@ -91,44 +91,12 @@ def _published(session, pid="post_6001", channel="tiktok"):
     return pid
 
 
-def test_hook_rejects_a_digit_absent_from_the_operator_message(session, tools, engine):
-    _published(session)
-    verdict = tools.pre_tool_call("record_metrics", args={
-        "post_id": "post_6001", "channel": "tiktok", "metric_date": str(WEEK),
-        "figures": {"impressions": 4200, "clicks": 118},
-        "operator_message": "tiktok got 4200 impressions yesterday",
-    })
-    assert verdict and verdict["action"] == "block"
-    assert "clicks=118" in verdict["message"]
-
-
-def test_hook_accepts_digits_present_in_the_message(session, tools, engine):
-    verdict = tools.pre_tool_call("record_metrics", args={
-        "post_id": "post_6001", "channel": "tiktok", "metric_date": str(WEEK),
-        "figures": {"impressions": 4200, "clicks": 118},
-        "operator_message": "4200 impressions, 118 clicks",
-    })
-    assert verdict is None
-
-
-def test_hook_tolerates_thousands_separators(session, tools, engine):
-    verdict = tools.pre_tool_call("record_metrics", args={
-        "post_id": "post_6001", "channel": "tiktok", "metric_date": str(WEEK),
-        "figures": {"impressions": 4200},
-        "operator_message": "we got 4,200 impressions",
-    })
-    assert verdict is None
-
-
-def test_hook_refuses_arithmetic_and_says_why(session, tools, engine):
-    # acceptance 24 — "sum those two" produces a number the operator never typed.
-    verdict = tools.pre_tool_call("record_metrics", args={
-        "post_id": "post_6001", "channel": "tiktok", "metric_date": str(WEEK),
-        "figures": {"impressions": 700},          # 300 + 400, computed by the agent
-        "operator_message": "add up 300 from monday and 400 from tuesday",
-    })
-    assert verdict and verdict["action"] == "block"
-    assert "do not compute" in verdict["message"].lower()
+# The four hook cases that lived here (digit absent, digits present, thousands separators,
+# agent arithmetic) tested the guard against the `operator_message` the AGENT passed in —
+# the agent supplied both sides, so they proved nothing about origination. They are
+# superseded verbatim, against a real session transcript, by
+# tests/unit/test_v4_transcription_guard.py. Removed rather than duplicated: a suite that
+# counts the same case twice reports coverage it does not have.
 
 
 def test_hook_requires_the_operator_message(session, tools, engine):

@@ -34,3 +34,11 @@ requires_env:
   - name: DATABASE_URL
     description: "Railway Postgres (reference variable); the only credential this plugin touches"
     secret: true
+  - name: ARTEC_API_BASE
+    description: "https base of the artec api service - deliver_video reads the publish bytes from
+      GET /commands/media/{post_id} so the operator watches the exact file that ships. The brain
+      holds no Drive credentials by design."
+    secret: false
+  - name: HERMES_API_TOKEN
+    description: "bearer token for that endpoint (same value the artec api service validates)"
+    secret: true

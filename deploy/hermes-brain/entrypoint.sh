@@ -73,6 +73,16 @@ ANTHROPIC_KEY_CLEAN=$(printf '%s' "$ANTHROPIC_API_KEY" | tr -d '[:space:]')
 TELEGRAM_TOKEN_CLEAN=$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '[:space:]')
 hermes config set TELEGRAM_BOT_TOKEN "$TELEGRAM_TOKEN_CLEAN"
 hermes config set ANTHROPIC_API_KEY "$ANTHROPIC_KEY_CLEAN"
+# deliver_video reads the PUBLISH BYTES from the artec api (the brain holds no Drive
+# credentials by design). Absent → deliver_video reports it and refuses; it never falls back
+# to a remote URL, because that is how the operator ends up approving a different file.
+if [ -n "${ARTEC_API_BASE:-}" ] && [ -n "${HERMES_API_TOKEN:-}" ]; then
+    hermes config set ARTEC_API_BASE "$(printf '%s' "$ARTEC_API_BASE" | tr -d '[:space:]')"
+    hermes config set HERMES_API_TOKEN "$(printf '%s' "$HERMES_API_TOKEN" | tr -d '[:space:]')"
+    echo "media endpoint configured for deliver_video"
+else
+    echo "WARN: ARTEC_API_BASE / HERMES_API_TOKEN not set — deliver_video will refuse and say so"
+fi
 [ -f "$ENVFILE" ] || fail "profile .env missing at $ENVFILE after config set"
 grep -q "ANTHROPIC_API_KEY=." "$ENVFILE" || fail "ANTHROPIC_API_KEY absent from $ENVFILE — the agent cannot call Claude"
 grep -q "TELEGRAM_BOT_TOKEN=." "$ENVFILE" || fail "TELEGRAM_BOT_TOKEN absent from $ENVFILE — the gateway cannot connect"

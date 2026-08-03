@@ -10,13 +10,19 @@ Delivering a video natively AND recording the delivery receipt cannot both live 
 read-only tool, so the operator elected the fifteenth tool — `deliver_video` — rather than
 weakening read_digest. That is the cleaner shape: read stays read, delivery is explicit.
 
-Video delivery design: the brain has no Google Drive client and Telegram cannot fetch a
-Drive share link (they are HTML viewer pages, not media). Job 11 therefore publishes a
-temporary public URL for each pending video into the digest payload — the same
-fal-storage pattern already used in production for Brevo hero images — and `deliver_video`
-hands that URL to Telegram `sendVideo`. No new dependency in the brain image, no Drive
-credentials needed here, and the delivery receipt (`message_id`) is what `review_video`
-refuses to proceed without.
+Video delivery design (CORRECTED): `deliver_video` uploads THE PUBLISH BYTES multipart.
+
+The first build handed Telegram the fal URL. That defeated both halves of the design: the
+operator approved fal's copy while publish streams the Drive copy (§7.9 stores every render
+in `_generated/{week}/{post_id}.{ext}`, and §4 makes the fal URL a fallback only), and
+Telegram's rejection of a malformed file — the independent validity check the whole gate
+rests on — was validating somebody else's bytes.
+
+The brain has no Drive credentials and must not grow any, so it reads the bytes from the
+app's authenticated `GET /commands/media/{post_id}`, which resolves them through
+`publish_media_path` — the same function publish calls. Byte-identity is proven by sha256,
+not assumed. A missing Drive file PARKS; there is no fal fallback, because a silent
+fallback is precisely the divergence being closed.
 """
 
 from __future__ import annotations
@@ -121,13 +127,65 @@ def _read_digest_impl(digest_date: str | None = None, now: datetime | None = Non
 # video review — deliver, then decide. Never the reverse.
 # ---------------------------------------------------------------------------------------
 
+class MediaUnavailable(RuntimeError):
+    """The publish bytes could not be fetched. Distinguishes 'the file is not in Drive'
+    (park) from 'the API is unreachable' (retry)."""
+
+    def __init__(self, message: str, park: bool):
+        super().__init__(message)
+        self.park = park
+
+
+def _publish_bytes(post_id: str) -> tuple[bytes, str, str]:
+    """THE bytes publish() will stream, read through the app's authenticated media
+    endpoint — which resolves them with `publish_media_path`, the same function publish
+    uses. Returns (data, filename, sha256).
+
+    The brain holds no Drive credentials and must not grow any; this is the whole reason
+    the endpoint exists. There is NO fal-URL fallback: handing Telegram a remote URL makes
+    Telegram validate fal's copy of the file, which says nothing about the bytes that reach
+    Upload-Post, and lets the operator approve one artefact while another goes live.
+    """
+    import hashlib
+
+    base = (os.environ.get("ARTEC_API_BASE") or "").rstrip("/")
+    token = os.environ.get("HERMES_API_TOKEN", "")
+    if not base or not token:
+        raise MediaUnavailable(
+            "ARTEC_API_BASE / HERMES_API_TOKEN are not set on this service — the video "
+            "cannot be read from Drive, and a fal URL is not an acceptable substitute",
+            park=False)
+    try:
+        resp = httpx.get(f"{base}/commands/media/{post_id}",
+                         headers={"Authorization": f"Bearer {token}"}, timeout=120)
+    except Exception as e:
+        raise MediaUnavailable(f"media fetch failed: {type(e).__name__}: {e}",
+                               park=False) from None
+    if resp.status_code == 404:
+        raise MediaUnavailable(
+            f"the rendered file is not in Drive _generated/ ({resp.text[:200]})", park=True)
+    if resp.status_code >= 400:
+        raise MediaUnavailable(f"media endpoint returned HTTP {resp.status_code}", park=False)
+    data = resp.content
+    claimed = resp.headers.get("X-Artec-Media-SHA256", "")
+    actual = hashlib.sha256(data).hexdigest()
+    if claimed and claimed != actual:
+        raise MediaUnavailable(
+            f"media digest mismatch: endpoint said {claimed[:12]}…, bytes hash "
+            f"{actual[:12]}… — refusing to show the operator a file we cannot identify",
+            park=False)
+    return data, resp.headers.get("X-Artec-Media-Filename", f"{post_id}.mp4"), actual
+
+
 def _deliver_video_impl(post_id: str, engine=None) -> dict:
-    """Send the rendered video into the chat as a NATIVE Telegram video message and record
-    the delivery message_id. `review_video` refuses without that receipt, so nobody can
-    approve a video they were never shown.
+    """Send the rendered video into the chat as a NATIVE Telegram video message — the
+    ACTUAL BYTES, uploaded multipart — and record the delivery message_id. `review_video`
+    refuses without that receipt, so nobody can approve a video they were never shown.
 
     Telegram refusing the upload PARKs the post — that refusal is independent evidence the
-    file is malformed and is more trustworthy than our own ffprobe pass.
+    file is malformed and is more trustworthy than our own ffprobe pass. That evidence is
+    only worth having because the bytes are ours: a URL would have Telegram validating
+    somebody else's copy.
     """
     eng = _get_engine(engine)
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -143,21 +201,35 @@ def _deliver_video_impl(post_id: str, engine=None) -> dict:
         if row is None:
             return {"post_id": post_id, "error": "not found"}
         status, caption, slot, channel, review = row
-        review = json.loads(review) if isinstance(review, str) else (review or {})
+        # SQLite round-trips a NULL json column as the string "null", which json.loads turns
+        # back into None — so the `or {}` must apply AFTER parsing, not instead of it.
+        review = (json.loads(review) if isinstance(review, str) else review) or {}
         if review.get("telegram_message_id"):
             return {"post_id": post_id, "already_delivered": True,
                     "telegram_message_id": review["telegram_message_id"]}
-        public_url = review.get("public_url")
-        if not public_url:
-            return {"post_id": post_id,
-                    "error": "no public_url on the post — job 11 prepares it for pending videos"}
+
+    now = datetime.now(UTC)
+    try:
+        data, filename, digest = _publish_bytes(post_id)
+    except MediaUnavailable as e:
+        if not e.park:
+            return {"post_id": post_id, "error": str(e), "parked": False}
+        with eng.begin() as conn:
+            review.update({"decision": None, "reason": str(e), "parked_at": now.isoformat()})
+            conn.execute(_jtext(
+                "UPDATE posts SET status = 'PARKED', park_reason = :r, video_review = :v "
+                "WHERE post_id = :p", "v"),
+                {"r": str(e)[:500], "v": review, "p": post_id})
+        return {"post_id": post_id, "parked": True, "error": str(e)}
 
     cap = f"{post_id} · {channel} · slot {slot}\n{(caption or '')[:900]}"
     try:
         resp = httpx.post(
             f"https://api.telegram.org/bot{token}/sendVideo",
-            data={"chat_id": chat_id, "video": public_url, "caption": cap,
-                  "supports_streaming": True},
+            # httpx requires the form fields as a DICT alongside files=; a list of tuples
+            # mis-encodes (the Upload-Post multipart bug, in production, once).
+            data={"chat_id": chat_id, "caption": cap, "supports_streaming": "true"},
+            files={"video": (filename, data, "video/mp4")},
             timeout=180,
         )
         body = resp.json()
@@ -165,7 +237,6 @@ def _deliver_video_impl(post_id: str, engine=None) -> dict:
         return {"post_id": post_id, "error": f"telegram send failed: {type(e).__name__}: {e}",
                 "parked": False}
 
-    now = datetime.now(UTC)
     if not body.get("ok"):
         # Telegram rejected the media itself → park. Independent evidence of a bad file.
         reason = f"telegram refused the video: {body.get('description', 'unknown')}"
@@ -187,7 +258,7 @@ def _deliver_video_impl(post_id: str, engine=None) -> dict:
         conn.execute(_jtext("UPDATE posts SET video_review = :v WHERE post_id = :p", "v"),
                      {"v": review, "p": post_id})
     return {"post_id": post_id, "telegram_message_id": message_id,
-            "expires_in_days": expiry_days}
+            "expires_in_days": expiry_days, "sha256": digest, "bytes": len(data)}
 
 
 def _review_video_impl(post_id: str, decision: str, reason: str | None = None,
@@ -209,7 +280,9 @@ def _review_video_impl(post_id: str, decision: str, reason: str | None = None,
         if row is None:
             return {"post_id": post_id, "error": "not found"}
         status, review = row
-        review = json.loads(review) if isinstance(review, str) else (review or {})
+        # SQLite round-trips a NULL json column as the string "null", which json.loads turns
+        # back into None — so the `or {}` must apply AFTER parsing, not instead of it.
+        review = (json.loads(review) if isinstance(review, str) else review) or {}
         if not review.get("telegram_message_id"):
             # Hard refusal, not an informational result: this is the guard that makes
             # "nobody approves a video they were never shown" true. It must reach the agent
@@ -268,7 +341,9 @@ def _review_email_impl(post_id: str, decision: str, edits: dict | None = None,
         status, channel, caption, review = row
         if channel != "email":
             return {"post_id": post_id, "error": f"not an email post (channel={channel})"}
-        review = json.loads(review) if isinstance(review, str) else (review or {})
+        # SQLite round-trips a NULL json column as the string "null", which json.loads turns
+        # back into None — so the `or {}` must apply AFTER parsing, not instead of it.
+        review = (json.loads(review) if isinstance(review, str) else review) or {}
         if review.get("decision") and decision != "test_only":
             return {"post_id": post_id, "already": review["decision"]}
 

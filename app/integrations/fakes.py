@@ -10,14 +10,26 @@ import tempfile
 from typing import Any
 
 
-def _write_scratch_media(suffix: str) -> str:
-    """A real, openable media file: tiny PNG/JPEG via Pillow; placeholder bytes for video."""
+def _write_scratch_media(suffix: str, size: tuple[int, int] = (1080, 1080)) -> str:
+    """A real, openable media file.
+
+    Sized and textured like a real render rather than like a token: publish pre-flight now
+    measures CONTENT (byte floor, decode, aspect), and a 64x64 flat swatch would fail it —
+    which would mean the fixture, not the artefact, decided the test. Same lesson as the
+    video bitrate floor: fixtures for anything measuring content must be realistic.
+    """
     fd, path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     if suffix in (".png", ".jpg", ".jpeg"):
+        import random
+
         from PIL import Image
 
-        Image.new("RGB", (64, 64), "#0168B7").save(path)
+        image = Image.new("RGB", size)
+        rng = random.Random(7)                      # deterministic, but not compressible
+        image.putdata([(rng.randrange(256), rng.randrange(256), rng.randrange(256))
+                       for _ in range(size[0] * size[1])])
+        image.save(path)
     else:
         with open(path, "wb") as fh:
             fh.write(b"\x00\x00\x00\x18ftypmp42fakebytes")
@@ -124,14 +136,27 @@ class FakeDrive:
     def __init__(self):
         self.uploaded: list[tuple[str, str, str]] = []  # (local, week, filename)
         self._counter = 0
+        self._by_id: dict[str, str] = {}
 
     def download(self, file_id: str, suffix: str = "") -> str:
+        """Returns the bytes that were uploaded under this id where we have them — so a
+        render → publish path reads back the artefact it actually produced, at the aspect
+        that render chose, instead of a stand-in that pre-flight would judge instead."""
+        known = self._by_id.get(file_id)
+        if known and os.path.exists(known):
+            fd, path = tempfile.mkstemp(suffix=suffix or os.path.splitext(known)[1])
+            os.close(fd)
+            with open(known, "rb") as src, open(path, "wb") as dst:
+                dst.write(src.read())
+            return path
         return _write_scratch_media(suffix or ".png")
 
     def upload_generated(self, local_path: str, week_start: str, filename: str) -> str:
         self._counter += 1
         self.uploaded.append((local_path, week_start, filename))
-        return f"gen_{self._counter}"
+        file_id = f"gen_{self._counter}"
+        self._by_id[file_id] = local_path
+        return file_id
 
     def probe_write(self) -> bool:
         return True

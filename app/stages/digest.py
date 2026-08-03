@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.config import all_config, get_config, net_cm_minor
 from app.models import AgentRun, Digest, Metric, Order, Post, Run
+from app.stages.publish import carries_video
 from app.toolbox.pricing import micros_to_cents, price_table, stale_prices
 
 MEASURE_FIELDS = ("impressions", "completion_rate", "watch_time_s", "saves", "shares",
@@ -128,11 +129,13 @@ def _needs_you(session: Session, brevo, target: date, cfg: dict) -> dict:
                 "tracked_url": post.tracked_url,
                 "days_to_expiry": _days_left(post.email_review, email_expiry),
             })
-        elif (post.media_drive_file_id or "").endswith(".mp4") or review.get("public_url"):
+        elif carries_video(session, post):
             videos.append({
                 "post_id": post.post_id, "channel": post.channel, "slot": post.slot,
                 "caption": post.caption,
-                "public_url": review.get("public_url"),
+                # No public URL: deliver_video uploads the Drive bytes multipart, so there
+                # is nothing for job 11 to publish and nothing that can diverge.
+                "media_drive_file_id": post.media_drive_file_id,
                 "delivered": bool(review.get("telegram_message_id")),
                 "days_to_expiry": _days_left(review, video_expiry),
             })
@@ -188,6 +191,22 @@ def _went_out_today(session: Session, target: date) -> list[dict]:
             out.append({"post_id": post.post_id, "channel": post.channel, "slot": post.slot,
                         "permalink": post.external_post_id, "tracked_url": post.tracked_url})
     return out
+
+
+def _queued(session: Session) -> list[dict]:
+    """APPROVED_TO_SEND posts waiting for the next occurrence of their slot.
+
+    Added when §B made APPROVED_TO_SEND a RESTING state: an approved post sits here for up
+    to a day, and until this existed it appeared in no section of the digest at all. The
+    completeness assertion caught it — which is the whole reason that assertion exists.
+    """
+    return [
+        {"post_id": p.post_id, "channel": p.channel, "slot": p.slot,
+         "approved_at": ((p.email_review or p.video_review or {}).get("reviewed_at"))}
+        for p in session.execute(
+            select(Post).where(Post.status == "APPROVED_TO_SEND")
+            .where(Post.external_post_id.is_(None)).order_by(Post.post_id)).scalars()
+    ]
 
 
 def _asset_drop(session: Session) -> list[dict]:
@@ -353,6 +372,7 @@ def build_payload(session: Session, brevo=None, target: date | None = None) -> d
         "prepared_at": datetime.now(UTC).isoformat(),
         "needs_you": needs,
         "went_out_today": _went_out_today(session, target),
+        "queued": _queued(session),
         "asset_drop": _asset_drop(session),
         "numbers": _numbers(session, target, cfg),
         "spend_health": _spend_and_health(session, brevo, cfg,
@@ -396,6 +416,18 @@ def prepare_digest(session: Session, brevo=None, target: date | None = None,
                     "that appears nowhere is invisible to the operator permanently",
         }
         log(f"digest: COMPLETENESS WARNING — {len(missing)} post(s) unrepresented: {missing}")
+
+    # An email's review clock starts when the operator is SHOWN it, not when it rendered:
+    # expiry must measure the time they had to answer. Video's clock starts at delivery,
+    # stamped by deliver_video.
+    now = datetime.now(UTC).isoformat()
+    for entry in payload["needs_you"]["email_review"]:
+        post = session.get(Post, entry["post_id"])
+        review = dict(post.email_review or {})
+        if not review.get("presented_at"):
+            review["presented_at"] = now
+            post.email_review = review
+            session.flush()
 
     # The transport split is computed here, in tested code, and carried on the payload.
     # `read_digest` hands the brain these messages to send verbatim, in order — so the
@@ -465,6 +497,9 @@ def render_digest_text(payload: dict) -> str:
         lines.append("nothing published today")
     for w in p["went_out_today"]:
         lines.append(f"✅ {w['post_id']} · {w['channel']} · {w['slot']} · {w['permalink']}")
+    for q in p.get("queued", []):
+        lines.append(f"⏳ {q['post_id']} · {q['channel']} — approved, goes out at the next "
+                     f"{q['slot']} slot")
 
     lines += ["", "━━ 3 · TONIGHT'S ASSET DROP ━━"]
     if not p["asset_drop"]:

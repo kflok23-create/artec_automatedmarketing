@@ -193,6 +193,10 @@ class Config(Base):
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[dict | list | str | int | bool | None] = mapped_column(JSONVariant)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 'seed' = came from OPERATOR_CONSTANTS · 'operator' = chosen deliberately ·
+    # NULL = unknown (predates the column). Supersession may correct a 'seed' value and
+    # must never touch the other two. See DECISIONS.md #35.
+    set_by: Mapped[str | None] = mapped_column(Text)
 
 
 class EndpointPrice(Base):

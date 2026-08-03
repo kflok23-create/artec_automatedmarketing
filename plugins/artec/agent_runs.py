@@ -85,6 +85,38 @@ def record_tool_call(run_id: int | None, tool: str, engine=None) -> None:
         print(f"agent_runs: could not record tool call {tool}: {type(e).__name__}: {e}")
 
 
+def record_tool_call_for_session(session_id: str | None, tool: str, engine=None) -> None:
+    """Append a tool call to the run for THIS agent session, opening one if the job did not
+    start through `start_run` (an operator-initiated conversation has no cron wrapper).
+
+    Wired from the pre_tool_call hook, which is the only place that sees every tool call
+    and the session it belongs to. Best-effort and logged — observability must never be
+    able to take down the job it observes — but a silent failure here reads as "no tool
+    calls" rather than "no data", so it is logged rather than swallowed.
+    """
+    if not session_id:
+        return
+    try:
+        eng = _eng(engine)
+        with eng.begin() as conn:
+            row = conn.execute(text(
+                "SELECT id FROM agent_runs WHERE session_id = :s "
+                "ORDER BY id DESC LIMIT 1"), {"s": str(session_id)}).first()
+            if row is None:
+                opened = conn.execute(
+                    _json_stmt("INSERT INTO agent_runs (job, session_id, started_at, status, "
+                               "tools_called) VALUES (:j, :s, :t, 'running', :tc) "
+                               "RETURNING id", "tc"),
+                    {"j": "telegram-session", "s": str(session_id),
+                     "t": datetime.now(UTC), "tc": []}).first()
+                run_id = int(opened[0]) if opened else None
+            else:
+                run_id = int(row[0])
+        record_tool_call(run_id, tool, engine=eng)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"agent_runs: could not record tool call {tool!r}: {type(e).__name__}: {e}")
+
+
 def finish_run(run_id: int | None, status: str = "ok", tokens: int | None = None,
                cost_cents: int | None = None, engine=None) -> None:
     if run_id is None:

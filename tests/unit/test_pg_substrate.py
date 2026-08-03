@@ -20,13 +20,19 @@ from app.locks import NotPostgres, job_lock, lock_key, try_acquire
 from app.models import AgentRun, Digest, Metric, Post
 from app.post_ids import allocate_post_id, ensure_allocator, next_post_number
 
-pytestmark = pytest.mark.pg
+# File-level marker DELIBERATELY NOT USED. Two tests here need no database at all
+# (`lock_key` is pure hashing; the NotPostgres test asserts SQLite behaviour on purpose),
+# and marking them `pg` made the counts lie: the SQLite job ran them too, so "13 pg tests"
+# and "273 SQLite tests" double-counted two. Eleven tests genuinely require Postgres and
+# carry the marker individually; the two that do not are plain tests.
+PG = pytest.mark.pg
 
 WEEK = date(2026, 8, 24)
 
 
 # ---- H · advisory locks: two REAL connections, not a simulation --------------------------
 
+@PG
 def test_second_replica_no_ops_while_the_first_holds_the_job(pg_engine):
     job = "daily-publish-by-slot"
     with pg_engine.connect() as replica_a, pg_engine.connect() as replica_b:
@@ -41,6 +47,7 @@ def test_second_replica_no_ops_while_the_first_holds_the_job(pg_engine):
         assert try_acquire(replica_b, job) is False    # second must no-op, not double-fire
 
 
+@PG
 def test_lock_is_released_when_the_holder_disconnects(pg_engine):
     job = "daily-measure-0630"
     conn_a = pg_engine.connect()
@@ -51,6 +58,7 @@ def test_lock_is_released_when_the_holder_disconnects(pg_engine):
         assert try_acquire(conn_b, job) is True
 
 
+@PG
 def test_job_lock_context_manager_releases(pg_engine):
     job = "weekly-report-snapshot"
     with pg_engine.connect() as conn:
@@ -60,6 +68,7 @@ def test_job_lock_context_manager_releases(pg_engine):
             assert try_acquire(other, job) is True     # released on exit
 
 
+@PG
 def test_distinct_jobs_do_not_block_each_other(pg_engine):
     with pg_engine.connect() as a, pg_engine.connect() as b:
         assert try_acquire(a, "job-one") is True
@@ -80,6 +89,7 @@ def test_advisory_lock_refuses_on_non_postgres(engine):
 
 # ---- §0 · the post_id SEQUENCE — the production allocator, finally executed ---------------
 
+@PG
 def test_sequence_allocates_monotonically_on_postgres(pg_engine):
     with pg_engine.begin() as conn:
         ensure_allocator(conn)
@@ -88,6 +98,7 @@ def test_sequence_allocates_monotonically_on_postgres(pg_engine):
     assert second == first + 1
 
 
+@PG
 def test_sequence_never_reissues_an_id_already_in_use(pg_engine):
     with Session(pg_engine, expire_on_commit=False) as s:
         s.add(Post(post_id="post_9500", week_start=WEEK, channel="instagram",
@@ -99,6 +110,7 @@ def test_sequence_never_reissues_an_id_already_in_use(pg_engine):
         assert next_post_number(conn) > 9500
 
 
+@PG
 def test_nextval_survives_a_rolled_back_transaction(pg_engine):
     """The reason production uses a SEQUENCE rather than a counter row: nextval is
     non-transactional, so a rollback cannot hand the same id out twice."""
@@ -113,6 +125,7 @@ def test_nextval_survives_a_rolled_back_transaction(pg_engine):
         assert next_post_number(conn2) > taken   # the rolled-back id is NOT reused
 
 
+@PG
 def test_concurrent_allocation_never_collides(pg_engine):
     with pg_engine.begin() as conn:
         ensure_allocator(conn)
@@ -130,6 +143,7 @@ def test_concurrent_allocation_never_collides(pg_engine):
 
 # ---- C · jsonb round-trips as structure, not text ----------------------------------------
 
+@PG
 def test_digest_payload_round_trips_as_jsonb(pg_engine):
     payload = {"needs_you": [{"kind": "video_review", "post_id": "post_1"}],
                "numbers": {"revenue": {"SGD": 2}, "engagement": {"impressions": 10}}}
@@ -150,6 +164,7 @@ def test_digest_payload_round_trips_as_jsonb(pg_engine):
 
 # ---- G · agent_runs under concurrent writers ----------------------------------------------
 
+@PG
 def test_agent_runs_accepts_concurrent_inserts_from_two_writers(pg_engine):
     from plugins.artec import agent_runs as ar
 
@@ -172,6 +187,7 @@ def test_agent_runs_accepts_concurrent_inserts_from_two_writers(pg_engine):
 
 # ---- metrics NULL-vs-zero under a real upsert ---------------------------------------------
 
+@PG
 def test_omitted_metric_stays_null_on_postgres(pg_engine):
     with Session(pg_engine, expire_on_commit=False) as s:
         s.add(Post(post_id="post_9600", week_start=WEEK, channel="tiktok",

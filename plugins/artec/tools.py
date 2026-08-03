@@ -410,10 +410,30 @@ def _load_v4():
         return mod
 
 
+def _load_plain(module_name: str):
+    """Same dual-context load as tools_v4, for modules with no relative imports."""
+    try:
+        from importlib import import_module
+
+        return import_module(f".{module_name}", package=__package__ or "artec")
+    except (ImportError, TypeError, KeyError):
+        import importlib.util
+        import pathlib
+
+        path = pathlib.Path(__file__).resolve().parent / f"{module_name}.py"
+        spec = importlib.util.spec_from_file_location(f"artec_plugin_{module_name}", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+
 _v4 = _load_v4()
+_transcript = _load_plain("transcript")
+_agent_runs = _load_plain("agent_runs")
 HANDLERS_V4 = _v4.HANDLERS_V4
 transcription_violations = _v4.transcription_violations
 figures_from_args = _v4.figures_from_args
+operator_turns = _transcript.operator_turns
 HANDLERS.update(HANDLERS_V4)
 
 # Built-in tool names blocked by the pre_tool_call hook — defense in depth on top of
@@ -423,29 +443,78 @@ BLOCKED_TOOL_PREFIXES = ("terminal", "shell", "exec", "write_file", "patch",
                          "code_execution", "run_python")
 
 
+def _normalise(text: str) -> str:
+    return " ".join(str(text).split()).strip().lower()
+
+
+def _is_a_real_operator_turn(claimed: str, turns: list[str]) -> bool:
+    """The claimed verbatim message must BE something the operator actually sent — either
+    the whole turn, or contained verbatim within one. This is the clause that closes
+    fabrication: an invented utterance appears in no turn."""
+    needle = _normalise(claimed)
+    return any(needle == _normalise(t) or needle in _normalise(t) for t in turns)
+
+
+def _check_transcription(payload: dict, task_id: str | None) -> dict | None:
+    """v4 Amendment 1 — the agent is a transcriber, never an author.
+
+    THE RULE, stated explicitly because it is no longer "the immediately preceding
+    message": every digit run submitted must appear in SOME message the OPERATOR sent in
+    this session, and the `operator_message` passed as the audit trail must itself be one
+    of those messages. The window widened deliberately — the confirm flow means the turn
+    immediately before the write is "yes", which contains no digits — and it widened only
+    across the OPERATOR's own turns. The agent's turns are not a source.
+
+    The transcript is read from hermes-agent's session store, which the agent does not
+    author. If it cannot be read, this REFUSES: an unverifiable transcription is not a
+    verified one, and the fallback (`artec measure`) is named in the refusal.
+    """
+    message = str(payload.get("operator_message") or "")
+    if not message.strip():
+        return {"action": "block",
+                "message": "record_metrics requires operator_message — the operator's "
+                           "verbatim text is the audit trail and the source of every digit"}
+
+    turns = operator_turns(task_id)
+    if turns is None:
+        return {"action": "block",
+                "message": ("refused: the operator's messages for this session cannot be "
+                            "read, so a figure cannot be traced to a turn they actually "
+                            "typed — and a check the agent supplies both sides of proves "
+                            "nothing. Ask the operator to enter these figures with "
+                            "`artec measure` or POST /commands/measure instead.")}
+    if not _is_a_real_operator_turn(message, turns):
+        return {"action": "block",
+                "message": ("refused: operator_message is not a message the operator sent "
+                            "in this session. Pass their reply through verbatim; do not "
+                            "compose, paraphrase, or reconstruct it.")}
+
+    # An ordered line ('4200, , , 45, , 118') is policed exactly like an explicit figures
+    # dict — the compact reply form must not be a way around the rule.
+    bad = transcription_violations(figures_from_args(payload), "\n".join(turns))
+    if bad:
+        return {"action": "block",
+                "message": ("refused: these figures contain digits the operator never sent "
+                            f"in this session — {', '.join(bad)}. Ask them for the number; "
+                            "do not compute, estimate, or infer it.")}
+    return None
+
+
 def pre_tool_call(tool_name: str, args: dict | None = None, task_id: str | None = None,
                   **kwargs) -> dict | None:
-    """Hook: enforce metric TRANSCRIPTION, then block the file-write/shell families.
-    The fifteen artec tools otherwise pass through."""
+    """Hook: meter the call, enforce metric TRANSCRIPTION, then block the file-write/shell
+    families. The fifteen artec tools otherwise pass through."""
+    # §15.18 — a row per brain job AND per tool call. This hook is the only place that sees
+    # every tool call together with the session it belongs to, so it is where the meter
+    # goes; a conversation the operator starts has no cron wrapper to have opened a run.
+    if tool_name in HANDLERS:
+        _agent_runs.record_tool_call_for_session(task_id, tool_name,
+                                                 engine=kwargs.get("engine"))
     # v4 §4 — the agent is a transcriber, never an originator. Every digit it submits must
     # appear in the operator's verbatim message. It may not compute, estimate, infer,
     # round, or carry a figure forward.
     if tool_name == "record_metrics":
-        payload = args or {}
-        message = str(payload.get("operator_message") or "")
-        if not message.strip():
-            return {"action": "block",
-                    "message": "record_metrics requires operator_message — the operator's "
-                               "verbatim text is the audit trail and the source of every digit"}
-        # An ordered line ('4200, , , 45, , 118') is policed exactly like an explicit
-        # figures dict — the compact reply form must not be a way around the rule.
-        bad = transcription_violations(figures_from_args(payload), message)
-        if bad:
-            return {"action": "block",
-                    "message": ("refused: these figures contain digits absent from the "
-                                f"operator's message — {', '.join(bad)}. Ask the operator "
-                                "for the number; do not compute, estimate, or infer it.")}
-        return None
+        return _check_transcription(args or {}, task_id)
 
     if tool_name in HANDLERS:
         return None

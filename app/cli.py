@@ -84,6 +84,8 @@ def config_seed(
         if result["kept"]:
             rec.log("kept operator values (differ from shipped defaults, NOT overwritten): "
                     + ", ".join(result["kept"]) + "  — use --force to reset them")
+        for line in result.get("needs_decision", []):
+            rec.log("NEEDS YOUR DECISION: " + line)
         if result.get("upgraded"):
             rec.log("upgraded superseded defaults (stored value was the old shipped default, "
                     "so nobody had chosen it): " + ", ".join(result["upgraded"]))
@@ -102,7 +104,7 @@ def config_set(key: str, value: str):
     except json_lib.JSONDecodeError:
         parsed = value
     with record_run("config set", {"key": key}) as (session, rec):
-        set_config(session, key, parsed)
+        set_config(session, key, parsed, set_by="operator")
         rec.log(f"config set: {key}")
 
 
@@ -339,6 +341,18 @@ def digest_prepare(
                                  log=rec.log)
         if show:
             typer.echo("\n" + render_digest_text(payload))
+
+
+@cli.command("sweep-reviews")
+def sweep_reviews():
+    """v4 §E: park every email/video review nobody answered inside its window. There is no
+    auto-approve and no expire-to-send — stale email is worse than no email."""
+    _boot()
+    from app.scheduler import sweep_expired_reviews
+
+    with record_run("sweep reviews", {}) as (session, rec):
+        expired = sweep_expired_reviews(session, log=rec.log)
+        rec.log(f"sweep: {len(expired)} review(s) expired and PARKED")
 
 
 @cli.command("audit-memory")

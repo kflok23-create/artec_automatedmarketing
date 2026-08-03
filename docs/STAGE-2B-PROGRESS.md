@@ -10,7 +10,7 @@ deploys, so a partially-built branch cannot strand a post.
 | **2b-ii(a)** | §0 CI gate · §0.1 bitrate floor · D2 investigation | **complete** |
 | **2b-ii(b)** | **C — digest preparation + the two dry-run digests** | **complete** |
 | **2b-ii(c)** | **D — digest delivery (job 12 body) + five polish items from reading the dry run** | **complete** |
-| 2b-iii | B · E · I — skip rules, review gates end to end, remaining tests, then merge | not started |
+| **2b-iii** | **B · E · I + two corrections (circular guard, deliver_video bytes)** | **complete — merge gate is CI** |
 
 ## MERGE RULE — binding
 
@@ -38,9 +38,11 @@ the repo. For 2b-ii that means: `app/models.py` (Digest), `app/scheduler.py`,
 - `digests(digest_date UNIQUE, payload jsonb, delivered_at)` already exists (migration 0003).
 - `read_digest` already exists and marks `delivered_at` on first read. It is READ ONLY of
   post content; `deliver_video` is the fifteenth tool and owns video delivery + receipt.
-- The digest payload must carry a **public URL** for each pending video (job 11 uploads to
-  fal storage — the pattern already used for Brevo hero images) because Telegram cannot
-  fetch a Drive link and the brain has no Drive client.
+- ~~The digest payload must carry a public URL for each pending video.~~ **WITHDRAWN in
+  2b-iii.** A URL — fal's or Drive's — means the operator approves one artefact while
+  publish streams another, and it makes Telegram's rejection a check on somebody else's
+  bytes. `deliver_video` now uploads the publish bytes multipart, read from the app's
+  authenticated `GET /commands/media/{post_id}`. See DECISIONS.md #40.
 - `sweep_orphaned_slots(session)` in `app/scheduler.py` returns orphan-slot posts for the
   digest. Wire it into the payload.
 - `agent_runs.week_to_date_spend_cents()` is the meter for SPEND & HEALTH.
@@ -105,9 +107,22 @@ other dialect rather than pretending to lock.**
 | SQLite | 224 | 224 | **passing** |
 | Postgres (`-m pg`) | 13 | **13** | **passing — all executed in CI** |
 
-**After 2b-ii (local, `uv run pytest -m "not pg"`): 272 SQLite tests passing** — 224 at
-`1fa6553` → 239 after C → 272 after D and the polish items. The 13 pg tests are untouched
-by this pass and re-run in CI on every push.
+### Counts reconciled (they did not add up before — 273 + 13 = 286, reported as 285)
+
+`pytestmark = pytest.mark.pg` marked the WHOLE substrate file, including two tests that
+need no database: `test_lock_keys_are_stable_and_distinct` (pure hashing) and
+`test_advisory_lock_refuses_on_non_postgres` (which asserts SQLite behaviour on purpose).
+The SQLite job therefore ran them too, and they were counted on both sides. The marker is
+now per-test.
+
+| Substrate | Tests | Executed | Result |
+|---|---|---|---|
+| non-pg | **318** | 318 | passing |
+| pg (real Postgres required) | **11** | 11 in CI | passing |
+| **total** | **329** | | no test counted twice |
+
+`pytest` with no database: 318 passed, 11 skipped. `pytest -m pg` with Postgres: 11
+selected, 11 executed.
 
 ### What CI caught that local testing could not
 
@@ -205,9 +220,7 @@ restore-target resolution, and the production `DATABASE_URL` rejected under any 
 
 ## Not built (do not assume any of this exists)
 
-B (skip rules) · E (review gates end to end — the *tools* exist from 2a and the live Brevo
-count now does too, but the expiry sweep does not) · I (remaining tests) · everything in
-Stage 2c (spend cap, HTTPS mirrors, pg_dump/restore-check, price
+Everything in Stage 2c (spend cap, HTTPS mirrors, pg_dump/restore-check, price
 reconciliation, `artec prove`, cron registration, DECISIONS/RUNBOOK consolidation).
 
 **Nothing is registered with cron.** Every job body is a plain function invocable by CLI and
@@ -234,3 +247,39 @@ HTTPS. All twelve register in one pass in 2c, verified by listing, `+08:00` asse
 Nothing on this branch is deployed, by design. If it *were* merged today it would still be
 safe — A, F, G, H are additive and no publish path calls the pre-flight yet (B wires it in,
 in 2b-iii). The dangerous half (skip rules) deliberately lands **last**.
+
+
+---
+
+## Built in 2b-iii — B · E · I, and two corrections
+
+### The transcription guard was circular (DECISIONS #39)
+The hook compared the agent's `figures` against the agent's own `operator_message`
+argument. Demonstrated live against `06d3d79`: a call carrying figures the operator never
+sent returned `None` — permitted. It now reads hermes-agent's session transcript, which the
+agent does not author, and **fails closed** when no transcript can be read.
+
+**Operator item:** the transcript store layout is discovered at runtime and is NOT verified
+against a live hermes-agent. Until it is, agent-relayed metrics will refuse and name
+`artec measure` as the fallback. Verify with a real session after deploy:
+`ls $HERMES_HOME/sessions` on artec-brain, then one `record_metrics` through the digest.
+
+### `deliver_video` was showing the wrong file (DECISIONS #40)
+Fixed to multipart bytes with a sha256 match against what publish streams.
+**Operator item:** set `ARTEC_API_BASE` and `HERMES_API_TOKEN` on artec-brain, or
+`deliver_video` refuses and says so — it never falls back to a URL.
+
+### B · the two skip rules — `app/stages/publish.py`
+`skip_reason()` is pure and evaluated for every post on every pass. Pre-flight is wired in,
+blocking, before the upload. `APPROVED_TO_SEND` enters `select_due_posts` and nowhere
+earlier, so an approval waits for the next occurrence of its slot.
+
+### E · the gates end to end — `sweep_expired_reviews`
+Both surfaces, 3-day windows measured from presentation/delivery, PARK with the reason.
+No auto-approve and no expire-to-send exists to be requested. `artec sweep-reviews` and
+`POST /commands/sweep-reviews`; registered with no cron.
+
+### A finding the completeness assertion caught
+§B made `APPROVED_TO_SEND` a RESTING state — a post sits there up to a day — and it
+appeared in NO section of the digest. `assert_complete` failed, which is exactly what it is
+for. Added as `queued` in WENT OUT TODAY: "⏳ approved, goes out at the next <slot> slot".

@@ -16,7 +16,7 @@ Run as its own Railway service: `python -m app.scheduler`.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -32,14 +32,21 @@ JOBS = (
 
 
 def select_due_posts(session, slot: str) -> list:
-    """RENDERED posts for this slot that have NEVER been published. The external_post_id
-    filter is the never-republish guard at the selection layer (publish() enforces it
-    again — belt and braces; v3 acceptance 21)."""
+    """RENDERED or APPROVED_TO_SEND posts for this slot that have NEVER been published.
+
+    APPROVED_TO_SEND is included HERE and nowhere earlier: an approval at 21:15 does not
+    send at 21:15, it waits for the next occurrence of the post's plan-assigned slot.
+    Send time stays a learned lever, and 21:15 is a poor one.
+
+    The external_post_id filter is the never-republish guard at the selection layer
+    (publish() enforces it again — belt and braces; v3 acceptance 21).
+    """
     from app.models import Post
+    from app.stages.publish import PUBLISHABLE_STATUSES
 
     return list(session.execute(
         select(Post)
-        .where(Post.status == "RENDERED")
+        .where(Post.status.in_(PUBLISHABLE_STATUSES))
         .where(Post.slot == slot)
         .where(Post.external_post_id.is_(None))
         .order_by(Post.post_id)
@@ -67,6 +74,58 @@ def sweep_orphaned_slots(session) -> list[dict]:
         for p in orphans
         if p.slot not in slot_times
     ]
+
+
+def sweep_expired_reviews(session, now: datetime | None = None, log=print) -> list[dict]:
+    """v4 §E — a review that is never answered PARKS. There is no auto-approve and no
+    expire-to-send under any framing: not "the operator was slow", not "the copy is
+    unchanged from last week", not "pre-flight already passed". Stale email is worse than
+    no email, and an unwatched video is an unwatched video however long it has waited.
+
+    The window is per-surface config (`email_review_expiry_days` / `video_review_expiry_days`)
+    and is measured from delivery/presentation, not from render.
+    """
+    from app.config import get_config
+    from app.models import Post
+
+    now = now or datetime.now(UTC)
+    windows = {"email": int(get_config(session, "email_review_expiry_days", 3)),
+               "video": int(get_config(session, "video_review_expiry_days", 3))}
+    expired = []
+    for post in session.execute(
+        select(Post).where(Post.status.in_(("RENDERED", "APPROVED_TO_SEND")))
+        .order_by(Post.post_id)
+    ).scalars():
+        from app.stages.publish import carries_video
+
+        surface = "email" if post.channel == "email" else (
+            "video" if carries_video(session, post) else None)
+        if surface is None:
+            continue
+        review = (post.email_review if surface == "email" else post.video_review) or {}
+        if review.get("decision"):
+            continue                       # answered — expiry does not apply
+        started = review.get("delivered_at") or review.get("presented_at")
+        if not started:
+            continue                       # never presented → nothing has expired yet
+        started_at = datetime.fromisoformat(str(started))
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        age_days = (now - started_at).days
+        if age_days < windows[surface]:
+            continue
+        post.status = "PARKED"
+        post.park_reason = (f"{surface} review expired after {age_days}d without a decision "
+                            "— parked, never sent")[:500]
+        review["expired_at"] = now.isoformat()
+        if surface == "email":
+            post.email_review = dict(review)
+        else:
+            post.video_review = dict(review)
+        session.flush()
+        expired.append({"post_id": post.post_id, "surface": surface, "age_days": age_days})
+        log(f"{post.post_id}: {surface} review expired after {age_days}d — PARKED")
+    return expired
 
 
 def run_publish_job(session, slot: str, log=print) -> dict:

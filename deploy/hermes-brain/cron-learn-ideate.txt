@@ -1,0 +1,7 @@
+Weekly LEARN then IDEATE for artec.my. Use ONLY your registered artec tools.
+1. read_brief() — the lanes are separate; never combine a revenue figure with an engagement figure.
+2. read_learnings for last Monday — SQL already scored the levers; your job is interpreting WHY they moved, not recomputing them.
+3. read_asset_inventory() and read_parked_posts() — plan only what the bank can service; wishlist-blocked ideas stay parked.
+4. Scout current TikTok and Instagram trends for parents of 4-10 year olds using the web tools.
+5. write_plan for this Monday, sized exactly by the channel cadence shown in the brief. Fields per post: channel, angle, hook, cta_type, cta_placement, keywords, slot.
+Record durable creative hypotheses in your playbook memory — patterns and taste, never metrics, amounts, percentages or dated counts.

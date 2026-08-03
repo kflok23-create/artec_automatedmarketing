@@ -161,14 +161,45 @@ unless marked.
       arithmetic; Python does pixels.
 
 23. **v3 — the agent seam is a capability boundary, not a policy.** hermes-agent (pinned
-    `v2026.7.30`, never `main`, never `hermes update` on a schedule) gets exactly six
-    tools in `plugins/artec_hermes.py`: four reads, `write_plan`, `record_gate_decision`.
-    No tool writes orders/events/metrics/config; no SQL tool; file-write and shell are
-    disabled in the profile. A simulated attempt to write an order fails with "no such
-    tool" — the capability does not exist to be permitted. The plugin is self-contained
-    (sqlalchemy textual SQL only) so the brain image never imports the artec codebase.
-    The bespoke CLI was renamed `artec` because hermes-agent's own CLI collides on
-    `doctor` and `update`.
+    `v2026.7.30` = release 0.19.1 of 2026-07-30; never `main`, never `hermes update` on a
+    schedule) gets exactly six tools: four reads, `write_plan`, `record_gate_decision`.
+    No tool writes orders/events/metrics/config; no SQL tool. A simulated attempt to
+    write an order fails with "no such tool" — the capability does not exist to be
+    permitted. The plugin is self-contained (sqlalchemy textual SQL only) so the brain
+    image never imports the artec codebase. The bespoke CLI was renamed `artec` because
+    hermes-agent's own CLI collides on `doctor` and `update`.
+
+    **Corrected after review against the docs
+    (https://hermes-agent.nousresearch.com/docs/developer-guide/plugins,
+    …/docs/reference/cli-commands, …/docs/user-guide/configuration,
+    …/docs/reference/toolsets-reference, …/docs/user-guide/features/cron) — the original
+    brief's plugin instructions were wrong and the first implementation shipped
+    undiscoverable:**
+    - A loose `.py` in the plugins dir is NOT a plugin and fails silently. The real
+      contract: a `plugins/artec/` package with `plugin.yaml` + `__init__.py` exposing
+      `register(ctx)`, tools registered via `ctx.register_tool(name, toolset, schema,
+      handler)`; max one level of directory nesting.
+    - Handlers are `(args: dict, **kwargs) -> str` returning a JSON STRING always —
+      success and error — and never raising (exceptions break the tool loop). All six
+      wrap in an `{"ok": …}` envelope; contract-tested with garbage inputs.
+    - Plugins are OPT-IN: `hermes plugins enable artec` is in the entrypoint and the
+      boot hard-fails unless `HERMES_PLUGINS_DEBUG=1 hermes plugins list` shows artec.
+    - The gateway foreground command is `hermes gateway run`, not `hermes gateway`.
+    - Cron jobs are NOT config.yaml entries: registered via `hermes cron create`
+      (storage `$HERMES_HOME/cron/jobs.json`), idempotently guarded in the entrypoint.
+    - Telegram credentials go to the profile `.env` via `hermes config set`, not
+      config.yaml.
+    - There is no scriptable `hermes tools disable`: shell/file-write are disabled via
+      the documented `agent.disabled_toolsets: [terminal, code_execution, file]`
+      (toolset names verified) PLUS a `pre_tool_call` hook in the plugin that blocks the
+      same families — defense in depth we control.
+    - Extras verified in pyproject.toml at the pinned tag: `messaging`, `cron`, `mcp`
+      all exist; `anthropic` added for the native transport (also a real extra).
+    - `security.redact_secrets` / `privacy.redact_pii` / `hermes profile create <name>`:
+      verified verbatim.
+    - Still on trust (labelled in deploy/hermes-brain/README.md, verify on first boot):
+      Telegram allowed-chat configuration; `hermes cron create` timezone semantics
+      (container TZ pinned to Asia/Singapore as a belt).
 
 24. **v3 — the four scheduled jobs are the entire lift of the no-scheduler rule.** SUN
     07:00 agent LEARN→IDEATE and SUN 09:00 agent gate (hermes-agent cron, Asia/Singapore);

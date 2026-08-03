@@ -44,10 +44,15 @@ def test_volume_check_yellow_when_unset():
 
 def test_exactly_four_scheduled_jobs(repo_root):
     assert len(JOBS) == 2, "artec-scheduler owns exactly two jobs (publish, measure)"
+    # hermes-agent cron jobs are registered by the entrypoint via `hermes cron create`
+    # (jobs live in $HERMES_HOME/cron/jobs.json, not config.yaml — per the CLI docs).
+    entrypoint = (repo_root / "deploy" / "hermes-brain" / "entrypoint.sh").read_text(encoding="utf-8")
+    cron_creates = re.findall(r"hermes cron create\s+\"([^\"]+)\"", entrypoint)
+    assert len(cron_creates) == 2, "hermes-agent owns exactly two cron jobs"
+    assert set(cron_creates) == {"0 7 * * SUN", "0 9 * * SUN"}
     config = (repo_root / "deploy" / "hermes-brain" / "config.yaml").read_text(encoding="utf-8")
-    cron_schedules = re.findall(r'schedule:\s*"[^"]+"', config)
-    assert len(cron_schedules) == 2, "hermes-agent owns exactly two cron jobs (Sun 07:00, Sun 09:00)"
-    assert len(JOBS) + len(cron_schedules) == 4
+    assert "cron:" not in config, "cron jobs are CLI-registered, never declared in config.yaml"
+    assert len(JOBS) + len(cron_creates) == 4
 
 
 def test_no_other_timed_execution_in_app(repo_root):

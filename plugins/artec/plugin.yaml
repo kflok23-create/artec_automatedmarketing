@@ -1,0 +1,25 @@
+# hermes-agent plugin manifest — layout and fields per
+# https://hermes-agent.nousresearch.com/docs/developer-guide/plugins
+# Deployed to $HERMES_HOME/plugins/artec/ (flat layout, within the one-level nesting max).
+# Discovery requires this file AND __init__.py with register(ctx); enablement is opt-in:
+#   hermes plugins enable artec
+name: artec
+version: 0.2.0
+description: >
+  The artec marketing seam - six tools and nothing more. Four reads (brief, learnings,
+  asset inventory, parked posts) and two narrow writes (write_plan, record_gate_decision).
+  No tool touches orders, events, metrics or config: the capability boundary is the
+  security model.
+provides_tools:
+  - read_brief
+  - read_learnings
+  - read_asset_inventory
+  - read_parked_posts
+  - write_plan
+  - record_gate_decision
+provides_hooks:
+  - pre_tool_call
+requires_env:
+  - name: DATABASE_URL
+    description: "Railway Postgres (reference variable); the only credential this plugin touches"
+    secret: true

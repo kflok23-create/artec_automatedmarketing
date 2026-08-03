@@ -1,65 +1,51 @@
-# hermes-agent profile 'artec' — the Sunday brain. Field names follow the hermes-agent
-# docs at the pinned tag (v2026.7.30); verify key spellings against `hermes doctor` on
-# first boot and adjust HERE, never in code.
+# hermes-agent profile 'artec' — VERIFIED KEYS ONLY.
+# Every block cites the doc it was verified against; nothing here is invented.
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
 
-provider: anthropic            # native transport; reuses ANTHROPIC_API_KEY from env
-model: ${ANTHROPIC_MODEL}
+# Provider/model — verified: /docs/user-guide/configuration (Provider & Model Selection)
+model:
+  provider: anthropic
+  default: anthropic/claude-opus-5
 
+# Redaction — verified verbatim: /docs/user-guide/configuration (Security & Privacy)
 security:
   redact_secrets: true
 privacy:
   redact_pii: true
 
-# The agent receives NO Stripe, Billplz, Brevo, Drive or fal credential — only
-# DATABASE_URL (for the six plugin tools), ANTHROPIC_API_KEY, and its own Telegram token.
-tools:
-  file_write: disabled         # guardrail: no file-write for this profile
-  shell: disabled              # guardrail: no shell for this profile
-  browser: enabled             # trend scouting only, before ideation
-
-gateway:
-  telegram:                    # the ONLY adapter — no other messaging platform
-    enabled: true
-    bot_token: ${TELEGRAM_BOT_TOKEN}
-    allowed_chat_ids: ["${TELEGRAM_CHAT_ID}"]
-
+# Plugin enablement — verified: /docs/user-guide/configuration (Plugins Enablement).
+# Belt AND braces: the entrypoint also runs `hermes plugins enable artec` (plugins are
+# opt-in and will not load without enablement).
 plugins:
-  directory: ${HERMES_HOME}/plugins
+  entries:
+    - name: "artec"
+      enabled: true
 
-# Exactly four learning features and no others:
-learning:
-  playbook_memory: true        # 1 — hypotheses and patterns ONLY; numbers live in Postgres
-  gate_taste: true             # 2 — learns from weekly approve/edit/reject deltas
-  skill_creation: true         # 3 — autonomous skills; `hermes curator` monthly
-  trend_scouting: true         # 4 — browser tool, before ideation
+# Per-profile tool disable — verified: /docs/user-guide/configuration
+# (agent.disabled_toolsets) + toolset names from /docs/reference/toolsets-reference:
+#   terminal        = shell command execution
+#   code_execution  = programmatic tool calls via Python
+#   file            = read/write/patch/search files
+# The plugin's pre_tool_call hook blocks the same names as defense in depth.
+agent:
+  disabled_toolsets:
+    - terminal
+    - code_execution
+    - file
 
-# THE TWO AGENT CRON JOBS (2 of the 4 total; artec-scheduler owns the other 2).
-cron:
-  timezone: Asia/Singapore
-  jobs:
-    - name: learn-ideate
-      schedule: "0 7 * * SUN"
-      prompt: |
-        Weekly LEARN → IDEATE for artec.my. Use ONLY your registered artec tools.
-        1. read_brief() — the lanes are separate; never combine a revenue figure with an
-           engagement figure.
-        2. read_learnings(week_start=<last Monday>) — SQL already scored the levers; your
-           job is interpreting WHY they moved, not recomputing them.
-        3. read_asset_inventory() and read_parked_posts() — plan only what the bank can
-           service; wishlist-blocked ideas stay parked.
-        4. Scout current TikTok/IG trends for parents of 4-10 year olds (browser).
-        5. write_plan(week_start=<this Monday>, posts=[...]) sized exactly by the
-           channel cadence from the brief. Fields per post: channel, angle, hook,
-           cta_type, cta_placement, keywords, slot.
-        Record durable creative hypotheses in your playbook — patterns and taste, never
-        metrics, amounts or percentages.
-    - name: weekly-gate
-      schedule: "0 9 * * SUN"
-      prompt: |
-        WEEKLY GATE over this Telegram chat. Present each DRAFT post for review one by
-        one: hook, angle, cta, slot. The operator replies approve / edit <fields> /
-        reject / inject <idea>. Record every decision with
-        record_gate_decision(post_id, action, edits). Rejected means REJECTED — never
-        draft a replacement; fewer posts this week is the correct outcome. On the first
-        Sunday of the month, also read_parked_posts() and walk the wishlist review in the
-        same session. Note edit deltas in your taste memory as patterns, never numbers.
+# Telegram-facing toolsets — key verified (/docs/user-guide/configuration,
+# platform_toolsets); the exact value set below is our choice: the six artec tools plus
+# web for trend scouting and memory/skills for the four learning behaviours.
+platform_toolsets:
+  telegram:
+    - artec
+    - web
+    - memory
+    - skills
+
+# NOT in this file, by documented design:
+# - TELEGRAM_BOT_TOKEN / credentials → profile .env via `hermes config set` (entrypoint)
+# - cron jobs → `hermes cron create` (entrypoint registers the two Sunday jobs;
+#   storage is $HERMES_HOME/cron/jobs.json — never patched directly)
+# - allowed-chat whitelist → configure per /docs/user-guide/messaging/telegram on first
+#   boot (NOT VERIFIED in this build; the docs page exists but was not fetched)

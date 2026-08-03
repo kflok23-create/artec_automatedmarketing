@@ -22,6 +22,12 @@ artec render --all-approved         # Python-first; USD 1.00 cap; over-cap → P
 Cutover, when the diffs earn it: `artec config set plan_source '"agent"'`.
 Rollback, any time, no redeploy:   `artec config set plan_source '"bespoke"'`.
 
+hermes-brain deploy sequence (automated by its entrypoint, listed here because each step
+is mandatory): profile create/use → install plugin package → `hermes config set
+TELEGRAM_BOT_TOKEN` → **`hermes plugins enable artec`** (plugins are opt-in — without
+this the six tools silently never load) → `HERMES_PLUGINS_DEBUG=1 hermes plugins list`
+(hard-fails the boot if artec is missing) → `hermes cron create` ×2 → `hermes gateway run`.
+
 ## Monthly first-Sunday session
 
 ```bash

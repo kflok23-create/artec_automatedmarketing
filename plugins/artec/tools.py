@@ -1,26 +1,18 @@
-"""artec ↔ hermes-agent seam — SIX tools, nothing more.
+"""The six tool handlers — documented contract per
+https://hermes-agent.nousresearch.com/docs/developer-guide/plugins:
 
-Deployed to $HERMES_HOME/plugins/ on hermes-brain; hermes-agent loads plugin files from
-that directory and registers their tools without forking. Self-contained on purpose: it
-imports only sqlalchemy (textual SQL), never the artec app package, so the brain image
-stays independent of the bespoke codebase.
+    def handler(args: dict, **kwargs) -> str
 
-THE CAPABILITY BOUNDARY IS THE SECURITY MODEL. There is no tool that writes orders,
-events, metrics or config; no raw SQL tool; no generic query tool. "The model never edits
-money rows" is enforced by the absence of a capability, not by an instruction the model is
-asked to honour. Every tool call logs to `runs` with its arguments.
+A JSON STRING is returned ALWAYS — success and error — and handlers never raise
+(exceptions break the agent's tool loop). Every handler wraps its implementation in the
+same envelope: {"ok": true, "data": ...} or {"ok": false, "error": ...}.
 
-Tools:
-  read_brief()                        v_brief text + REVENUE / ENGAGEMENT as SEPARATE
-                                      blocks, never a blended figure. READ ONLY.
-  read_learnings(week_start)          deterministic lever scores + verdicts. READ ONLY.
-  read_asset_inventory()              per-subject/medium counts + unused. READ ONLY.
-  read_parked_posts()                 PARKED posts + wishlists. READ ONLY.
-  write_plan(week_start, posts)       DRAFT rows (agent mode) / plans_shadow (shadow mode);
-                                      idempotent on (week_start, channel, slot).
-  record_gate_decision(post_id, action, edits)  approve | edit | reject | inject;
-                                      idempotent on post_id. Rejected → REJECTED, and no
-                                      replacement is ever generated.
+Self-contained on purpose: sqlalchemy textual SQL only, never the artec app package.
+There is no handler that writes orders, events, metrics or config — the capability
+boundary is the security model. Every call logs to `runs` with its arguments.
+
+Tests inject an engine via kwargs (the **kwargs channel the contract mandates for
+forward compatibility); in production the engine comes from DATABASE_URL.
 """
 
 from __future__ import annotations
@@ -85,11 +77,11 @@ def _config(conn, key: str, default: Any = None) -> Any:
     return value
 
 
-# -- READ ONLY ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------
+# implementations — may raise; the handler wrappers below convert everything to JSON
+# ---------------------------------------------------------------------------------------
 
-def read_brief(engine: Engine | None = None) -> str:
-    """The v_brief view (≤40 rows) plus REVENUE and ENGAGEMENT as separate blocks.
-    The lane rule survives into the text: no blended figure exists to quote."""
+def _read_brief_impl(engine: Engine | None = None) -> str:
     eng = _get_engine(engine)
     with eng.begin() as conn:
         _log_run(conn, "read_brief", {})
@@ -126,7 +118,7 @@ def read_brief(engine: Engine | None = None) -> str:
     return "\n".join(lines)
 
 
-def read_learnings(week_start: str, engine: Engine | None = None) -> list[dict]:
+def _read_learnings_impl(week_start: str, engine: Engine | None = None) -> list[dict]:
     eng = _get_engine(engine)
     with eng.begin() as conn:
         _log_run(conn, "read_learnings", {"week_start": week_start})
@@ -138,7 +130,7 @@ def read_learnings(week_start: str, engine: Engine | None = None) -> list[dict]:
              "sample_size": r[4], "verdict": r[5]} for r in rows]
 
 
-def read_asset_inventory(engine: Engine | None = None) -> list[dict]:
+def _read_asset_inventory_impl(engine: Engine | None = None) -> list[dict]:
     eng = _get_engine(engine)
     with eng.begin() as conn:
         _log_run(conn, "read_asset_inventory", {})
@@ -150,7 +142,7 @@ def read_asset_inventory(engine: Engine | None = None) -> list[dict]:
     return [{"subject": r[0], "medium": r[1], "count": r[2], "unused": r[3]} for r in rows]
 
 
-def read_parked_posts(engine: Engine | None = None) -> list[dict]:
+def _read_parked_posts_impl(engine: Engine | None = None) -> list[dict]:
     eng = _get_engine(engine)
     with eng.begin() as conn:
         _log_run(conn, "read_parked_posts", {})
@@ -169,14 +161,7 @@ def read_parked_posts(engine: Engine | None = None) -> list[dict]:
     return out
 
 
-# -- NARROW WRITES -----------------------------------------------------------------------
-
-def write_plan(week_start: str, posts: list[dict], engine: Engine | None = None) -> dict:
-    """Insert the 7-day plan. Routing by config.plan_source:
-      shadow  → plans_shadow with source='agent' (nothing the agent produces goes live)
-      agent   → DRAFT rows in posts (plan_source='agent'), mirrored to plans_shadow
-      bespoke → DISABLED: writes nothing (full rollback is one config row)
-    Idempotent on (week_start, channel, slot)."""
+def _write_plan_impl(week_start: str, posts: list[dict], engine: Engine | None = None) -> dict:
     eng = _get_engine(engine)
     week = date.fromisoformat(str(week_start))
     created_posts: list[str] = []
@@ -246,10 +231,8 @@ def write_plan(week_start: str, posts: list[dict], engine: Engine | None = None)
     return {"plan_source": plan_source, "post_ids": created_posts, "shadow_rows": shadow_rows}
 
 
-def record_gate_decision(post_id: str, action: str, edits: dict | None = None,
-                         engine: Engine | None = None) -> dict:
-    """approve | edit | reject | inject. Idempotent on post_id. The edit DELTAS are stored
-    in gate_action — the deltas are what train taste. Rejected slots are never refilled."""
+def _record_gate_decision_impl(post_id: str, action: str, edits: dict | None = None,
+                               engine: Engine | None = None) -> dict:
     if action not in ("approve", "edit", "reject", "inject"):
         raise ValueError(f"unknown gate action {action!r}")
     eng = _get_engine(engine)
@@ -268,10 +251,7 @@ def record_gate_decision(post_id: str, action: str, edits: dict | None = None,
 
         gate_payload = {"action": action, "edits": edits or {},
                         "at": datetime.now(UTC).isoformat()}
-        if action == "reject":
-            new_status = "REJECTED"  # fewer posts this week — no replacement, ever
-        else:
-            new_status = "APPROVED"
+        new_status = "REJECTED" if action == "reject" else "APPROVED"
         if action == "edit":
             sets, params = [], {"p": post_id}
             for field, value in (edits or {}).items():
@@ -289,9 +269,53 @@ def record_gate_decision(post_id: str, action: str, edits: dict | None = None,
     return {"post_id": post_id, "action": action, "status": new_status}
 
 
-# -- registry ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------
+# handlers — the documented contract: (args: dict, **kwargs) -> str, JSON always, no raise
+# ---------------------------------------------------------------------------------------
 
-TOOLS: dict[str, Any] = {
+def _envelope(fn, args: dict, **kwargs) -> str:
+    try:
+        data = fn(args, **kwargs)
+        return json.dumps({"ok": True, "data": data}, default=str)
+    except Exception as e:  # never raise — exceptions break the agent's tool loop
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, default=str)
+
+
+def read_brief(args: dict, **kwargs) -> str:
+    return _envelope(lambda a, **kw: _read_brief_impl(engine=kw.get("engine")), args, **kwargs)
+
+
+def read_learnings(args: dict, **kwargs) -> str:
+    return _envelope(
+        lambda a, **kw: _read_learnings_impl(str(a["week_start"]), engine=kw.get("engine")),
+        args, **kwargs)
+
+
+def read_asset_inventory(args: dict, **kwargs) -> str:
+    return _envelope(lambda a, **kw: _read_asset_inventory_impl(engine=kw.get("engine")),
+                     args, **kwargs)
+
+
+def read_parked_posts(args: dict, **kwargs) -> str:
+    return _envelope(lambda a, **kw: _read_parked_posts_impl(engine=kw.get("engine")),
+                     args, **kwargs)
+
+
+def write_plan(args: dict, **kwargs) -> str:
+    return _envelope(
+        lambda a, **kw: _write_plan_impl(str(a["week_start"]), list(a["posts"]),
+                                         engine=kw.get("engine")),
+        args, **kwargs)
+
+
+def record_gate_decision(args: dict, **kwargs) -> str:
+    return _envelope(
+        lambda a, **kw: _record_gate_decision_impl(str(a["post_id"]), str(a["action"]),
+                                                   a.get("edits"), engine=kw.get("engine")),
+        args, **kwargs)
+
+
+HANDLERS: dict[str, Any] = {
     "read_brief": read_brief,
     "read_learnings": read_learnings,
     "read_asset_inventory": read_asset_inventory,
@@ -300,20 +324,31 @@ TOOLS: dict[str, Any] = {
     "record_gate_decision": record_gate_decision,
 }
 
+# Built-in tool names blocked by the pre_tool_call hook — defense in depth on top of
+# agent.disabled_toolsets: [terminal, code_execution, file] in the profile config
+# (toolset names per https://hermes-agent.nousresearch.com/docs/reference/toolsets-reference).
+BLOCKED_TOOL_PREFIXES = ("terminal", "shell", "exec", "write_file", "patch",
+                         "code_execution", "run_python")
 
-def dispatch(tool: str, /, **kwargs) -> Any:
-    """The agent's only entry point. An unknown tool is 'no such tool' — not a permission
-    error, because the capability does not exist to be permitted."""
-    fn = TOOLS.get(tool)
+
+def pre_tool_call(tool_name: str, args: dict | None = None, task_id: str | None = None,
+                  **kwargs) -> dict | None:
+    """Hook: block file-write/shell for this profile; the six artec tools pass through."""
+    if tool_name in HANDLERS:
+        return None
+    lowered = str(tool_name).lower()
+    if any(lowered.startswith(p) or p in lowered for p in BLOCKED_TOOL_PREFIXES):
+        return {"action": "block",
+                "message": "file-write and shell are disabled for the artec profile — "
+                           "use the six artec tools only"}
+    return None
+
+
+def dispatch(tool: str, /, **kwargs) -> str:
+    """Test/diagnostic entry point mirroring the agent's dispatch: unknown tool is
+    'no such tool' — the capability does not exist to be permitted."""
+    fn = HANDLERS.get(tool)
     if fn is None:
-        raise LookupError(f"no such tool: {tool!r} (available: {sorted(TOOLS)})")
-    return fn(**kwargs)
-
-
-def register(agent) -> None:
-    """hermes-agent plugin hook: register the six tools, tolerant of registrar shape."""
-    for name, fn in TOOLS.items():
-        registrar = getattr(agent, "register_tool", None) or getattr(agent, "add_tool", None)
-        if registrar is None:
-            raise RuntimeError("hermes-agent exposed no tool registrar on this version")
-        registrar(name=name, fn=fn, description=(fn.__doc__ or "").strip().splitlines()[0])
+        raise LookupError(f"no such tool: {tool!r} (available: {sorted(HANDLERS)})")
+    engine = kwargs.pop("engine", None)
+    return fn(kwargs, engine=engine)

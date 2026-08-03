@@ -35,13 +35,27 @@ def _image(tmp_path, size=(1080, 1080), name="i.jpg"):
     return p
 
 
-def _video(tmp_path, name="v.mp4", seconds=3, size="1080x1920", faststart=True):
+def _video(tmp_path, name="v.mp4", seconds=3, size="1080x1920", faststart=True,
+           realistic=True):
+    """`realistic=True` encodes HIGH-ENTROPY noise, which produces a bitrate in the same
+    band as real `raw-video/` footage (~1 bit/pixel-second). A solid-colour clip is
+    near-zero-entropy (~0.01) and is nothing like the thing the pre-flight guards — tuning
+    the floor to accommodate one is how the fixture reshaped the spec. Solid colour is
+    still fine for the moov/duration/aspect checks, which do not measure content.
+    """
     out = str(tmp_path / name)
-    kwargs = ["-movflags", "+faststart"] if faststart else []
+    # Measured bits/pixel-second on this encoder: testsrc2 ~2.9, real 1080x1920 social
+    # H.264 ~1.45, solid colour ~0.01, pure lavfi noise ~105 (incompressible, and as
+    # unrepresentative as solid colour in the opposite direction). testsrc2 is structured
+    # moving content and is the closest available proxy for bank footage.
+    source = (f"testsrc2=s={size}:d={seconds}:r=30" if realistic
+              else f"color=c=blue:s={size}:d={seconds}:r=30")
+    flags = ["-movflags", "+faststart"] if faststart else []
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
-         f"color=c=blue:s={size}:d={seconds}", "-pix_fmt", "yuv420p", *kwargs, "-y", out],
-        check=True, capture_output=True, timeout=120,
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source,
+         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+         *flags, "-y", out],
+        check=True, capture_output=True, timeout=300,
     )
     return out
 
@@ -124,6 +138,29 @@ def test_wrong_aspect_video_is_parked(tmp_path):
                              aspect_ratio="9:16")
     assert not result.ok
     assert any("aspect" in f for f in result.failures)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe not on PATH here")
+def test_low_bitrate_render_is_parked_even_when_structurally_perfect(tmp_path):
+    """The guard the absolute byte floor stopped providing. A solid-colour clip has a
+    leading moov, the right aspect and the right duration — and still carries the bitrate
+    signature of a truncated or failed render."""
+    result = preflight_video(_video(tmp_path, name="flat.mp4", realistic=False))
+    assert not result.ok
+    assert any("bits/pixel-second" in f for f in result.failures)
+    # …and it failed ONLY on bitrate: everything structural about it was sound.
+    assert not any(("moov" in f or "aspect" in f or "duration" in f)
+                   for f in result.failures)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe not on PATH here")
+def test_bitrate_floor_is_resolution_and_duration_independent(tmp_path):
+    """An absolute byte floor cannot tell a legitimate short clip from a truncated long
+    one. Realistic content passes at very different sizes."""
+    short = preflight_video(_video(tmp_path, name="s.mp4", seconds=2))
+    longer = preflight_video(_video(tmp_path, name="l.mp4", seconds=6))
+    assert short.ok, short.failures
+    assert longer.ok, longer.failures
 
 
 def test_unreadable_video_is_blocked_with_a_named_error(tmp_path):

@@ -30,6 +30,13 @@ WEEK = date(2026, 8, 24)
 def test_second_replica_no_ops_while_the_first_holds_the_job(pg_engine):
     job = "daily-publish-by-slot"
     with pg_engine.connect() as replica_a, pg_engine.connect() as replica_b:
+        # Guard the guard: advisory locks are session-scoped and re-entrant, so if these
+        # two connections were secretly the same session (a StaticPool engine, say), the
+        # assertion below would pass while proving nothing. CI caught exactly that.
+        pid_a = replica_a.exec_driver_sql("SELECT pg_backend_pid()").scalar()
+        pid_b = replica_b.exec_driver_sql("SELECT pg_backend_pid()").scalar()
+        assert pid_a != pid_b, "fixture handed out one shared session — test is meaningless"
+
         assert try_acquire(replica_a, job) is True     # first scheduler wins
         assert try_acquire(replica_b, job) is False    # second must no-op, not double-fire
 

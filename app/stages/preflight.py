@@ -26,13 +26,25 @@ from app.toolbox.edit_combine import moov_before_mdat
 
 # Sane bands. A file outside these is not necessarily broken, but it is not something we
 # publish unattended without a human having looked.
-# Calibrated against real encoder output, not intuition: a 3-second 1080x1920 solid-colour
-# clip encodes to ~8KB, so a 20KB floor would have parked legitimate short video. The floor
-# exists to catch empty/truncated files, not to judge compressibility.
 MIN_BYTES_IMAGE = 1_000
 MAX_BYTES_IMAGE = 25_000_000
-MIN_BYTES_VIDEO = 2_000
 MAX_BYTES_VIDEO = 300_000_000
+
+# An ABSOLUTE byte floor for video was withdrawn — see DECISIONS.md. It had been tuned down
+# to 2 KB to accommodate a synthetic solid-colour fixture, which is near-zero-entropy and
+# nothing like real footage; in doing so it stopped guarding what it exists to guard (a
+# truncated render landing at 12 KB sailed through). The fixture had reshaped the spec.
+#
+# The replacement scales with what the clip actually is: bits per pixel-second,
+#     (size_bytes * 8) / (width * height * duration_s)
+# which is resolution- and duration-independent. Reference points measured on real encodes:
+#     real 1080x1920 social H.264 @ ~3 Mbps ... ~1.45   bits/pixel-second
+#     synthetic solid colour               ... ~0.010  bits/pixel-second
+#     truncated / failed render            ... <0.005  bits/pixel-second
+# 0.05 sits ~29x below real footage and ~5x above a degenerate encode. A synthetic
+# solid-colour clip FAILS this deliberately: fixtures must look like the thing being
+# guarded, so at least one video fixture is a realistic high-entropy encode.
+MIN_BITS_PER_PIXEL_SECOND = 0.05
 
 ASPECT_TOLERANCE = 0.04  # 4% — JPEG/H.264 dimension rounding, not a licence to drift
 
@@ -138,12 +150,11 @@ def preflight_video(path: str, *, aspect_ratio: str = "9:16",
     result = PreflightResult(ok=True)
 
     size = os.path.getsize(path)
-    if size < MIN_BYTES_VIDEO:
-        result.fail(f"video is only {size} bytes — implausibly small")
-    elif size > MAX_BYTES_VIDEO:
+    if size > MAX_BYTES_VIDEO:
         result.fail(f"video is {size} bytes — implausibly large")
-    else:
-        result.passed(f"size {size} bytes")
+    # The lower bound is a BITRATE check, applied below once ffprobe has given us the
+    # dimensions and duration it needs. An absolute byte floor cannot tell a legitimate
+    # short clip from a truncated long one.
 
     # The failure that shipped post_1485: a trailing moov atom means platforms reject the
     # upload or the video will not play.
@@ -197,6 +208,19 @@ def preflight_video(path: str, *, aspect_ratio: str = "9:16",
                         f"{aspect_ratio} ({target:.3f})")
         else:
             result.passed(f"aspect {width}x{height} matches {aspect_ratio}")
+
+        # Bitrate floor — scales with resolution and duration, so it catches a truncated
+        # render at any length instead of only very small files.
+        if duration > 0:
+            bpps = (size * 8) / (width * height * duration)
+            if bpps < MIN_BITS_PER_PIXEL_SECOND:
+                result.fail(
+                    f"bitrate {bpps:.4f} bits/pixel-second is below the floor "
+                    f"({MIN_BITS_PER_PIXEL_SECOND}) — {size} bytes for {duration:.1f}s at "
+                    f"{width}x{height} indicates a truncated or failed render, not footage"
+                )
+            else:
+                result.passed(f"bitrate {bpps:.3f} bits/pixel-second")
     return result
 
 

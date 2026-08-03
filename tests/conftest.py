@@ -114,7 +114,11 @@ def pg_engine():
     if not TEST_DATABASE_URL:
         pytest.skip("TEST_DATABASE_URL not set — Postgres-only test")
     _assert_disposable(TEST_DATABASE_URL)
-    eng = create_engine(_normalize_pg(TEST_DATABASE_URL), poolclass=StaticPool)
+    # NOT StaticPool. StaticPool hands every connect() the SAME underlying connection, and
+    # Postgres advisory locks are session-scoped and re-entrant — so a "two replica" test
+    # on a StaticPool engine is one session locking twice, which trivially succeeds and
+    # proves nothing. CI caught this. A real pool gives genuinely distinct sessions.
+    eng = create_engine(_normalize_pg(TEST_DATABASE_URL))
     with eng.begin() as conn:
         conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
         conn.execute(text("CREATE SCHEMA public"))

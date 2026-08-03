@@ -185,4 +185,11 @@ def edit_video_pipeline(src: str, *, duration_s: float, aspect_ratio: str,
         if not font_path:
             raise EditError("caption overlay requires a brand font path")
         out = drawtext_overlay(out, caption, font_path)
+    # Playability gate BEFORE the file goes anywhere near a platform: a trailing moov
+    # atom is exactly how post_1485's video shipped unplayable.
+    if not moov_before_mdat(out):
+        raise EditError(
+            "video output failed the faststart check (moov atom not leading) — refusing "
+            "to hand an unplayable file downstream"
+        )
     return out

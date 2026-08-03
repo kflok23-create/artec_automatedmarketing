@@ -235,6 +235,30 @@ def test_plan_diff_field_agreement_rate(session):
     assert [r["channel"] for r in diff["unique_agent"]] == ["linkedin"]
 
 
+def test_plan_diff_overlap_flags_learning_use(session):
+    # The Sunday judgement surface: where the agent leaned on a KEEP lever the bespoke
+    # planner ignored, the overlap says so in words.
+    from app.models import Learning
+
+    session.add(Post(post_id="post_7110", week_start=WEEK, channel="instagram",
+                     status="DRAFT", angle="focus", hook="B hook", cta_type="discount",
+                     slot="evening", plan_source="bespoke"))
+    session.add(PlanShadow(week_start=WEEK, channel="instagram", angle="focus",
+                           hook="A hook", cta_type="learn_more", slot="evening",
+                           source="agent"))
+    session.add(Learning(week_start=WEEK, lever="cta_type", lever_value="learn_more",
+                         kpi="weighted", score=0.8, sample_size=4, verdict="keep"))
+    session.flush()
+
+    diff = build_diff(session, WEEK)
+    pair = diff["pairs"][0]
+    cta = next(f for f in pair["fields"] if f["field"] == "cta_type")
+    assert not cta["agree"]
+    assert cta["agent_learning"] == "keep"
+    assert "agent applied learning" in cta["note"]
+    assert pair["disagreements"] == 2  # hook + cta_type
+
+
 def test_plan_diff_rejected_bespoke_rows_excluded(session):
     session.add(Post(post_id="post_7103", week_start=WEEK, channel="facebook",
                      status="REJECTED", hook="rejected", slot="evening", plan_source="bespoke"))

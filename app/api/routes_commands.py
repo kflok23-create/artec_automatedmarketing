@@ -92,6 +92,18 @@ def report_cmd(body: CommandRequest):
         return build_report(session, week_start=body.week)
 
 
+@router.post("/plan-diff")
+def plan_diff_cmd(body: CommandRequest):
+    """Shadow-mode artefact: bespoke vs agent plans with per-field agreement and learning
+    cross-references. `week` is required."""
+    from app.stages.plan_diff import build_diff
+
+    if body.week is None:
+        raise HTTPException(status_code=422, detail="week (YYYY-MM-DD Monday) is required")
+    with record_run("plan-diff", {"week": str(body.week)}) as (session, _rec):
+        return build_diff(session, body.week)
+
+
 @router.post("/wishlist-match")
 def wishlist_match_cmd():
     from app.stages.wishlist import match

@@ -49,15 +49,24 @@ hermes tools --summary                       # terminal/code_execution/file disa
 Then `artec doctor` (via `/commands/doctor`) — the "hermes-brain volume" line reads
 "marker present since …" after the SECOND deploy, which is the survives-redeploy proof.
 
+## Verified empirically against a real hermes-agent install
+
+- **Cron schedules must be numeric** (`0 7 * * 0`; the parser rejects `SUN` — and exits 0
+  doing so). The entrypoint verifies registration via `hermes cron list` and hard-fails
+  if either job is missing.
+- **Cron times resolve in the container's local TZ**: with `TZ=Asia/Singapore` the next
+  runs display `+08:00`; the boot hard-fails if they don't.
+- **`agent.disabled_toolsets` works** — `hermes tools --summary` drops to the allowed set
+  with the config in place. The plugin's `pre_tool_call` hook doubles the shell/file
+  blocks regardless.
+
 ## Not verified in this build — confirm on first boot
 
 - The Telegram allowed-chat whitelist: configure per
   [/docs/user-guide/messaging/telegram](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/telegram).
-- `hermes cron create` timezone semantics: the container sets `TZ=Asia/Singapore`;
-  confirm `hermes cron list` shows the jobs at 07:00/09:00 SGT.
-- That `agent.disabled_toolsets` names (`terminal`, `code_execution`, `file`) cover every
-  shell/file surface on this tag: check `hermes tools --summary`. The plugin's
-  `pre_tool_call` hook blocks the same families as defense in depth regardless.
+- Exact toolset ids can drift between agent versions (0.18.x calls the task board
+  `kanban`, 0.19.x lists `todo` — both are disabled). After any tag bump, re-check
+  `hermes tools --summary`.
 
 ## Upgrading the agent (manual, never scheduled)
 

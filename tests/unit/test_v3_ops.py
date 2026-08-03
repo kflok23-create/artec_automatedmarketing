@@ -75,7 +75,11 @@ def test_exactly_four_scheduled_jobs(repo_root):
     entrypoint = (repo_root / "deploy" / "hermes-brain" / "entrypoint.sh").read_text(encoding="utf-8")
     cron_creates = re.findall(r"hermes cron create\s+\"([^\"]+)\"", entrypoint)
     assert len(cron_creates) == 2, "hermes-agent owns exactly two cron jobs"
-    assert set(cron_creates) == {"0 7 * * SUN", "0 9 * * SUN"}
+    # NUMERIC day-of-week only: the agent's parser rejects 'SUN' — and exits 0 doing so
+    # (verified against a real install; that combination silently shipped zero jobs once).
+    assert set(cron_creates) == {"0 7 * * 0", "0 9 * * 0"}
+    for sched in cron_creates:
+        assert not re.search(r"[A-Za-z]", sched), f"day names are rejected by the parser: {sched!r}"
     config = (repo_root / "deploy" / "hermes-brain" / "config.yaml").read_text(encoding="utf-8")
     assert "cron:" not in config, "cron jobs are CLI-registered, never declared in config.yaml"
     assert len(JOBS) + len(cron_creates) == 4
@@ -163,6 +167,14 @@ def test_brain_entrypoint_is_idempotent_and_collision_free(repo_root):
     # debug discovery prints BEFORE enable, so a failure always has the scan log above it
     assert ep.index("HERMES_PLUGINS_DEBUG=1") < ep.index("hermes plugins enable artec")
     assert "hermes gateway run" in ep
+    # Live-boot regressions, round two:
+    assert 'hermes config set ANTHROPIC_API_KEY' in ep, "the agent reads the PROFILE .env"
+    assert 'grep -q "ANTHROPIC_API_KEY=."' in ep, "credential presence must be asserted"
+    assert "hermes profile delete artec -y" in ep, "the stray pre-rename profile is removed"
+    # cron create exits 0 on failure → registration must be verified by listing
+    assert ep.index("hermes cron create") < ep.index('grep -qi "learn-ideate" || fail')
+    assert 'grep -q "+08:00"' in ep, "cron times must be proven Asia/Singapore"
+    assert "--deliver telegram" in ep
 
 
 def test_only_artec_api_runs_the_migration_predeploy(repo_root):

@@ -2,10 +2,12 @@
 # Every block cites the doc it was verified against; nothing here is invented.
 # Docs: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
 
-# Provider/model — verified: /docs/user-guide/configuration (Provider & Model Selection)
+# Provider/model — verified: /docs/user-guide/configuration (Provider & Model Selection).
+# With provider anthropic the model id must be BARE — vendor-prefixed slugs
+# (anthropic/claude-…) belong to aggregators like openrouter and break LLM calls here.
 model:
   provider: anthropic
-  default: anthropic/claude-opus-5
+  default: claude-opus-5
 
 # Redaction — verified verbatim: /docs/user-guide/configuration (Security & Privacy)
 security:
@@ -21,27 +23,44 @@ plugins:
     - name: "artec"
       enabled: true
 
-# Per-profile tool disable — verified: /docs/user-guide/configuration
-# (agent.disabled_toolsets) + toolset names from /docs/reference/toolsets-reference:
-#   terminal        = shell command execution
-#   code_execution  = programmatic tool calls via Python
-#   file            = read/write/patch/search files
-# The plugin's pre_tool_call hook blocks the same names as defense in depth.
+# Per-profile tool disable — key verified in the docs AND the mechanism verified
+# EMPIRICALLY against a real hermes-agent install (`hermes tools --summary` drops to the
+# allowed set with this block in place). Target state: artec plus the minimum to read a
+# brief and write a plan — nothing that generates media, writes files, runs shell, or
+# spawns subagents. The inert-by-missing-dependency toolsets (bfl, browser, browser-cdp,
+# computer_use, image_gen, video_gen) are disabled EXPLICITLY so a future image change
+# cannot switch them on silently. 'todo'/'kanban' are the same board under different ids
+# across agent versions — both listed. The plugin's pre_tool_call hook blocks the
+# shell/file families again as defense in depth.
 agent:
   disabled_toolsets:
     - terminal
     - code_execution
     - file
+    - delegation
+    - video
+    - project
+    - todo
+    - kanban
+    - tts
+    - bfl
+    - browser
+    - browser-cdp
+    - computer_use
+    - image_gen
+    - video_gen
 
 # Telegram-facing toolsets — key verified (/docs/user-guide/configuration,
-# platform_toolsets); the exact value set below is our choice: the six artec tools plus
-# web for trend scouting and memory/skills for the four learning behaviours.
+# platform_toolsets): the six artec tools, conversation helpers, and memory/skills for
+# the learning behaviours. web = search/scraping only (trend scouting), not a browser.
 platform_toolsets:
   telegram:
     - artec
-    - web
+    - clarify
     - memory
     - skills
+    - session_search
+    - web
 
 # NOT in this file, by documented design:
 # - TELEGRAM_BOT_TOKEN / credentials → profile .env via `hermes config set` (entrypoint)

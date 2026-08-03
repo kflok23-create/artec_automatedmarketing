@@ -6,9 +6,23 @@ deploys, so a partially-built branch cannot strand a post.
 
 | Pass | Scope | State |
 |---|---|---|
-| **2b-i** | A · F · G · H + the Postgres test substrate | **complete (this pass)** |
-| 2b-ii | C · D — digest preparation and delivery, ending in a dry-run digest | not started |
+| **2b-i** | A · F · G · H + the Postgres test substrate | **complete** |
+| **2b-ii(a)** | §0 CI gate · §0.1 bitrate floor · D2 investigation | **complete** |
+| 2b-ii(b) | **C · D — digest preparation and delivery, ending in a dry-run digest** | **NOT STARTED — next pass** |
 | 2b-iii | B · E · I — skip rules, review gates end to end, remaining tests, then merge | not started |
+
+## MERGE RULE — binding
+
+**`v4-stage-2b` cannot merge to `main` with any `pg` test red or unexecuted.**
+The CI job *Postgres-substrate tests (advisory locks, sequences, jsonb)* is the gate.
+Draft PR: kflok23-create/artec_automatedmarketing#1. A CI job that runs but does not gate
+is a job that will eventually be ignored — **make this a required status check on `main`
+in GitHub branch protection** (repo Settings → Branches → add rule for `main` → require
+status check `test`). That is an operator action; I cannot set branch protection.
+
+**CI status at `1fa6553`: fully green.**
+- SQLite substrate: **224 passed**, 12 skipped (ffmpeg-dependent locally, present in CI)
+- Postgres substrate: **13 passed, 0 skipped — all executed, none written-but-unverified**
 
 ---
 
@@ -83,17 +97,30 @@ other dialect rather than pretending to lock.**
 
 ---
 
-## Test counts — SPLIT BY SUBSTRATE
+## Test counts — SPLIT BY SUBSTRATE (CI run 30830353317, `1fa6553`)
 
 | Substrate | Written | Executed | Result |
 |---|---|---|---|
-| SQLite | 221 | 221 | **passing** |
-| Postgres (`-m pg`) | 13 | **2** | 2 passing; **11 written but NOT YET EXECUTED** |
+| SQLite | 224 | 224 | **passing** |
+| Postgres (`-m pg`) | 13 | **13** | **passing — all executed in CI** |
 
-The 2 executed pg-marked tests are the ones needing no server (`lock_key` stability, and
-the assertion that advisory locks *refuse* on SQLite). The other **11 have never run** —
-Docker's daemon is not running on this machine, so a real Postgres could not be started.
-**They are reported as unverified, not green.** CI executes them on the pull request.
+### What CI caught that local testing could not
+
+**The two-replica advisory-lock test was meaningless and passed for the wrong reason.**
+The fixture used `poolclass=StaticPool` (copied from the SQLite fixture, where in-memory
+databases require it). StaticPool hands every `connect()` the *same* underlying
+connection, and Postgres advisory locks are session-scoped and **re-entrant** — so
+"replica B" was replica A locking twice, which correctly returns True. The test asserted
+False and failed, which is how it was found.
+
+Fixed by using a real pool, and hardened so it cannot silently hollow out again: the test
+now asserts the two connections report different `pg_backend_pid()` before testing the
+lock at all. **This is the single strongest argument for the pg substrate** — the test had
+been "written and passing" against SQLite semantics and was verifying nothing.
+
+Second CI-only finding: the pg fixture drops and recreates the public schema, so
+`alembic upgrade head` must run **before** the pg tests or it collides with tables that
+have no `alembic_version`. CI step order now enforces this.
 
 Postgres-only behaviours now covered by written tests: two-replica advisory-lock no-op,
 lock release on holder disconnect, distinct jobs not blocking, sequence monotonicity,
@@ -102,6 +129,30 @@ concurrent allocation without collision, `digests.payload` round-tripping as rea
 (queried with `->` / `->>`), concurrent `agent_runs` inserts, and metrics NULL-vs-zero.
 
 ---
+
+## Open operator items carried into the next pass
+
+| Item | State |
+|---|---|
+| `which ffprobe && ffprobe -version` on the deployed `artec api` | **outstanding** — the packaging risk against A is still open. A is not wired into any publish path (B does that, in 2b-iii), so nothing is blocked yet |
+| Delete `BRAVE_API_KEY`, set `TAVILY_API_KEY` on artec-brain | **outstanding** — scouting stays unavailable and the digest will report it nightly |
+| Make CI `test` a required status check on `main` | **outstanding** — see the merge rule above |
+
+### D2 · `RESTORE_TARGET_URL` — investigated, findings
+
+**Nothing in the repo reads it. Zero matches** for `RESTORE_TARGET_URL` across all source,
+config, workflows and docs. There is no call site to name.
+
+It is set on `artec-brain` only (not on `artec api`, `artec-scheduler`, or Postgres, per
+the variable listings taken during v3 verification). It is therefore a live variable that
+no code reads — the config-silence class sitting in the open — and the correct action is
+to **delete it**, not to leave it as a puzzle. I have not touched it, per instruction.
+
+It will **not** be used as the restore target regardless. The agreed design stands: a
+uniquely-named scratch DATABASE created and dropped by `restore-check` itself, free-disk
+check first, RED rather than a schema-restore fallback if `CREATE DATABASE` is denied. The
+`_assert_disposable` guard already written for `TEST_DATABASE_URL` will be applied to any
+restore-target resolution, and the production `DATABASE_URL` rejected under any alias.
 
 ## Not built (do not assume any of this exists)
 

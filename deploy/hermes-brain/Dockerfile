@@ -23,6 +23,7 @@ COPY plugins/artec /bootstrap/plugins/artec
 COPY deploy/hermes-brain/config.yaml /bootstrap/config.yaml
 COPY deploy/hermes-brain/cron-learn-ideate.txt /bootstrap/cron-learn-ideate.txt
 COPY deploy/hermes-brain/cron-weekly-gate.txt /bootstrap/cron-weekly-gate.txt
+COPY deploy/hermes-brain/report_volume.py /bootstrap/report_volume.py
 COPY deploy/hermes-brain/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

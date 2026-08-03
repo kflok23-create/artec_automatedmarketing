@@ -34,33 +34,92 @@ def _check(name: str, fn, remedy: str) -> Check:
         return Check(name, False, f"{type(e).__name__}: {e}", remedy)
 
 
-def check_hermes_home(hermes_home: str) -> Check:
+def lora_probe_checks(settings: Settings) -> list[Check]:
+    """The live LoRA probes validate the GENERATE path only (the enhance path uses no
+    LoRA). With generate dormant they are SKIPPED — yellow, with the reason stated —
+    never a spend, never a misleading RED. Re-enabling generate runs them live again."""
+    names = ("fal LoRA probe: assembled", "fal LoRA probe: unassembled")
+    if not OPERATOR_CONSTANTS["generate_enabled"]:
+        return [Check(name, True,
+                      "SKIPPED — generate path is dormant (generate_enabled=false); this "
+                      "probe only validates the dormant GENERATE path, not enhance",
+                      warn=True) for name in names]
+
+    def _lora_probe(key: str):
+        from app.integrations.fal_client import Fal
+        fal = Fal(settings)
+        endpoint, args = probe_request(OPERATOR_CONSTANTS["loras"][key],
+                                       OPERATOR_CONSTANTS["model_endpoints"]["lora_generate"])
+        try:
+            fal.run(endpoint, args, timeout_s=180)
+        except Exception as e:
+            msg = str(e).lower()
+            if any(w in msg for w in ("shape", "key", "state-dict", "state_dict", "mismatch")):
+                raise RuntimeError(
+                    f"LoRA '{key}' rejected by qwen-image-2512 — weights are not "
+                    "Qwen-Image-2512 compatible (retrain on fal-ai/qwen-image-2512-trainer)"
+                ) from e
+            raise
+        return "loaded"
+
+    remedy = ("verify FAL_KEY; if a base-model mismatch is named, retrain the LoRA on "
+              "fal-ai/qwen-image-2512-trainer")
+    return [_check(names[0], lambda: _lora_probe("assembled"), remedy),
+            _check(names[1], lambda: _lora_probe("unassembled"), remedy)]
+
+
+def check_hermes_home(hermes_home: str, session=None) -> Check:
     """v3 §5: the mounted volume is a hard requirement ON HERMES-BRAIN. A marker file
     written on first check and read back on later ones is the survives-redeploy proof:
     if the marker predates this boot, the volume outlived at least one deploy."""
     name = "hermes-brain volume"
     remedy = ("mount a Railway volume at /data/hermes on hermes-brain, set "
               "HERMES_HOME=/data/hermes, and ensure it is writable")
-    if not hermes_home:
-        return Check(name, True, "HERMES_HOME unset — not the hermes-brain service", warn=True)
-    from pathlib import Path
 
-    root = Path(hermes_home)
-    if not root.is_dir():
-        return Check(name, False, f"{hermes_home} is missing or not a directory", remedy)
-    marker = root / ".artec-volume-marker"
-    try:
-        if marker.exists():
-            born = marker.read_text(encoding="utf-8").strip()
-            return Check(name, True, f"writable; marker present since {born} — survived redeploy(s)")
-        from datetime import UTC, datetime
+    if hermes_home:
+        # Local mode: we ARE on the box with the volume — probe it directly.
+        from pathlib import Path
 
-        marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+        root = Path(hermes_home)
+        if not root.is_dir():
+            return Check(name, False, f"{hermes_home} is missing or not a directory", remedy)
+        marker = root / ".artec-volume-marker"
+        try:
+            if marker.exists():
+                born = marker.read_text(encoding="utf-8").strip()
+                return Check(name, True, f"writable; marker present since {born} — survived redeploy(s)")
+            from datetime import UTC, datetime
+
+            marker.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+            return Check(name, True,
+                         "writable; marker WRITTEN this run — redeploy and re-run doctor to "
+                         "prove the volume survives")
+        except OSError as e:
+            return Check(name, False, f"volume is not writable: {type(e).__name__}: {e}", remedy)
+
+    # Remote mode (artec-api has no HERMES_HOME): verify via the Postgres row the
+    # hermes-brain entrypoint writes at every boot. A check that passes by skipping is
+    # worse than no check — no report is RED, not green.
+    remote_remedy = ("deploy hermes-brain (its entrypoint writes the volume marker to the "
+                     "config row 'hermes_brain_volume' on every boot) or read its boot log "
+                     "to see why the report step failed")
+    if session is None:
+        return Check(name, False, "no DB session — cannot verify the hermes-brain volume", remote_remedy)
+    from app.config import get_config
+
+    data = get_config(session, "hermes_brain_volume", None)
+    if not data:
+        return Check(name, False, "hermes-brain has never reported its volume marker", remote_remedy)
+    since = str(data.get("marker_since", ""))
+    boot = str(data.get("boot_at", ""))
+    home = data.get("hermes_home", "?")
+    if since and boot and since < boot:
         return Check(name, True,
-                     "writable; marker WRITTEN this run — redeploy and re-run doctor to "
-                     "prove the volume survives")
-    except OSError as e:
-        return Check(name, False, f"volume is not writable: {type(e).__name__}: {e}", remedy)
+                     f"{home} writable; marker since {since}, last boot {boot} — SURVIVED redeploy(s)")
+    return Check(name, True,
+                 f"{home} writable; marker written at first boot {boot} — redeploy "
+                 "hermes-brain and re-run doctor to prove the volume survives",
+                 warn=True)
 
 
 def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # noqa: C901
@@ -96,29 +155,11 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
     checks.append(_check("anthropic key + model", _anthropic,
                          "check ANTHROPIC_API_KEY and ANTHROPIC_MODEL in Railway"))
 
-    # --- fal + live LoRA probes --------------------------------------------------------
-    def _lora_probe(key: str):
-        from app.integrations.fal_client import Fal
-        fal = Fal(settings)
-        endpoint, args = probe_request(OPERATOR_CONSTANTS["loras"][key],
-                                       OPERATOR_CONSTANTS["image_endpoints"]["lora"])
-        try:
-            fal.run(endpoint, args, timeout_s=180)
-        except Exception as e:
-            msg = str(e).lower()
-            if any(w in msg for w in ("shape", "key", "state-dict", "state_dict", "mismatch")):
-                raise RuntimeError(
-                    f"LoRA '{key}' rejected by qwen-image-2512 — weights are not "
-                    "Qwen-Image-2512 compatible (retrain on fal-ai/qwen-image-2512-trainer)"
-                ) from e
-            raise
-        return "loaded"
-    checks.append(_check("fal LoRA probe: assembled", lambda: _lora_probe("assembled"),
-                         "verify FAL_KEY; if a base-model mismatch is named, retrain the LoRA on fal-ai/qwen-image-2512-trainer"))
-    checks.append(_check("fal LoRA probe: unassembled", lambda: _lora_probe("unassembled"),
-                         "verify FAL_KEY; if a base-model mismatch is named, retrain the LoRA on fal-ai/qwen-image-2512-trainer"))
+    # --- fal LoRA probes — only meaningful for the (dormant) generate path -------------
+    checks.extend(lora_probe_checks(settings))
     checks.append(Check("generate path", True,
-                        "DORMANT (generate_enabled=false, v3 Rule 3 — bank-only for the product)",
+                        "DORMANT (generate_enabled=false, v3 Rule 3 — bank-only for the product)"
+                        if not OPERATOR_CONSTANTS["generate_enabled"] else "ENABLED",
                         warn=False))
 
     # v3 Rule 4: every surviving model endpoint must be priced or it is uncallable.
@@ -129,9 +170,9 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                         "every model endpoint priced" if not unpriced else f"unpriced: {unpriced}",
                         "add the endpoint to config.endpoint_prices_cents — unpriced endpoints are uncallable"))
 
-    # v3 §5: the hermes-brain volume. HERMES_HOME set → hard requirements; unset → this
-    # service is not hermes-brain, note and move on.
-    checks.append(check_hermes_home(settings.HERMES_HOME))
+    # v3 §5: the hermes-brain volume. Local probe when HERMES_HOME is set; otherwise
+    # verified through the Postgres row the brain's entrypoint writes at every boot.
+    checks.append(check_hermes_home(settings.HERMES_HOME, session))
 
     # --- Upload-Post -------------------------------------------------------------------
     def _upload_post():

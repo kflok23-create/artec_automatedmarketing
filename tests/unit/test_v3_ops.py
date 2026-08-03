@@ -35,9 +35,35 @@ def test_volume_check_marker_survives(tmp_path):
     assert second.ok and "survived redeploy" in second.detail
 
 
-def test_volume_check_yellow_when_unset():
-    check = check_hermes_home("")
-    assert check.ok and check.warn  # not the hermes-brain service
+def test_volume_check_remote_red_until_brain_reports(session):
+    # A check that passes by skipping is worse than no check: with HERMES_HOME unset,
+    # verification goes through the Postgres row the brain writes — absent row is RED.
+    check = check_hermes_home("", session)
+    assert not check.ok and not check.warn
+    assert "never reported" in check.detail
+
+
+def test_volume_check_remote_first_boot_yellow_then_survived_green(session):
+    from app.config import set_config
+
+    set_config(session, "hermes_brain_volume",
+               {"marker_since": "2026-08-03T10:00:00+00:00",
+                "boot_at": "2026-08-03T10:00:00+00:00", "hermes_home": "/data/hermes"})
+    check = check_hermes_home("", session)
+    assert check.ok and check.warn                    # first boot: prove it via redeploy
+    assert "redeploy" in check.detail
+
+    set_config(session, "hermes_brain_volume",
+               {"marker_since": "2026-08-03T10:00:00+00:00",
+                "boot_at": "2026-08-03T12:34:56+00:00", "hermes_home": "/data/hermes"})
+    check = check_hermes_home("", session)
+    assert check.ok and not check.warn                # marker predates boot → survived
+    assert "SURVIVED" in check.detail
+
+
+def test_volume_check_red_without_session_when_unset():
+    check = check_hermes_home("", None)
+    assert not check.ok
 
 
 # ---- acceptance 3: exactly four scheduled jobs across both codebases -------------------
@@ -68,11 +94,66 @@ def test_no_other_timed_execution_in_app(repo_root):
     assert not offenders, f"timed loops outside the scheduler: {offenders}"
 
 
+def test_lora_probes_skip_yellow_while_generate_is_dormant():
+    # The probes only validate the dormant GENERATE path (enhance uses no LoRA) —
+    # they must never RED on a missing key or spend money while dormant.
+    from app.settings import Settings
+    from app.stages.doctor import lora_probe_checks
+
+    checks = lora_probe_checks(Settings())
+    assert len(checks) == 2
+    for c in checks:
+        assert c.ok and c.warn
+        assert "SKIPPED" in c.detail and "dormant" in c.detail
+
+
+def test_drive_probe_sweeps_leftover_probe_files(monkeypatch):
+    # "cleanup deferred" must be a delay, not a slow leak: the next run deletes leftovers.
+    from app.integrations.drive_client import DriveClient
+    from app.settings import Settings
+    from tests.unit.test_drive_and_sync import _Exec
+
+    class _SweepService:
+        def __init__(self):
+            self.list_calls = 0
+            self.deleted: list[str] = []
+
+        def files(self):
+            return self
+
+        def list(self, **kw):
+            self.list_calls += 1
+            if self.list_calls == 1:  # root listing → find _generated
+                return _Exec({"files": [{"id": "gen1", "name": "_generated",
+                                         "mimeType": "application/vnd.google-apps.folder"}]})
+            # sweep listing → two leftovers from prior deferred cleanups
+            return _Exec({"files": [
+                {"id": "old1", "name": "_hermes_probe.txt", "mimeType": "text/plain"},
+                {"id": "old2", "name": "_hermes_probe.txt", "mimeType": "text/plain"},
+                {"id": "real", "name": "post_1490.jpg", "mimeType": "image/jpeg"},
+            ]})
+
+        def create(self, **kw):
+            return _Exec({"id": "probe_new"})
+
+        def delete(self, fileId, **kw):
+            self.deleted.append(fileId)
+            return _Exec({})
+
+    svc = _SweepService()
+    note = DriveClient(Settings(), service=svc).probe_write()
+    assert svc.deleted[:2] == ["old1", "old2"]          # leftovers swept first
+    assert "real" not in svc.deleted                    # bank content untouched
+    assert "probe_new" in svc.deleted                   # this run cleans itself too
+    assert "swept 2 leftover" in note
+
+
 def test_brain_entrypoint_is_idempotent_and_collision_free(repo_root):
     # Regressions from the first live boot: non-idempotent profile create (crash-loop),
     # plugin never landing on the volume, and a wrapper-binary collision on 'artec'.
     ep = (repo_root / "deploy" / "hermes-brain" / "entrypoint.sh").read_text(encoding="utf-8")
     assert "PROFILE=artec-brain" in ep, "profile must not be named 'artec' (wrapper collision)"
+    assert "report_volume.py" in ep, "the volume marker must be reported to Postgres for artec doctor"
     assert re.search(r"hermes profile list.*grep -q.*\|\|", ep, re.DOTALL) or \
         "profile exists" in ep, "profile create must be guarded, not blind"
     # plugin copied to BOTH candidate locations, after the volume mount, verified with ls

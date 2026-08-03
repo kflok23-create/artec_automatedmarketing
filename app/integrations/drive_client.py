@@ -266,6 +266,20 @@ class DriveClient:
         from googleapiclient.errors import HttpError
 
         gen_id = self.generated_folder_id()
+
+        # Sweep leftovers from prior deferred cleanups FIRST — this is what makes
+        # "cleanup deferred" a delay, not a slow leak in the bank: every doctor run
+        # deletes whatever earlier runs could not.
+        swept = 0
+        for child in self.list_children(gen_id):
+            if child.get("name") == "_hermes_probe.txt":
+                try:
+                    self.service.files().delete(fileId=child["id"], supportsAllDrives=True).execute()
+                    swept += 1
+                except HttpError:
+                    pass  # still propagating — the next run gets it
+        sweep_note = f"; swept {swept} leftover probe file(s)" if swept else ""
+
         media = MediaIoBaseUploadShim(b"hermes-probe")
         resp = (
             self.service.files()
@@ -281,15 +295,16 @@ class DriveClient:
         for delay in (1, 2, 2, None):  # ~3 retries over ~5 s
             try:
                 self.service.files().delete(fileId=probe_id, supportsAllDrives=True).execute()
-                return "write + cleanup ok"
+                return f"write + cleanup ok{sweep_note}"
             except HttpError as e:
                 if _http_status(e) == 404:
                     if delay is None:
-                        return "write ok (probe cleanup deferred — Drive propagation lag)"
+                        return ("write ok (probe cleanup deferred — Drive propagation lag; "
+                                f"the next doctor run sweeps it){sweep_note}")
                     time.sleep(delay)
                     continue
                 raise
-        return "write ok"
+        return f"write ok{sweep_note}"
 
 
 class MediaIoBaseUploadShim:

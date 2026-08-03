@@ -18,6 +18,10 @@ step "1/8 volume probe (HERMES_HOME=$HERMES_HOME)"
 [ -d "$HERMES_HOME" ] || fail "HERMES_HOME does not exist — is the volume mounted?"
 touch "$HERMES_HOME/.write-probe" 2>/dev/null || fail "HERMES_HOME is not writable — read-only volume?"
 rm -f "$HERMES_HOME/.write-probe"
+# Report the volume marker to Postgres so `artec doctor` on artec-api verifies this for
+# real (marker predating this boot = survived a redeploy). Non-fatal but loud: without
+# the report, artec doctor's volume line is RED, which is the correct signal.
+python /bootstrap/report_volume.py || echo "WARN: volume marker report to Postgres failed — artec doctor will show this RED"
 echo "volume ok"
 
 step "2/8 profile '$PROFILE' (create if missing, then use)"

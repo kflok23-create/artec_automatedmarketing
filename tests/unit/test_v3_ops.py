@@ -170,6 +170,10 @@ def test_brain_entrypoint_is_idempotent_and_collision_free(repo_root):
     # Live-boot regressions, round two:
     assert 'hermes config set ANTHROPIC_API_KEY' in ep, "the agent reads the PROFILE .env"
     assert 'grep -q "ANTHROPIC_API_KEY=."' in ep, "credential presence must be asserted"
+    # Presence is not validity: a wrong key passed the grep and 401'd at the first real
+    # conversation — the boot must probe the API with the actual value.
+    assert "api.anthropic.com" in ep, "anthropic key VALIDITY must be probed at boot"
+    assert "tr -d '[:space:]'" in ep, "pasted-whitespace stripping is mandatory"
     assert "hermes profile delete artec -y" in ep, "the stray pre-rename profile is removed"
     # cron create exits 0 on failure → registration must be verified by listing
     assert ep.index("hermes cron create") < ep.index('grep -qi "learn-ideate" || fail')

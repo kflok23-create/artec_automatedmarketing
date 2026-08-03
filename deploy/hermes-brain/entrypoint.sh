@@ -67,12 +67,31 @@ fi
 echo "config installed"
 
 step "6/9 credentials → profile .env (hermes reads THE PROFILE .env, not Railway env)"
-hermes config set TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
-hermes config set ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+# Strip ALL whitespace defensively: a trailing newline from a dashboard paste survives the
+# presence check and then 401s at the first real conversation — which happened live.
+ANTHROPIC_KEY_CLEAN=$(printf '%s' "$ANTHROPIC_API_KEY" | tr -d '[:space:]')
+TELEGRAM_TOKEN_CLEAN=$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '[:space:]')
+hermes config set TELEGRAM_BOT_TOKEN "$TELEGRAM_TOKEN_CLEAN"
+hermes config set ANTHROPIC_API_KEY "$ANTHROPIC_KEY_CLEAN"
 [ -f "$ENVFILE" ] || fail "profile .env missing at $ENVFILE after config set"
 grep -q "ANTHROPIC_API_KEY=." "$ENVFILE" || fail "ANTHROPIC_API_KEY absent from $ENVFILE — the agent cannot call Claude"
 grep -q "TELEGRAM_BOT_TOKEN=." "$ENVFILE" || fail "TELEGRAM_BOT_TOKEN absent from $ENVFILE — the gateway cannot connect"
-echo "credentials present in profile .env"
+
+# Presence is not validity (a wrong key passed the old check and 401'd in production):
+# probe the Anthropic API with the exact key value before letting the gateway start.
+ANTHROPIC_KEY_PROBE="$ANTHROPIC_KEY_CLEAN" python - <<'PY' || fail "ANTHROPIC_API_KEY is PRESENT but REJECTED by the Anthropic API — the value on this service differs from artec api's working key; re-paste it (watch for truncation/whitespace)"
+import os, sys
+import httpx
+resp = httpx.get(
+    "https://api.anthropic.com/v1/models",
+    headers={"x-api-key": os.environ["ANTHROPIC_KEY_PROBE"],
+             "anthropic-version": "2023-06-01"},
+    timeout=30,
+)
+print(f"anthropic key probe: HTTP {resp.status_code}")
+sys.exit(0 if resp.status_code == 200 else 1)
+PY
+echo "credentials present in profile .env and VALID against the Anthropic API"
 
 step "7/9 plugin discovery + enable"
 HERMES_PLUGINS_DEBUG=1 hermes plugins list || true

@@ -68,6 +68,22 @@ def test_no_other_timed_execution_in_app(repo_root):
     assert not offenders, f"timed loops outside the scheduler: {offenders}"
 
 
+def test_brain_entrypoint_is_idempotent_and_collision_free(repo_root):
+    # Regressions from the first live boot: non-idempotent profile create (crash-loop),
+    # plugin never landing on the volume, and a wrapper-binary collision on 'artec'.
+    ep = (repo_root / "deploy" / "hermes-brain" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "PROFILE=artec-brain" in ep, "profile must not be named 'artec' (wrapper collision)"
+    assert re.search(r"hermes profile list.*grep -q.*\|\|", ep, re.DOTALL) or \
+        "profile exists" in ep, "profile create must be guarded, not blind"
+    # plugin copied to BOTH candidate locations, after the volume mount, verified with ls
+    assert ep.count('cp -r /bootstrap/plugins/artec "$dest/artec"') == 1
+    assert '"$HERMES_HOME/plugins" "$HERMES_HOME/profiles/$PROFILE/plugins"' in ep
+    assert ep.count("ls -la") >= 2
+    # debug discovery prints BEFORE enable, so a failure always has the scan log above it
+    assert ep.index("HERMES_PLUGINS_DEBUG=1") < ep.index("hermes plugins enable artec")
+    assert "hermes gateway run" in ep
+
+
 def test_only_artec_api_runs_the_migration_predeploy(repo_root):
     # Root railway.json applies repo-wide unless a service's Config File Path overrides it.
     # The scheduler and brain configs must never inherit the alembic pre-deploy (the brain

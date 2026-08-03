@@ -25,14 +25,18 @@ unless marked otherwise.
    TELEGRAM_BOT_TOKEN = <the gate bot>
    TELEGRAM_CHAT_ID   = <the operator chat>
    ```
-5. Deploy. The entrypoint, in order: hard-fails without a writable volume → `hermes
-   profile create artec` + `profile use artec` → installs the plugin **package**
-   (`plugin.yaml` + `__init__.py` + modules) into `$HERMES_HOME/plugins/artec/` →
-   `hermes config set TELEGRAM_BOT_TOKEN …` → **`hermes plugins enable artec`** (plugins
-   are opt-in; without this the six tools never load) → prints
-   `HERMES_PLUGINS_DEBUG=1 hermes plugins list` and hard-fails if artec is absent →
-   registers the two Sunday cron jobs idempotently (`hermes cron create`) →
-   **`exec hermes gateway run`** (the documented foreground mode for containers).
+5. Deploy. The entrypoint runs eight labelled steps, idempotent on every restart:
+   volume probe → profile **`artec-brain`** (create-if-missing, then use; the name is NOT
+   `artec` because hermes-agent creates a wrapper binary named after the profile at
+   `/root/.local/bin/<profile>`, which would collide with the bespoke `artec` CLI) →
+   plugin package copied onto the volume in BOTH candidate locations
+   (`$HERMES_HOME/plugins/artec/` and `$HERMES_HOME/profiles/artec-brain/plugins/artec/`,
+   with `ls` verification of each — the volume mounts over `/data/hermes`, so this runs
+   after the mount, every boot) → profile config.yaml → `hermes config set
+   TELEGRAM_BOT_TOKEN …` → `HERMES_PLUGINS_DEBUG=1 hermes plugins list` (always printed,
+   so scanned directories and skip reasons are in the log BEFORE any failure) →
+   **`hermes plugins enable artec`** + verification, hard-failing with a pointer to the
+   discovery log → idempotent `hermes cron create` ×2 → **`exec hermes gateway run`**.
 
 ## Verify (in the service shell)
 

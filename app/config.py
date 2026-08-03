@@ -37,7 +37,8 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
     "drive_root_folder_id": "17gYS0IbakBLNVDLfX8-wZIpL61gOoXSr",
     "drive_generated_folder": "_generated",
     "drive_root_marker": None,  # set by assets sync; a root change forces a full rescan
-    "allow_person_assets": False,
+    # v4: model releases settled — the 202 person-bearing assets join the matching pool.
+    "allow_person_assets": True,
     # Pricing — integer minor units, no floats anywhere.
     "sg_price_minor": 14900,
     "sg_currency": "SGD",
@@ -98,20 +99,50 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
     # ENHANCE whitelist — anything off this list is not callable. Image only.
     # upscale = fal clarity (low creativity); color_correct/autocontrast = Pillow, zero cost.
     "enhance_whitelist": ["upscale", "color_correct", "autocontrast"],
-    # v3 Rule 4 — the budget. USD in integer cents (no floats near money, ever).
-    # An endpoint absent from the price table is UNCALLABLE — that is the point.
-    "endpoint_prices_cents": {
-        "fal-ai/clarity-upscaler": 4,
-        "fal-ai/qwen-image-2512/lora": 3,
-    },
-    "render_budget_cents": 100,      # USD 1.00 per render run, hard cap
-    "per_call_ceiling_cents": 50,    # a single USD 8 call is structurally impossible
+    # v4 Rule 4 — the budget. USD in integer cents (no floats near money, ever).
+    # NOTE: endpoint_prices_cents was REMOVED from config in v4 and lives in the
+    # `endpoint_prices` TABLE. Reconciliation must be able to write prices, and no tool may
+    # write config — moving the table is how both invariants survive (§7·C5). Prices are
+    # unit-aware: two fal endpoints bill per MEGAPIXEL, which a flat per-call figure cannot
+    # represent.
+    "render_run_cap_cents": 250,     # v4: USD 2.50 per render run (was 100)
+    # Deliberately NOT raised with the run cap: the per-call ceiling exists to make a single
+    # runaway call structurally impossible. At confirmed rates 50¢ is ~8× a 1080×1920
+    # upscale and ~2× a 4K one. Raising both together would defeat having two limits.
+    "per_call_ceiling_cents": 50,
+    # Hard bound on requested output size — refused BEFORE the call, so a per-megapixel
+    # endpoint can never be handed a resolution that prices past the ceiling.
+    "max_output_megapixels": 4.0,
+    "agent_weekly_cap_minor": 500,   # USD 5.00/week of agent LLM spend, metered from agent_runs
+
+    # v4 review gates — the two surfaces that never auto-publish.
+    "email_review_expiry_days": 3,   # stale email is worse than no email → PARK
+    "video_review_expiry_days": 3,
+
+    # v4 §E2 — a one-contact list cannot be scored. Below this, email is reported
+    # "below measurement threshold" and EXCLUDED from lever kill decisions.
+    "email_min_recipients": 25,
+
+    # v4 §E1 — organic only, permanently. Paid spend is zero by decision, so CAC can never
+    # fire an absolute kill line; levers are pruned RELATIVELY instead. See DECISIONS.md.
+    "weekly_spend_minor": {},        # stays empty by policy, not by omission
+    "min_lever_sample": 6,           # never kill on a single week
+    "kill_margin": 0.30,             # bottom-quartile band width for the relative rule
+    # Retained but INACTIVE so they exist if paid acquisition is ever introduced. They must
+    # never silently evaluate to "pass" — learn() reports them as inactive with this reason.
+    "kill_lines_active": False,
+    "kill_lines_inactive_reason": "organic-only: zero paid spend makes an absolute CAC kill "
+                                  "line structurally incapable of firing (v4 §E1)",
     # v3 §9 — slot becomes a real firing time (Asia/Singapore) AND stays a learned lever.
     "slot_times": {"morning": "09:00", "lunch": "12:30", "evening": "19:00", "weekend": "10:00"},
     "measure_reminder_time": "06:30",
     # v3 §11 — shadow-mode cutover. Starts and stays on 'shadow' until the operator flips
     # it after 2–3 Sundays of plan-diff. 'bespoke' is full rollback, no redeploy.
     "plan_source": "shadow",
+
+    # v4 §9 — dated proofs for the nine capabilities that are built but never exercised.
+    # doctor reports absent/>90d proofs YELLOW; the digest lists unproven ones weekly.
+    "proofs": {},
     # LoRAs — registered in config, never hardcoded. One LoRA, one trigger, one request.
     "loras": {
         "assembled": {
@@ -131,8 +162,8 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
     "confirm_first_publish": True,
     # Drive changes-API cursor (set by assets sync)
     "drive_page_token": None,
-    # Optional: per-channel weekly spend for CAC — {"tiktok": {"currency": "SGD", "amount_minor": 0}, ...}
-    "weekly_spend_minor": {},
+    # NOTE: weekly_spend_minor is declared once, above, in the v4 §E1 block — it stays
+    # permanently empty by policy (organic only), not by omission.
 }
 
 
@@ -145,7 +176,72 @@ RUNTIME_KEYS = frozenset({
 # Keys DELETED from live config on seed — v3 removed these capabilities outright
 # (all generative-video and prompt-to-pixels/combine endpoints). Removal is what makes the
 # repo scan meaningful: those endpoints exist nowhere, not even in a dormant row.
-REMOVED_KEYS = ("image_endpoints", "video_family")
+# v4 adds: endpoint_prices_cents (moved to the endpoint_prices TABLE so reconciliation can
+# write prices without any tool writing config) and video_pipeline_proven (superseded by the
+# `proofs` manifest — a per-capability dated proof, not a boolean).
+REMOVED_KEYS = ("image_endpoints", "video_family", "endpoint_prices_cents",
+                "video_pipeline_proven", "render_budget_cents")
+
+
+# ---------------------------------------------------------------------------------------
+# v4 §7·C8 — config keys are load-bearing and were silently so. `slot_times` missing once
+# disabled the ENTIRE scheduler with nothing but a per-tick log line. Every service now
+# validates its manifest at boot and REFUSES TO START, naming the missing key.
+# ---------------------------------------------------------------------------------------
+REQUIRED_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
+    # keys every service needs to function at all
+    "common": (
+        "site_base_url", "social_code", "email_code", "timezone",
+        "post_id_prefix", "post_id_counter",
+        "drive_root_folder_id", "drive_generated_folder",
+        "channel_cadence", "channel_media", "kpi_weights",
+        "sg_price_minor", "my_price_minor", "sg_currency", "my_currency",
+        "cm_per_unit_sgd_minor", "cm_per_unit_myr_minor",
+        "discount_sgd_minor", "discount_myr_minor",
+        "plan_source", "allow_person_assets",
+    ),
+    # artec-scheduler: without these the twelve jobs cannot fire correctly
+    "scheduler": (
+        "slot_times", "measure_reminder_time",
+        "render_run_cap_cents", "per_call_ceiling_cents", "max_output_megapixels",
+        "email_review_expiry_days", "video_review_expiry_days",
+    ),
+    # artec api: render + publish + report
+    "api": (
+        "model_endpoints", "enhance_whitelist", "fonts", "generate_enabled",
+        "render_run_cap_cents", "per_call_ceiling_cents", "max_output_megapixels",
+        "seo_seeds", "email_min_recipients", "min_lever_sample", "kill_margin",
+    ),
+}
+
+
+class RequiredConfigMissing(RuntimeError):
+    """Boot-blocking: a load-bearing config key is absent or empty. Names the key."""
+
+
+def validate_required_config(session: Session, role: str) -> list[str]:
+    """Validate the manifest for one service role. Returns the checked key list; raises
+    RequiredConfigMissing naming every absent/empty key. Called at boot — refuse to start
+    rather than discover it from a per-tick error log three hours later."""
+    keys = list(REQUIRED_CONFIG_KEYS["common"]) + list(REQUIRED_CONFIG_KEYS.get(role, ()))
+    missing: list[str] = []
+    for key in keys:
+        row = session.get(Config, key)
+        if row is None:
+            missing.append(f"{key} (absent)")
+            continue
+        value = row.value
+        # False and 0 are legitimate values; only None and empty containers are "empty".
+        if value is None or (isinstance(value, str | list | dict) and len(value) == 0):
+            # seo_seeds empty is a *warning* elsewhere (ideate refuses); everything else is fatal
+            if key != "seo_seeds":
+                missing.append(f"{key} (empty)")
+    if missing:
+        raise RequiredConfigMissing(
+            f"required config missing for role '{role}': {', '.join(sorted(missing))} — "
+            "run `artec config seed`"
+        )
+    return keys
 
 
 def seed_config(
@@ -188,9 +284,15 @@ def seed_config(
             overwritten.append(key)
         else:
             kept.append(key)
+    # v4: the fal price table lives in its own table so reconciliation never writes config.
+    from app.toolbox.pricing import seed_prices
+
+    priced = seed_prices(session)
+
     session.flush()
     return {"added": sorted(added), "kept": sorted(kept),
-            "overwritten": sorted(overwritten), "removed": sorted(removed)}
+            "overwritten": sorted(overwritten), "removed": sorted(removed),
+            "prices_seeded": priced}
 
 
 def get_config(session: Session, key: str, default: Any = _RAISE) -> Any:

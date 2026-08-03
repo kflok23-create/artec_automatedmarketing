@@ -74,6 +74,15 @@ class Post(Base):
     plan_source: Mapped[str | None] = mapped_column(Text)
     gate_action: Mapped[dict | None] = mapped_column(JSONVariant)
 
+    # v4 §5 — the two surfaces that never auto-publish. Each holds for human review inside
+    # the 21:00 digest; no configuration value can exempt either.
+    #   email_review: {decision, edits, reviewed_at, expiry, reason}
+    #   video_review: {decision, reason, telegram_message_id, delivered_at, reviewed_at, expiry}
+    # telegram_message_id is the proof the operator was actually SHOWN the video —
+    # review_video refuses without it.
+    email_review: Mapped[dict | None] = mapped_column(JSONVariant)
+    video_review: Mapped[dict | None] = mapped_column(JSONVariant)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -156,7 +165,11 @@ class Metric(Base):
     saves: Mapped[int | None] = mapped_column(BigInteger)
     shares: Mapped[int | None] = mapped_column(BigInteger)
     clicks: Mapped[int | None] = mapped_column(BigInteger)
+    # v4: 'operator_via_agent' when transcribed through the digest conversation, 'manual'
+    # when entered directly. operator_message is the VERBATIM audit trail — the agent is a
+    # transcriber, never an originator, and this is how that is auditable after the fact.
     source: Mapped[str | None] = mapped_column(Text)
+    operator_message: Mapped[str | None] = mapped_column(Text)
     collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -180,6 +193,46 @@ class Config(Base):
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[dict | list | str | int | bool | None] = mapped_column(JSONVariant)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EndpointPrice(Base):
+    """v4 §7·C5 — the fal price table, moved OUT of `config`.
+
+    Reconciliation must be able to write prices, and no tool may write `config`; a separate
+    table is how both invariants survive. Prices are UNIT-AWARE: clarity-upscaler and
+    qwen-lora bill per MEGAPIXEL, which a flat per-call figure cannot represent — cost scales
+    with requested output resolution, so the estimator must compute megapixels before the
+    call is made.
+
+    rate_micros = USD micro-dollars (1e-6 USD) per `unit`. Integer, never float, near money.
+      $0.030 per megapixel → 30_000 micros, unit='per_megapixel'
+      $0.040 per image     → 40_000 micros, unit='per_image'
+    """
+
+    __tablename__ = "endpoint_prices"
+
+    endpoint: Mapped[str] = mapped_column(Text, primary_key=True)
+    rate_micros: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit: Mapped[str] = mapped_column(Text, nullable=False)  # per_megapixel | per_image
+    source: Mapped[str | None] = mapped_column(Text)         # 'invoice' | 'fal_api' | 'seed'
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Inactive endpoints stay UNCALLABLE but priced — if one is ever re-enabled it arrives
+    # already priced rather than unpriced-and-therefore-blocked at the worst moment.
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class Digest(Base):
+    """v4 §6 — job 11 prepares, job 12 delivers. The digest is the ONLY place failures
+    surface, so its completeness is safety-critical."""
+
+    __tablename__ = "digests"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    digest_date: Mapped[date] = mapped_column(Date, unique=True, nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSONVariant)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class PlanShadow(Base):

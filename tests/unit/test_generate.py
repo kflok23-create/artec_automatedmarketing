@@ -18,10 +18,15 @@ LORAS = OPERATOR_CONSTANTS["loras"]
 ENDPOINT = OPERATOR_CONSTANTS["model_endpoints"]["lora_generate"]
 
 
-def test_generate_is_dormant_in_v3():
+def test_generate_is_dormant_and_priced_but_inactive():
+    from app.toolbox.pricing import SEED_PRICES
+
     assert OPERATOR_CONSTANTS["generate_enabled"] is False
-    # Config rows retained (reversible), endpoint still priced if ever re-enabled.
-    assert ENDPOINT in OPERATOR_CONSTANTS["endpoint_prices_cents"]
+    # v4: priced in the endpoint_prices TABLE (not config) so a future re-enable arrives
+    # already priced — but flagged inactive, which keeps it uncallable.
+    row = next(p for p in SEED_PRICES if p["endpoint"] == ENDPOINT)
+    assert row["active"] is False
+    assert row["unit"] == "per_megapixel"  # qwen bills per MP, not per call
 
 
 def test_exactly_one_lora_asserted_at_call_site():

@@ -135,11 +135,12 @@ def _budget_wishlist(media_spec: dict) -> list[dict]:
 def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
            all_approved: bool = False, log=print) -> dict:
     cfg_keys = ("model_endpoints", "enhance_whitelist", "loras", "fonts", "channel_media",
-                "allow_person_assets", "text_card_pairings", "endpoint_prices_cents",
-                "render_budget_cents", "per_call_ceiling_cents")
+                "allow_person_assets", "text_card_pairings", "render_run_cap_cents",
+                "per_call_ceiling_cents", "max_output_megapixels")
     cfg = {k: get_config(session, k) for k in cfg_keys}
-    budget = RenderBudget(cfg["endpoint_prices_cents"], cfg["render_budget_cents"],
-                          cfg["per_call_ceiling_cents"], log=log)
+    # Prices come from the endpoint_prices TABLE (unit-aware), not config — see §7·C5.
+    budget = RenderBudget(session, cfg["render_run_cap_cents"], cfg["per_call_ceiling_cents"],
+                          max_output_megapixels=cfg["max_output_megapixels"], log=log)
     gfal = GuardedFal(fal, budget)
 
     q = select(Post).where(Post.status == "APPROVED").order_by(Post.post_id)
@@ -233,5 +234,5 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
                 post.park_reason = f"{type(e).__name__}: {e}"[:500]
                 session.flush()
                 log(f"{post.post_id}: FAILED (park also failed: {park_err})")
-    log(f"render: spent {budget.spent_cents}¢ of {budget.run_cap}¢ this run")
+    log(f"render: spent {budget.spent_cents:.2f}¢ of {budget.run_cap_cents:.0f}¢ this run")
     return {"rendered": rendered, "parked": parked, "spent_cents": budget.spent_cents}

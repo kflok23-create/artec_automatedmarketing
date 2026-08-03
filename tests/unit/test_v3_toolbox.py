@@ -63,8 +63,15 @@ BANNED_SUBSTRINGS = (
 
 
 def test_no_generative_endpoint_in_code_or_config(repo_root):
+    # v4 amends this scan in ONE controlled way: app/toolbox/pricing.py is the price
+    # registry and is REQUIRED to name the removed image endpoints so a future re-enable
+    # arrives already priced (§7·C5). Everywhere else the ban stands, and the compensating
+    # guarantee — that those endpoints are uncallable — is asserted below.
+    PRICE_REGISTRY = "pricing.py"
     offenders = []
     for path in (repo_root / "app").rglob("*.py"):
+        if path.name == PRICE_REGISTRY:
+            continue
         content = path.read_text(encoding="utf-8", errors="ignore")
         for banned in BANNED_SUBSTRINGS:
             if banned in content:
@@ -73,44 +80,129 @@ def test_no_generative_endpoint_in_code_or_config(repo_root):
     for banned in BANNED_SUBSTRINGS:
         if banned in config_dump:
             offenders.append(f"OPERATOR_CONSTANTS: {banned}")
-    price_dump = json.dumps(OPERATOR_CONSTANTS["endpoint_prices_cents"])
-    for banned in BANNED_SUBSTRINGS:
-        if banned in price_dump:
-            offenders.append(f"price table: {banned}")
     assert not offenders, f"removed endpoints resurfaced: {offenders}"
+
+
+def test_generative_video_appears_nowhere_at_all(repo_root):
+    # Generative VIDEO has no pricing exemption — it must not exist anywhere, including the
+    # price registry. Only the removed IMAGE endpoints are priced-but-inactive.
+    video_banned = ("text-to-" + "video", "reference-to-" + "video", "seed" + "ance")
+    offenders = []
+    for path in (repo_root / "app").rglob("*.py"):
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        for banned in video_banned:
+            if banned in content:
+                offenders.append(f"{path}: {banned}")
+    assert not offenders, f"generative video resurfaced: {offenders}"
+
+
+def test_priced_but_removed_endpoints_are_inactive():
+    # The security property is "uncallable", not "unpriced". Only the upscaler is active.
+    from app.toolbox.pricing import SEED_PRICES
+
+    active = {p["endpoint"] for p in SEED_PRICES if p["active"]}
+    assert active == {"fal-ai/clarity-upscaler"}
+    for p in SEED_PRICES:
+        if p["endpoint"] != "fal-ai/clarity-upscaler":
+            assert p["active"] is False, f"{p['endpoint']} must stay uncallable"
 
 
 # ---- Rule 4: the budget (acceptance 8, 9) ----------------------------------------------
 
-def test_per_call_ceiling_refuses_before_the_call_is_made():
-    # A single USD 8.00 call must be structurally impossible.
+UPSCALER = "fal-ai/clarity-upscaler"
+
+
+def _budget(session, run_cap=250, ceiling=50, max_mp=4.0, log=None):
+    from app.toolbox.pricing import seed_prices
+
+    seed_prices(session)
+    return RenderBudget(session, run_cap, ceiling, max_output_megapixels=max_mp,
+                        log=log or (lambda *_: None))
+
+
+def test_cost_estimation_branches_on_billing_unit(session):
+    # v4 acceptance 28 — the worked checks from the price contract. A flat per-call figure
+    # cannot express these: cost scales with requested output resolution.
+    from app.models import EndpointPrice
+    from app.toolbox.pricing import estimate_micros, micros_to_cents, seed_prices
+
+    seed_prices(session)
+    # per_megapixel: 2048x2048 = 4.194 MP x $0.030 = $0.1258 ≈ 12.6¢
+    est = estimate_micros(session, UPSCALER, width=2048, height=2048)
+    assert round(micros_to_cents(est), 1) == 12.6
+    # 1080x1920 = 2.0736 MP x $0.030 = $0.0622
+    est = estimate_micros(session, UPSCALER, width=1080, height=1920)
+    assert est == 62_208 and round(micros_to_cents(est), 2) == 6.22
+    # 4K: 3840x2160 = 8.2944 MP x $0.030 = $0.2488
+    est = estimate_micros(session, UPSCALER, width=3840, height=2160)
+    assert round(micros_to_cents(est), 2) == 24.88
+
+    # per_image ignores dimensions entirely.
+    session.get(EndpointPrice, "fal-ai/flux-pro/kontext").active = True
+    session.flush()
+    flat = estimate_micros(session, "fal-ai/flux-pro/kontext", width=4096, height=4096)
+    assert flat == 40_000 == estimate_micros(session, "fal-ai/flux-pro/kontext",
+                                             width=64, height=64)
+
+
+def test_output_larger_than_max_megapixels_refused_before_the_call(session):
+    # v4 acceptance 29 — a per-megapixel endpoint can never be handed a resolution that
+    # prices past the ceiling, because the size guard fires first.
+    from app.toolbox.pricing import OutputTooLarge
+
+    budget = _budget(session, max_mp=4.0)
     fal = FakeFal()
-    budget = RenderBudget({"expensive/video": 800}, run_cap_cents=1000,
-                          per_call_ceiling_cents=50, log=lambda *_: None)
-    gfal = GuardedFal(fal, budget)
+    with pytest.raises(OutputTooLarge):
+        GuardedFal(fal, budget).run(UPSCALER, {}, width=3840, height=2160)  # 8.29 MP
+    assert fal.calls == [] and budget.spent_micros == 0
+
+
+def test_per_call_ceiling_still_refuses_at_50_cents(session):
+    # v4 acceptance 30 — the ceiling was deliberately NOT raised with the run cap.
+    from app.models import EndpointPrice
+
+    budget = _budget(session, run_cap=250, ceiling=50)
+    row = session.get(EndpointPrice, UPSCALER)
+    row.unit = "per_image"
+    row.rate_micros = 800_000  # $0.80 — a single runaway call
+    session.flush()
+    fal = FakeFal()
     with pytest.raises(PerCallCeilingExceeded):
-        gfal.run("expensive/video", {"prompt": ""})
-    assert fal.calls == [] and budget.spent_cents == 0
+        GuardedFal(fal, budget).run(UPSCALER, {"prompt": ""})
+    assert fal.calls == [] and budget.spent_micros == 0
 
 
-def test_run_cap_refuses_and_prints_running_spend():
+def test_run_cap_refuses_at_250_and_prints_running_spend(session):
+    from app.models import EndpointPrice
+
     lines: list[str] = []
-    budget = RenderBudget({"fal-ai/clarity-upscaler": 40}, run_cap_cents=100,
-                          per_call_ceiling_cents=50, log=lines.append)
+    budget = _budget(session, run_cap=250, ceiling=50, log=lines.append)
+    row = session.get(EndpointPrice, UPSCALER)
+    row.unit = "per_image"
+    row.rate_micros = 400_000  # 40¢ per call
+    session.flush()
     gfal = GuardedFal(FakeFal(), budget)
-    gfal.run("fal-ai/clarity-upscaler", {})
-    gfal.run("fal-ai/clarity-upscaler", {})
-    assert budget.spent_cents == 80
-    assert len(lines) == 2 and all("run total" in line for line in lines)  # spend printed per call
+    for _ in range(6):
+        gfal.run(UPSCALER, {})                      # 240¢ total, still under 250¢
+    assert round(budget.spent_cents) == 240
+    assert len(lines) == 6 and all("run total" in line for line in lines)
     with pytest.raises(RunBudgetExceeded):
-        gfal.run("fal-ai/clarity-upscaler", {})  # 120 > 100 — refused
-    assert budget.spent_cents == 80
+        gfal.run(UPSCALER, {})                      # 280¢ > 250¢ — refused
+    assert round(budget.spent_cents) == 240
 
 
-def test_unpriced_endpoint_is_uncallable():
-    budget = RenderBudget({"fal-ai/clarity-upscaler": 4}, 100, 50, log=lambda *_: None)
+def test_unpriced_endpoint_is_uncallable(session):
+    budget = _budget(session)
     with pytest.raises(UnknownEndpointPrice):
         GuardedFal(FakeFal(), budget).run("some/new-model", {})
+
+
+def test_inactive_endpoint_is_uncallable(session):
+    from app.toolbox.pricing import EndpointInactive
+
+    budget = _budget(session)
+    with pytest.raises(EndpointInactive):
+        GuardedFal(FakeFal(), budget).run("fal-ai/qwen-image-2512/lora", {}, width=64, height=64)
 
 
 def _approved(session, pid, channel="instagram"):
@@ -132,10 +224,16 @@ def test_run_over_cap_parks_the_remainder_with_wishlist(session):
                       aspect="square", status="active"))
     p1 = _approved(session, "post_9001")
     p2 = _approved(session, "post_9002")
-    set_config(session, "endpoint_prices_cents", {"fal-ai/clarity-upscaler": 60,
-                                                  "fal-ai/qwen-image-2512/lora": 3})
-    set_config(session, "render_budget_cents", 100)
+    from app.models import EndpointPrice
+    from app.toolbox.pricing import seed_prices
+
+    seed_prices(session)
+    row = session.get(EndpointPrice, "fal-ai/clarity-upscaler")
+    row.unit = "per_image"      # flat 60¢ so the cap arithmetic is legible in the test
+    row.rate_micros = 600_000
+    set_config(session, "render_run_cap_cents", 100)
     set_config(session, "per_call_ceiling_cents", 90)
+    set_config(session, "max_output_megapixels", 4.0)
     lines: list[str] = []
     out = render(session, FakeLLM(), FakeDrive(), FakeFal(), all_approved=True,
                  log=lines.append)

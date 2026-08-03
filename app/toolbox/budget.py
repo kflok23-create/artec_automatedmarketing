@@ -1,23 +1,42 @@
-"""v3 RULE 4 — USD 1.00 per render run, enforced before the money leaves.
+"""v4 Rule 4 — USD 2.50 per render run, enforced before the money leaves.
 
-A config price table (integer cents) estimates every model call before it is made. Two
-independent guards, both tested: a per-call ceiling (a single USD 8 call is structurally
-impossible) and a per-run cap (over cap → refuse the call, PARK the remainder). Running
-spend prints after every call. An endpoint absent from the price table is uncallable —
-which is also how the v3 endpoint removals are made permanent.
+Two independent guards, both tested:
+  • per-call ceiling, held at 50¢ and deliberately NOT raised with the run cap. Its job is
+    to make a single runaway call structurally impossible; at confirmed rates 50¢ is ~8× a
+    1080×1920 upscale and ~2× a 4K one. Raising both together would defeat having two limits.
+  • per-run cap, raised 100¢ → 250¢ in v4.
+
+Costs come from the unit-aware `endpoint_prices` table (app/toolbox/pricing.py), computed
+from the REQUESTED output dimensions before the call — two fal endpoints bill per megapixel
+and a flat per-call figure cannot represent them. Arithmetic is in micro-dollars end to end;
+config caps are in cents and converted once, so no double-rounding can push a run past its
+cap. Running spend prints after every call. An endpoint absent from the table, or present but
+inactive, is uncallable — which is also how endpoint removal is made permanent.
 """
 
 from __future__ import annotations
 
+from sqlalchemy.orm import Session
+
+from app.toolbox.pricing import (
+    EndpointInactive,
+    OutputTooLarge,
+    UnknownEndpointPrice,
+    cents_to_micros,
+    estimate_micros,
+    micros_to_cents,
+)
 from app.toolbox.text_guard import assert_no_text_render
+
+# Re-exported so existing call sites and tests keep importing from one place.
+__all__ = [
+    "BudgetError", "RunBudgetExceeded", "PerCallCeilingExceeded", "UnknownEndpointPrice",
+    "EndpointInactive", "OutputTooLarge", "RenderBudget", "GuardedFal",
+]
 
 
 class BudgetError(RuntimeError):
     pass
-
-
-class UnknownEndpointPrice(BudgetError):
-    """Endpoint not in the price table — deliberately uncallable."""
 
 
 class PerCallCeilingExceeded(BudgetError):
@@ -29,37 +48,51 @@ class RunBudgetExceeded(BudgetError):
 
 
 class RenderBudget:
-    def __init__(self, prices_cents: dict[str, int], run_cap_cents: int,
-                 per_call_ceiling_cents: int, log=print):
-        self.prices = {k: int(v) for k, v in prices_cents.items()}
-        self.run_cap = int(run_cap_cents)
-        self.ceiling = int(per_call_ceiling_cents)
-        self.spent_cents = 0
+    def __init__(self, session: Session, run_cap_cents: int, per_call_ceiling_cents: int,
+                 max_output_megapixels: float | None = None, log=print):
+        self._session = session
+        self.run_cap_micros = cents_to_micros(run_cap_cents)
+        self.ceiling_micros = cents_to_micros(per_call_ceiling_cents)
+        self.max_megapixels = max_output_megapixels
+        self.spent_micros = 0
         self._log = log
 
-    def estimate(self, endpoint: str) -> int:
-        price = self.prices.get(endpoint)
-        if price is None:
-            raise UnknownEndpointPrice(
-                f"endpoint {endpoint!r} has no entry in config.endpoint_prices_cents — "
-                "unpriced endpoints are uncallable by design"
-            )
-        return price
+    # -- display -------------------------------------------------------------------------
+    @property
+    def spent_cents(self) -> float:
+        return micros_to_cents(self.spent_micros)
 
-    def charge(self, endpoint: str) -> int:
-        est = self.estimate(endpoint)
-        if est > self.ceiling:
+    @property
+    def run_cap_cents(self) -> float:
+        return micros_to_cents(self.run_cap_micros)
+
+    def estimate(self, endpoint: str, *, width: int | None = None, height: int | None = None,
+                 images: int = 1) -> int:
+        """Pre-call estimate in micros. Raises OutputTooLarge before any call is made when
+        the requested output exceeds max_output_megapixels."""
+        return estimate_micros(self._session, endpoint, width=width, height=height,
+                               images=images, max_megapixels=self.max_megapixels)
+
+    def charge(self, endpoint: str, *, width: int | None = None, height: int | None = None,
+               images: int = 1) -> int:
+        est = self.estimate(endpoint, width=width, height=height, images=images)
+        if est > self.ceiling_micros:
             raise PerCallCeilingExceeded(
-                f"{endpoint} estimated at {est}¢ — above the per-call ceiling of "
-                f"{self.ceiling}¢; the call was refused before it was made"
+                f"{endpoint} estimated at {micros_to_cents(est):.2f}¢ — above the per-call "
+                f"ceiling of {micros_to_cents(self.ceiling_micros):.0f}¢; refused before the "
+                "call was made"
             )
-        if self.spent_cents + est > self.run_cap:
+        if self.spent_micros + est > self.run_cap_micros:
             raise RunBudgetExceeded(
-                f"{endpoint} at {est}¢ would take the run to {self.spent_cents + est}¢, "
-                f"over the {self.run_cap}¢ cap — call refused; park the remainder"
+                f"{endpoint} at {micros_to_cents(est):.2f}¢ would take the run to "
+                f"{micros_to_cents(self.spent_micros + est):.2f}¢, over the "
+                f"{micros_to_cents(self.run_cap_micros):.0f}¢ cap — call refused; park the "
+                "remainder"
             )
-        self.spent_cents += est
-        self._log(f"  spend: +{est}¢ ({endpoint}) — run total {self.spent_cents}¢ of {self.run_cap}¢")
+        self.spent_micros += est
+        dims = f" @{width}x{height}" if width and height else ""
+        self._log(f"  spend: +{micros_to_cents(est):.2f}¢ ({endpoint}{dims}) — run total "
+                  f"{self.spent_cents:.2f}¢ of {self.run_cap_cents:.0f}¢")
         return est
 
 
@@ -71,9 +104,10 @@ class GuardedFal:
         self._fal = fal
         self.budget = budget
 
-    def run(self, endpoint: str, arguments: dict, timeout_s: int = 600) -> dict:
+    def run(self, endpoint: str, arguments: dict, timeout_s: int = 600, *,
+            width: int | None = None, height: int | None = None, images: int = 1) -> dict:
         assert_no_text_render(str(arguments.get("prompt", "")), endpoint)
-        self.budget.charge(endpoint)
+        self.budget.charge(endpoint, width=width, height=height, images=images)
         return self._fal.run(endpoint, arguments, timeout_s=timeout_s)
 
     def upload_public(self, local_path: str) -> str:

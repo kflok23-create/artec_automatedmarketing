@@ -71,9 +71,16 @@ def enhance_image(fal, model_endpoints: dict, whitelist: list[str], op: str,
             return _pillow_out(ImageOps.autocontrast(im.convert("RGB"), cutoff=1))
 
     # upscale — the one surviving model call, priced and budgeted by GuardedFal.
+    # The upscaler bills PER MEGAPIXEL, so the budget needs the OUTPUT dimensions before the
+    # call: clarity scales by `scale` (1.5), so output = input × 1.5 on each axis.
+    with Image.open(local_path) as probe:
+        in_w, in_h = probe.size
+    scale = build_enhance_args("", "photo")["scale"]
+    out_w, out_h = int(round(in_w * scale)), int(round(in_h * scale))
+
     public_url = fal.upload_public(local_path)
     args = build_enhance_args(public_url, medium)
-    result = fal.run(model_endpoints["upscaler"], args)
+    result = fal.run(model_endpoints["upscaler"], args, width=out_w, height=out_h)
     images = result.get("images") or ([result["image"]] if result.get("image") else [])
     if not images:
         raise EnhanceError("upscaler returned no image")

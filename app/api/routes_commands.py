@@ -120,28 +120,63 @@ def media_cmd(post_id: str):
     prove byte-identity rather than assume it. A missing Drive file is a 404, never a
     fal-URL fallback: a silent fallback is exactly the divergence this closes.
     """
+    from app.db import get_session_factory
+    from app.integrations.drive_client import DriveClient
+
+    session = get_session_factory()()
+    try:
+        return serve_post_media(session, DriveClient(get_settings()), post_id)
+    finally:
+        session.close()
+
+
+def serve_post_media(session, drive, post_id: str):
+    """The whole of the media route's logic, separated so it is directly testable.
+
+    This is the only thing standing between a bearer token and the asset bank, so the
+    boundary is narrow BY CONSTRUCTION rather than by validation: the caller names a POST,
+    never a path and never a file id; the file id comes from that post's row; and the
+    resolved Drive path must sit under `_generated/`. There is no listing, and no parameter
+    that a traversal string could reach — `post_id` is only ever a database key.
+    """
     import hashlib
 
     from fastapi import Response
 
-    from app.db import get_session_factory
-    from app.integrations.drive_client import DriveClient
+    from app.config import get_config
     from app.models import Post
     from app.stages.publish import MediaNotInDrive, publish_media_path
 
-    session = get_session_factory()()
+    post = session.get(Post, post_id)
+    if post is None:
+        # Also the answer for any traversal-shaped id: it is a key that matches no row.
+        raise HTTPException(status_code=404, detail=f"no such post: {post_id}")
+
+    generated = str(get_config(session, "drive_generated_folder", "_generated"))
     try:
-        post = session.get(Post, post_id)
-        if post is None:
-            raise HTTPException(status_code=404, detail=f"no such post: {post_id}")
-        try:
-            local = publish_media_path(session, DriveClient(get_settings()), post)
-        except MediaNotInDrive as e:
-            raise HTTPException(status_code=404, detail=f"media-not-in-drive: {e}") from None
-        with open(local, "rb") as fh:
-            data = fh.read()
-    finally:
-        session.close()
+        drive_path = drive.resolve_path(drive.get_file(post.media_drive_file_id))
+    except MediaNotInDrive:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"media-not-in-drive: cannot resolve {post_id} in Drive "
+                   f"({type(e).__name__})") from None
+    first = str(drive_path).replace("\\", "/").lstrip("/").split("/")[0]
+    if first != generated:
+        # A render output lives in _generated/ by §7.9. Anything else is either the raw
+        # bank or a mistake, and neither is this route's to serve.
+        raise HTTPException(
+            status_code=403,
+            detail=f"refused: {post_id} resolves to {drive_path!r}, outside {generated}/ — "
+                   "this route serves render outputs only")
+
+    try:
+        local = publish_media_path(session, drive, post)
+    except MediaNotInDrive as e:
+        raise HTTPException(status_code=404, detail=f"media-not-in-drive: {e}") from None
+    with open(local, "rb") as fh:
+        data = fh.read()
     kind = "video/mp4" if local.endswith(".mp4") else "image/jpeg"
     return Response(
         content=data, media_type=kind,

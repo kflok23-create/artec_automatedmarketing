@@ -88,3 +88,81 @@ def agent_review(log=print) -> dict:
         log(memory)
     log("\nreminder: run `hermes curator` for the monthly skill hygiene pass")
     return {"skills": skills, "memory": memory}
+
+
+# ---------------------------------------------------------------------------------------
+# C6 — toolset IDENTIFIER drift.
+#
+# `agent.disabled_toolsets` disables by NAME. If an identifier is renamed between agent
+# versions, the entry silently stops matching and the toolset comes back on — the config
+# still parses, still looks right, and reports nothing. `kanban` → `todo` between 0.18.x
+# and 0.19.x is the real instance; the profile lists BOTH for that reason.
+#
+# So the check is not "is it disabled" (the config says so) but "is the name we disabled
+# still a name this build recognises". A name that has vanished is the alarm.
+# ---------------------------------------------------------------------------------------
+
+EXPECTED_DISABLED = (
+    "terminal", "code_execution", "file", "delegation", "video", "project",
+    "todo", "kanban", "tts", "bfl", "browser", "browser-cdp", "computer_use",
+    "image_gen", "video_gen",
+)
+
+# Listed in pairs that have been the same board/capability under different ids across
+# versions: if EITHER member is still recognised, the capability is still covered.
+ALIASES = (("todo", "kanban"), ("browser", "browser-cdp"))
+
+
+def _hermes_toolset_names(runner=None) -> list[str] | None:
+    """Every toolset identifier this hermes build knows. None if hermes is not installed
+    here — which is a SKIP, never a pass."""
+    import shutil
+    import subprocess
+
+    if runner is None:
+        if shutil.which("hermes") is None:
+            return None
+
+        def runner(args):
+            return subprocess.run(args, capture_output=True, text=True, timeout=120).stdout
+
+    try:
+        out = runner(["hermes", "tools", "--summary"])
+    except Exception:
+        return None
+    names = []
+    for line in (out or "").splitlines():
+        token = line.strip().split()[0] if line.strip() else ""
+        token = token.strip("-•*:").lower()
+        if token and re.fullmatch(r"[a-z0-9_\-]+", token):
+            names.append(token)
+    return names or None
+
+
+def toolset_drift_check(runner=None, log=print) -> dict:
+    """RED if an identifier we rely on has disappeared from this build."""
+    names = _hermes_toolset_names(runner)
+    if names is None:
+        log("agent-review: hermes not installed here — toolset drift NOT CHECKED "
+            "(run on artec-brain, or wherever hermes-agent is installed)")
+        return {"checked": False, "missing": [], "known": []}
+
+    known = set(names)
+    missing = []
+    for expected in EXPECTED_DISABLED:
+        if expected in known:
+            continue
+        # An alias still present means the capability is still covered by the profile.
+        covered = any(expected in pair and any(other in known for other in pair)
+                      for pair in ALIASES)
+        if not covered:
+            missing.append(expected)
+
+    if missing:
+        log(f"agent-review: RED — {len(missing)} disabled toolset identifier(s) are not "
+            f"recognised by this hermes build: {', '.join(missing)}. A disabled_toolsets "
+            "entry that matches nothing disables nothing — check whether it was renamed.")
+    else:
+        log(f"agent-review: toolset identifiers OK — all {len(EXPECTED_DISABLED)} "
+            f"expected-disabled names recognised ({len(known)} toolsets in this build)")
+    return {"checked": True, "missing": missing, "known": sorted(known)}

@@ -19,6 +19,7 @@ import httpx
 import pytest
 import respx
 
+from app.integrations.fakes import FakeDrive
 from app.models import Digest, Metric, Post
 from app.stages.digest import prepare_digest, render_digest_text
 
@@ -344,3 +345,70 @@ def test_the_hook_passes_a_line_the_operator_actually_typed(tools, operator_sess
         "figures_line": "4200, , , 45, , 118",
         "operator_message": "4200, , , 45, , 118",
     }, task_id=task) is None
+
+
+# ---- the media route is the only thing between a bearer token and the asset bank ---------
+
+class _Drive(FakeDrive):
+    def __init__(self, path="_generated/2026-08-24/post_9101.mp4"):
+        super().__init__()
+        self.path = path
+
+    def get_file(self, file_id):
+        if not file_id:
+            raise RuntimeError("no file id")
+        return {"id": file_id}
+
+    def resolve_path(self, meta):
+        return self.path
+
+
+def test_media_route_serves_a_render_output(session):
+    from app.api.routes_commands import serve_post_media
+
+    _pending_video(session, "post_9301")
+    response = serve_post_media(session, _Drive(), "post_9301")
+    assert response.headers["X-Artec-Media-SHA256"]
+    assert response.headers["X-Artec-Media-Filename"].startswith("post_9301")
+
+
+def test_media_route_refuses_anything_outside_generated(session):
+    """A render output lives in _generated/ by §7.9. The raw bank is not this route's to
+    serve, and 'it resolved to a file' is not the same as 'it resolved to OUR file'."""
+    from fastapi import HTTPException
+
+    _pending_video(session, "post_9302")
+    with pytest.raises(HTTPException) as e:
+        serve = __import__("app.api.routes_commands", fromlist=["serve_post_media"])
+        serve.serve_post_media(session, _Drive("raw-photo/child-face/IMG_2201.jpg"),
+                               "post_9302")
+    assert e.value.status_code == 403 and "outside _generated" in e.value.detail
+
+
+@pytest.mark.parametrize("hostile", [
+    "../../../etc/passwd", "..%2F..%2Fsecrets", "post_9303/../../raw-photo",
+    "_generated", "*", "'; DROP TABLE posts;--",
+])
+def test_media_route_takes_a_post_key_and_nothing_a_traversal_can_reach(session, hostile):
+    """post_id is only ever a database key: there is no path parameter, no file id
+    parameter, and no listing. A hostile id matches no row and 404s."""
+    from fastapi import HTTPException
+
+    from app.api.routes_commands import serve_post_media
+
+    with pytest.raises(HTTPException) as e:
+        serve_post_media(session, _Drive(), hostile)
+    assert e.value.status_code == 404
+
+
+def test_media_route_404s_when_the_post_has_no_drive_file(session):
+    from fastapi import HTTPException
+
+    from app.api.routes_commands import serve_post_media
+
+    session.add(Post(post_id="post_9304", week_start=TARGET, channel="tiktok",
+                     status="RENDERED", slot="evening", media_drive_file_id=None))
+    session.commit()
+    with pytest.raises(HTTPException) as e:
+        serve_post_media(session, _Drive(), "post_9304")
+    assert e.value.status_code == 404 and "media-not-in-drive" in e.value.detail

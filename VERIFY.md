@@ -221,3 +221,51 @@ which is a good monthly review companion to `artec agent-review`.
 | price reconciliation | config/credential silence | fal API pull with `as_of`; stale >30d warns in digest |
 | digest resources (fonts, prompts) | packaging/environment | already covered by wheel-content CI + `/healthz resources_packaged` |
 | required config keys | config/credential silence | REQUIRED_CONFIG_KEYS validated at boot on every service; refuse to start naming the key |
+
+---
+
+## PROBED · the hermes-agent message store (v4 Stage 2c-i)
+
+**Probe:** a real hermes-agent install (`$HERMES_HOME=C:\Users\KahFa\AppData\Local\hermes`,
+the same install whose presence makes `test_hermes_discovers_artec_with_all_tools` run
+rather than skip). Read-only SQLite inspection — not documentation, not inference.
+
+```
+$HERMES_HOME/state.db                       SQLite, WAL (state.db-wal / state.db-shm)
+  sessions(id, source, user_id, session_key, chat_id, started_at, …)
+      id      e.g. '20260802_212025_9f03c9'  (cli), 'cron_dacb65fa6fae_20260801_001534'
+      source  'cli' | 'cron' | …
+  messages(id, session_id, role, content, tool_call_id, tool_calls, tool_name,
+           timestamp, token_count, …, active, compacted)
+      role    'user' | 'assistant' | 'tool'      (observed counts: 71 / 448 / 540)
+      content TEXT — a plain string for operator turns
+```
+
+**An operator turn is `role='user'`.** Tool results are `role='tool'` with `tool_name` set;
+they are NOT user turns. That is the property that makes this store usable as an authority
+for the transcription guard: a tool result carrying digits cannot authorise those digits.
+
+### The heuristic did NOT match, and it was wrong permissively
+
+The first implementation looked for `$HERMES_HOME/sessions/{task_id}.jsonl`. That directory
+**exists**, which is exactly why the guess was dangerous — but it holds:
+
+```
+sessions/request_dump_20260708_172444_99d5de_20260708_172709_462377.json
+```
+
+**`request_dump_*.json` are debug artefacts**, written only on a non-retryable API error
+(`"reason": "non_retryable_client_error"`), containing the full provider request body — a
+constructed message list including `{"role": "user", …}` entries. The module's glob
+fallback (`sessions/*{task_id}*`) would have matched one whenever the dump filename carried
+the session id, and parsed provider-format `user` entries out of it.
+
+So the heuristic was fixed rather than widened: **one source, `state.db`, no fallback**, and
+a `task_id` that names no row in `sessions` returns "cannot verify" instead of a loose
+match. `tests/unit/test_v4_transcription_guard.py` asserts the request-dump case directly.
+
+**Not yet verified:** that the `task_id` hermes passes to `pre_tool_call` equals
+`sessions.id` for a TELEGRAM session (the probed sessions are `cli` and `cron`). If it does
+not, the guard fails closed — refuses and names `artec measure` — which is the safe
+direction, but it means metrics entry does not work until confirmed. One real digest
+session settles it.

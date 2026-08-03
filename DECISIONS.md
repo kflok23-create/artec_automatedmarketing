@@ -377,3 +377,57 @@ unless marked.
     SQLite job ran them too and "13 pg + 273 SQLite" counted them twice. The marker is now
     per-test: **329 total = 318 non-pg + 11 pg**, and every pg test genuinely requires
     Postgres.
+
+45. **THE REFERENCE EXAMPLE, kept verbatim: the tests passed because they asked the same
+    question the code did.** The transcription guard compared the agent's figures against
+    the agent's own `operator_message` argument, and its tests asserted exactly that
+    comparison. Both were internally consistent and jointly worthless. The StaticPool
+    advisory-lock test had the same shape: a fixture that made the question unaskable, and
+    an assertion that agreed. Neither was found by running the suite; both were found by a
+    human reading what the system actually does. When a guard's test and its implementation
+    share an assumption, the suite cannot see it — so for anything load-bearing, ask what
+    the check compares AGAINST, and whether the thing being checked could have supplied it.
+
+46. **v4 · the message store is `$HERMES_HOME/state.db`, probed, not inferred.** See
+    VERIFY.md. `sessions/` holds `request_dump_*.json` — error artefacts carrying a
+    constructed provider message list — and the original glob fallback would have parsed
+    one as a transcript. The fix was to narrow to a single source with no fallback, not to
+    widen the heuristic: a guard that finds its authority by guessing will one day guess in
+    the permissive direction. An operator turn is `role='user'`; tool results are
+    `role='tool'` and can never authorise a figure.
+
+47. **v4 · A6·2 — the agent spend degradation ORDER is code, and the gate is a constant.**
+    Scouting drops at 60% of the weekly cap; the gate CONVERSATION shortens at 85%; the gate
+    itself never stops, at any spend level. `gate_runs` is a literal `True`, not a
+    threshold, and a property test walks the whole spend range — "never skip the gate" must
+    not depend on getting a boundary right. The posture reaches the brain as DATA on
+    `read_brief`, the read it makes first, rather than as a sentence in a prompt.
+
+48. **v4 · A5 — the Tavily probe calls the real search endpoint and gates on the response,
+    and never fails the boot.** Presence is not validity. A 401, a zero-result 200, or a
+    timeout all record `scouting: UNAVAILABLE` with the backend's own reason into
+    `config.scouting_status`, which the digest reports nightly. Failing the boot instead
+    would trade a whole week of planning for a trend feed. A test asserts the key never
+    appears in the recorded status, because that status is rendered to Telegram.
+
+49. **v4 · A4 — `memory.write_approval: false` is written with the REAL key names, and the
+    audit rides the same service.** There is no `learning:` block in hermes-agent; the
+    original brief invented one, and an invented key is silence with extra steps — it
+    parses, changes nothing, reports green. The agent now writes memory autonomously, so
+    `audit_memory_report.py` runs on the brain at boot (and will ride job 10 weekly),
+    writes `config.memory_audit`, and the digest renders it — including "NOT YET RUN",
+    because an absent audit must not read as a clean one. The patterns are duplicated from
+    `app/stages/agent_review.py` because the brain image has no app package; a test asserts
+    the two lists stay identical. Duplicated is fine, silently divergent is not.
+
+50. **v4 · `ARTEC_API_BASE` uses Railway private networking.**
+    `http://artecautomatedmarketing.railway.internal:8080` — the port probed from artec
+    api's own deploy log (`Uvicorn running on http://0.0.0.0:8080`), not assumed. Video
+    bytes crossing the public internet on every digest would be slower, billed as egress,
+    and would needlessly expose an authenticated media route.
+
+51. **v4 · the media route's boundary is structural, not validated.** `GET
+    /commands/media/{post_id}` takes a POST KEY — never a path, never a file id — resolves
+    the file id from that post's row, requires the resolved Drive path to sit under
+    `_generated/`, and never lists. A traversal-shaped id is simply a key that matches no
+    row. Both properties are tested, including a parametrised set of hostile ids.

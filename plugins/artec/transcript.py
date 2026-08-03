@@ -5,19 +5,27 @@ compared the agent's `figures` against the agent's own `operator_message` argume
 agent supplied both sides, so the check was comparing something against itself and
 reporting green. Same shape as the StaticPool advisory-lock test.
 
-This module is the other side of the comparison: the session transcript, read from
-hermes-agent's own store, which the agent does not author. Digits are verified against
-messages whose role is the OPERATOR's.
+This module is the other side of that comparison: hermes-agent's own message store, which
+the agent does not author.
 
-WHAT IS AND IS NOT VERIFIED HERE:
-  * The store LAYOUT is not verified against a live hermes-agent — VERIFY.md carries no
-    such fact, and inventing one is the failure class this project keeps hitting. So this
-    module DISCOVERS the store at runtime across the plausible layouts and returns None
-    when it finds nothing.
-  * `None` means "cannot verify", and the hook treats that as REFUSE, not as pass. An
-    unverifiable transcription is refused with the fallback named (`artec measure`), which
-    is loud. The alternative — assuming the transcript is absent means the agent is honest
-    — is how the circular check got here.
+PROBED, NOT INFERRED (against a real hermes-agent install, v4 Stage 2c-i — see VERIFY.md):
+
+    $HERMES_HOME/state.db          SQLite, WAL mode
+      sessions(id, source, started_at, …)          id e.g. '20260802_212025_9f03c9'
+      messages(id, session_id, role, content, tool_name, timestamp, …)
+        role ∈ {'user', 'assistant', 'tool'}
+        content is TEXT — a plain string for operator turns
+
+The first implementation looked for `$HERMES_HOME/sessions/{task_id}.jsonl`. That directory
+EXISTS but holds `request_dump_*.json` — debug artefacts written only on non-retryable API
+errors, containing a constructed message list. A glob fallback would have matched one when
+the dump filename carried the session id, and parsed provider-format `user` entries out of
+it. That is guessing wrong in the PERMISSIVE direction, so the guess is gone: there is one
+source, and no fallback.
+
+Why role matters: hermes stores tool results as role='tool', NOT as a user turn. A tool
+result carrying digits therefore cannot authorise those digits. That property is the reason
+this store is usable as an authority at all.
 """
 
 from __future__ import annotations
@@ -25,106 +33,101 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sqlite3
 
-# Roles hermes-agent may use for the human side. Anything not in this set is NOT the
-# operator: an assistant turn quoting a figure back must never count as a source.
-OPERATOR_ROLES = frozenset({"user", "human", "operator"})
-
-MAX_SCAN_FILES = 200          # bounded: a transcript store is not a filesystem crawl
+# Only this role is the operator. 'tool' and 'assistant' are the agent's own side of the
+# conversation and are never a source for a figure.
+OPERATOR_ROLE = "user"
 
 
-def _store_roots() -> list[pathlib.Path]:
-    roots = []
-    override = os.environ.get("ARTEC_TRANSCRIPT_DIR")
-    if override:
-        roots.append(pathlib.Path(override))
+def store_path() -> pathlib.Path | None:
+    """The message store, or None if this process cannot see one."""
+    explicit = os.environ.get("ARTEC_TRANSCRIPT_DB")
+    if explicit:
+        path = pathlib.Path(explicit)
+        return path if path.is_file() else None
     home = os.environ.get("HERMES_HOME")
-    if home:
-        base = pathlib.Path(home)
-        profile = os.environ.get("HERMES_PROFILE", "artec-brain")
-        roots += [base / "sessions", base / "history",
-                  base / "profiles" / profile / "sessions",
-                  base / "profiles" / profile / "history"]
-    return [r for r in roots if r.is_dir()]
-
-
-def _candidate_files(task_id: str) -> list[pathlib.Path]:
-    files: list[pathlib.Path] = []
-    for root in _store_roots():
-        for suffix in (".jsonl", ".json", ".ndjson"):
-            direct = root / f"{task_id}{suffix}"
-            if direct.is_file():
-                files.append(direct)
-        if not files:
-            for path in sorted(root.glob(f"*{task_id}*"))[:MAX_SCAN_FILES]:
-                if path.is_file():
-                    files.append(path)
-    return files
+    if not home:
+        return None
+    path = pathlib.Path(home) / "state.db"
+    return path if path.is_file() else None
 
 
 def _text_of(content) -> str:
-    """Message content is a string, or a list of typed blocks."""
+    """Operator turns are plain strings; typed blocks are tolerated defensively."""
+    if content is None:
+        return ""
     if isinstance(content, str):
+        stripped = content.strip()
+        if stripped[:1] in ("[", "{"):
+            try:
+                return _text_of(json.loads(stripped))
+            except json.JSONDecodeError:
+                return content
         return content
     if isinstance(content, list):
         return " ".join(
             block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in content
-        )
+            for block in content)
     if isinstance(content, dict):
         return str(content.get("text", ""))
-    return ""
-
-
-def _turns_from_object(obj) -> list[str]:
-    if isinstance(obj, dict) and isinstance(obj.get("messages"), list):
-        obj = obj["messages"]
-    if not isinstance(obj, list):
-        obj = [obj]
-    out = []
-    for entry in obj:
-        if not isinstance(entry, dict):
-            continue
-        role = str(entry.get("role") or entry.get("sender") or entry.get("author") or "")
-        if role.lower() in OPERATOR_ROLES:
-            text = _text_of(entry.get("content", entry.get("text", "")))
-            if text:
-                out.append(text)
-    return out
+    return str(content)
 
 
 def operator_turns(task_id: str | None) -> list[str] | None:
-    """Every message the OPERATOR sent in this session, or None if no transcript store
-    could be read. None is 'cannot verify' — never 'nothing to check against'."""
+    """Every message the OPERATOR sent in this session, or None if the store cannot be read
+    or holds no such session.
+
+    None is 'cannot verify' — never 'nothing to check against'. The caller REFUSES on None:
+    an unverifiable transcription is not a verified one.
+    """
     if not task_id:
         return None
-    files = _candidate_files(str(task_id))
-    if not files:
+    path = store_path()
+    if path is None:
         return None
-    turns: list[str] = []
-    found = False
-    for path in files:
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        found = True
-        try:
-            turns += _turns_from_object(json.loads(raw))
-            continue
-        except json.JSONDecodeError:
-            pass
-        for line in raw.splitlines():          # jsonl
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                turns += _turns_from_object(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return turns if found else None
+    try:
+        # Read-only, and never creating: this process is a reader of somebody else's
+        # database and must not be able to alter or resurrect it.
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return None
+    try:
+        session = conn.execute(
+            "SELECT id FROM sessions WHERE id = ?", (str(task_id),)).fetchone()
+        if session is None:
+            # A task id that names no session cannot be vouched for. Do NOT widen the
+            # search: matching loosely is how a guard authorises the wrong conversation.
+            return None
+        rows = conn.execute(
+            "SELECT content FROM messages WHERE session_id = ? AND role = ? ORDER BY id",
+            (str(task_id), OPERATOR_ROLE)).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return [text for text in (_text_of(r[0]) for r in rows) if text]
 
 
-def available() -> bool:
-    """Whether a transcript store exists at all — for boot reporting, not for policy."""
-    return bool(_store_roots())
+def store_status() -> dict:
+    """For boot reporting and `artec doctor` — describes what this process can see, without
+    deciding policy. 'available' does not mean any particular session is verifiable."""
+    path = store_path()
+    if path is None:
+        return {"available": False,
+                "reason": "no message store: set HERMES_HOME (the agent volume) or "
+                          "ARTEC_TRANSCRIPT_DB",
+                "consequence": "record_metrics REFUSES; figures enter via `artec measure`"}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            turns = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE role = ?", (OPERATOR_ROLE,)).fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return {"available": False, "path": str(path),
+                "reason": f"store present but unreadable: {type(e).__name__}: {e}"}
+    return {"available": True, "path": str(path), "sessions": sessions,
+            "operator_turns": turns}

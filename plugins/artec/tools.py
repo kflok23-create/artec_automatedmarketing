@@ -101,12 +101,39 @@ def _config(conn, key: str, default: Any = None) -> Any:
 # implementations — may raise; the handler wrappers below convert everything to JSON
 # ---------------------------------------------------------------------------------------
 
+def _spend_posture_lines(conn, engine) -> list[str]:
+    """A6·2 — the spend posture reaches the brain as DATA on the read it makes first, not
+    as a sentence in a prompt it may or may not honour. Scouting is dropped first; the gate
+    conversation shortens second; the gate itself never stops running."""
+    try:
+        cap = int(_config(conn, "agent_weekly_cap_minor", 1500))
+        posture = _agent_runs.current_posture(cap, engine=engine)
+    except Exception as e:                                   # noqa: BLE001
+        return ["== AGENT SPEND == posture unavailable "
+                f"({type(e).__name__}) — proceed as normal and report it"]
+    out = ["", "== AGENT SPEND POSTURE (this week) ==",
+           f"  spent {posture['spent_cents']}c of {posture['cap_cents']}c "
+           f"({int(posture['fraction'] * 100)}%)"]
+    if posture["scouting"]:
+        out.append("  scouting: ALLOWED")
+    else:
+        out.append("  scouting: DROPPED — do not call web search this run; plan from the "
+                   "bank and last week's learnings")
+    out.append(f"  gate: RUNS, conversation {posture['gate_style'].upper()}"
+               + ("" if posture["gate_style"] == "full" else
+                  " — fewer clarifying turns per draft, the same decisions"))
+    out.append("  the gate is never skipped, at any spend level")
+    return out
+
+
 def _read_brief_impl(engine: Engine | None = None) -> str:
     eng = _get_engine(engine)
     with eng.begin() as conn:
         _log_run(conn, "read_brief", {})
         lines = [f"[{s}] {line}" for s, line in
                  conn.execute(text("SELECT section, line FROM v_brief")).all()]
+
+        lines += _spend_posture_lines(conn, engine)
 
         lines.append("")
         lines.append("== REVENUE (orders only — money never mixes with engagement) ==")

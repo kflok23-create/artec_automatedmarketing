@@ -70,21 +70,43 @@ def repo_root():
 
 @pytest.fixture
 def operator_session(tmp_path, monkeypatch):
-    """A hermes-agent session transcript the agent did not author. The transcription guard
-    reads THIS, not the operator_message argument the agent passes in — a check the agent
-    supplies both sides of proves nothing."""
-    import json as json_lib
+    """A hermes-agent message store the agent did not author. The transcription guard reads
+    THIS, not the `operator_message` argument the agent passes in — a check the agent
+    supplies both sides of proves nothing.
 
-    monkeypatch.setenv("ARTEC_TRANSCRIPT_DIR", str(tmp_path))
+    The schema mirrors the REAL store, probed against a live install (see VERIFY.md):
+    $HERMES_HOME/state.db with sessions(id) and messages(session_id, role, content), where
+    role is 'user' | 'assistant' | 'tool' and a tool result is NEVER role='user'.
+    """
+    import sqlite3
 
-    def _write(task_id: str, *operator_turns: str, assistant: tuple = ()) -> str:
-        rows = [{"role": "user", "content": t} for t in operator_turns]
-        rows += [{"role": "assistant", "content": t} for t in assistant]
-        (tmp_path / f"{task_id}.jsonl").write_text(
-            "\n".join(json_lib.dumps(r) for r in rows), encoding="utf-8")
+    db = tmp_path / "state.db"
+    monkeypatch.setenv("ARTEC_TRANSCRIPT_DB", str(db))
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, source TEXT);"
+        "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "session_id TEXT, role TEXT, content TEXT, tool_name TEXT);")
+    conn.commit()
+
+    def _write(task_id: str, *operator_turns: str, assistant: tuple = (),
+               tool: tuple = ()) -> str:
+        conn.execute("INSERT OR IGNORE INTO sessions (id, source) VALUES (?, 'telegram')",
+                     (task_id,))
+        for turn in operator_turns:
+            conn.execute("INSERT INTO messages (session_id, role, content) "
+                         "VALUES (?, 'user', ?)", (task_id, turn))
+        for turn in assistant:
+            conn.execute("INSERT INTO messages (session_id, role, content) "
+                         "VALUES (?, 'assistant', ?)", (task_id, turn))
+        for turn in tool:
+            conn.execute("INSERT INTO messages (session_id, role, content, tool_name) "
+                         "VALUES (?, 'tool', ?, 'read_digest')", (task_id, turn))
+        conn.commit()
         return task_id
 
-    return _write
+    yield _write
+    conn.close()
 
 
 # ---------------------------------------------------------------------------------------

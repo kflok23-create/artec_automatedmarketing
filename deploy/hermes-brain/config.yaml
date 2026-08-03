@@ -50,6 +50,27 @@ agent:
     - image_gen
     - video_gen
 
+# A4 — the LEARNING configuration. THESE ARE THE REAL KEY NAMES, verified at the pinned
+# tag (v2026.7.30 = 0.19.1) and recorded in VERIFY.md. There is NO `learning:` block in
+# hermes-agent; the original brief invented one, and writing an invented key is silence
+# with extra steps — it parses, changes nothing, and reports green.
+#
+# write_approval: false = the agent writes memory AUTONOMOUSLY from here on. The standing
+# invariant is that numbers never live in agent memory — the store is playbook only. The
+# check for that is the memory audit, which runs on this service at boot (step 7) and
+# rides job 10 weekly, reporting into the nightly digest. Autonomous writes are therefore
+# observed from the first week rather than audited after something has gone in.
+memory:
+  memory_enabled: true
+  write_approval: false
+
+skills:
+  write_approval: false
+  guard_agent_created: true
+
+# NOT WRITTEN, deliberately: no gate-taste toggle exists at this tag (VERIFY.md finding 1),
+# so gate taste is carried by the prompt body and the curator session, not by config.
+
 # Telegram-facing toolsets — key verified (/docs/user-guide/configuration,
 # platform_toolsets): the six artec tools, conversation helpers, and memory/skills for
 # the learning behaviours. web = search/scraping only (trend scouting), not a browser.

@@ -12,7 +12,27 @@ deploys, so a partially-built branch cannot strand a post.
 | **2b-ii(c)** | **D — digest delivery (job 12 body) + five polish items from reading the dry run** | **complete** |
 | **2b-iii** | **B · E · I + two corrections (circular guard, deliver_video bytes)** | **complete — merge gate is CI** |
 
-## MERGE RULE — binding
+## MERGE RULE — binding · SUPERSEDED 2c-i, see below
+
+### THE GOVERNING CONDITION (2c-i)
+
+**`v4-stage-2b` merges to `main` only after jobs 11 and 12 are REGISTERED and verified by
+listing, with `+08:00` next-run timestamps — i.e. at the end of 2c-iv, immediately before
+Checkpoint 1.**
+
+Why this outranks everything below: B makes production's already-scheduled publish job skip
+every email and every video-bearing post. Nothing on a clock prepares or delivers a digest
+until 2c-iv, so `APPROVED_TO_SEND` would be reachable only by an operator invoking the
+digest by hand every night. Merging a COMPLETE branch before its release path fires on a
+clock strands every held post — the same failure this project has refused to ship since
+Stage 2a, arriving from the direction nobody was watching.
+
+The branch runs long and that has a drift cost. It is smaller than stranding every held
+post for four passes.
+
+Everything below remains required, in addition.
+
+## The earlier rule (still required, no longer sufficient)
 
 **`v4-stage-2b` cannot merge to `main` with any `pg` test red or unexecuted.**
 The CI job *Postgres-substrate tests (advisory locks, sequences, jsonb)* is the gate.
@@ -314,3 +334,36 @@ system where two paths refuse in production:
 
 Neither is a bug; both are the fail-closed behaviour working. But merging with them open
 means the Monday digest has two dead paths, and that is a worse outcome than waiting.
+
+
+---
+
+## 2c-i — spend, search, memory, and three preconditions
+
+| Item | State |
+|---|---|
+| Transcript store probed | **done** — `$HERMES_HOME/state.db`, see VERIFY.md. The heuristic did NOT match and was wrong permissively; fixed by narrowing to one source, not widening |
+| `ARTEC_API_BASE` on artec-brain | **set** — `http://artecautomatedmarketing.railway.internal:8080` (private networking; port probed from artec api's deploy log). `skipDeploys` — it applies at the next deploy |
+| Media route hardened | **done** — post key only, `_generated/` enforced, no listing, traversal parametrised |
+| A6·2 spend posture | **done** — scouting first, gate conversation second, gate never |
+| A5 Tavily probe | **written + unit-tested; REAL RESULT NOT OBTAINED** — see below |
+| A4 memory/skills config + audit | **done** — real key names; audit runs on the brain at boot, digest renders it |
+| C6 toolset drift | **done** — `artec agent-review` is RED if a disabled identifier vanishes |
+
+### Why the Tavily probe has no real result yet
+
+Both `artec api` and `artec-brain` deploy from **`main`** (confirmed via Railway service
+config). The probe lives on this branch, so the brain cannot run it without the merge —
+and the merge is now gated behind cron registration. `TAVILY_API_KEY` is set on
+artec-brain only, and reading its value into a chat or a file is forbidden, so it cannot be
+probed from here either.
+
+**It resolves itself:** the probe runs in the brain's boot (step 7/10) on the first deploy
+after merge, and its real result lands in `config.scouting_status`, which the digest prints
+every night. Until then the digest correctly says scouting is UNAVAILABLE.
+
+Operator alternative, if you want the answer sooner — one command, key never printed:
+
+```bash
+railway run --service artec-brain python deploy/hermes-brain/probe_scouting.py
+```

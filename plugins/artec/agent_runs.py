@@ -85,6 +85,51 @@ def record_tool_call(run_id: int | None, tool: str, engine=None) -> None:
         print(f"agent_runs: could not record tool call {tool}: {type(e).__name__}: {e}")
 
 
+# ---------------------------------------------------------------------------------------
+# A6·2 — the weekly agent spend cap, and the ORDER things degrade in.
+#
+# The order is the whole point. Scouting is the cheapest thing to lose and the least
+# load-bearing: a week planned without trend input is a worse week, not a broken one. The
+# GATE is the single most valuable human touch in the system and the one thing that must
+# never be traded for headroom — so as spend approaches the cap the gate CONVERSATION
+# shortens, and the gate itself never stops running. There is deliberately no code path
+# that returns a posture without a gate; a property test walks the whole spend range to
+# prove it, because "never skip the gate" is not something a threshold should be trusted
+# with by accident.
+# ---------------------------------------------------------------------------------------
+
+DROP_SCOUTING_AT = 0.60          # of the weekly cap
+SHORTEN_GATE_AT = 0.85
+
+
+def spend_posture(spent_cents: int, cap_cents: int) -> dict:
+    """What the brain may spend this week's remaining budget on. Pure and total."""
+    cap = max(0, int(cap_cents or 0))
+    spent = max(0, int(spent_cents or 0))
+    fraction = (spent / cap) if cap else 0.0
+    scouting = fraction < DROP_SCOUTING_AT
+    gate_style = "full" if fraction < SHORTEN_GATE_AT else "short"
+    actions = []
+    if not scouting:
+        actions.append("scouting dropped — plan from the bank and last week's learnings")
+    if gate_style == "short":
+        actions.append("gate conversation shortened — fewer clarifying turns per draft, "
+                       "same decisions")
+    return {
+        "spent_cents": spent, "cap_cents": cap, "fraction": round(fraction, 3),
+        "scouting": scouting,
+        "gate_style": gate_style,
+        # INVARIANT: the gate always runs. Not a threshold, not a flag — a constant.
+        "gate_runs": True,
+        "actions": actions,
+        "degraded": bool(actions),
+    }
+
+
+def current_posture(cap_cents: int, engine=None, days: int = 7) -> dict:
+    return spend_posture(week_to_date_spend_cents(engine=engine, days=days), cap_cents)
+
+
 def record_tool_call_for_session(session_id: str | None, tool: str, engine=None) -> None:
     """Append a tool call to the run for THIS agent session, opening one if the job did not
     start through `start_run` (an operator-initiated conversation has no cron wrapper).

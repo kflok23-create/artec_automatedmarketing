@@ -71,7 +71,7 @@ def test_an_assistant_turn_is_not_a_source(tools, operator_session):
 # ---- fail closed: unverifiable is not verified -------------------------------------------
 
 def test_no_transcript_refuses_and_names_the_fallback(tools, monkeypatch):
-    monkeypatch.delenv("ARTEC_TRANSCRIPT_DIR", raising=False)
+    monkeypatch.delenv("ARTEC_TRANSCRIPT_DB", raising=False)
     monkeypatch.delenv("HERMES_HOME", raising=False)
     verdict = hook(tools, TASK, figures={"impressions": 4200},
                    operator_message="4200 impressions")
@@ -115,3 +115,52 @@ def test_arithmetic_is_still_refused(tools, operator_session):
                    operator_message="add up 300 from monday and 400 from tuesday")
     assert verdict and verdict["action"] == "block"
     assert "do not compute" in verdict["message"]
+
+
+# ---- the store is a probed fact, not a guess (2c-i) ---------------------------------------
+
+def test_a_tool_result_is_not_an_operator_turn(tools, operator_session):
+    """hermes stores tool results as role='tool'. A tool result carrying digits must not
+    authorise those digits — this is the property that makes the store usable as an
+    authority, so it is asserted rather than assumed."""
+    task = operator_session(TASK, "yes", tool=('{"impressions": 9900, "clicks": 240}',))
+    verdict = hook(tools, task, figures={"impressions": 9900},
+                   operator_message='{"impressions": 9900, "clicks": 240}')
+    assert verdict and verdict["action"] == "block"
+
+
+def test_a_request_dump_beside_the_store_cannot_authorise_anything(tools, operator_session,
+                                                                   tmp_path):
+    """$HERMES_HOME/sessions/ holds request_dump_*.json — debug artefacts written on API
+    errors, carrying a constructed message list. The first implementation globbed that
+    directory and would have parsed one. There is now ONE source and no fallback."""
+    dumps = tmp_path / "sessions"
+    dumps.mkdir(exist_ok=True)
+    (dumps / f"request_dump_20260827_{TASK}_x.json").write_text(
+        '{"request": {"body": {"messages": [{"role": "user", "content": "9900 impressions"}]}}}',
+        encoding="utf-8")
+    operator_session(TASK, "yes")
+    verdict = hook(tools, TASK, figures={"impressions": 9900},
+                   operator_message="9900 impressions")
+    assert verdict and verdict["action"] == "block"
+
+
+def test_an_unknown_session_id_is_not_widened_into_a_match(tools, operator_session):
+    operator_session("20260827_210000_abc123", "4200 impressions")
+    verdict = hook(tools, "20260827_210000", figures={"impressions": 4200},
+                   operator_message="4200 impressions")
+    assert verdict and verdict["action"] == "block"
+
+
+def test_store_status_reports_what_this_process_can_see(tools, operator_session):
+    operator_session(TASK, "4200 impressions", "yes")
+    status = tools._transcript.store_status()
+    assert status["available"] is True and status["operator_turns"] == 2
+
+
+def test_store_status_names_the_consequence_when_absent(tools, monkeypatch):
+    monkeypatch.delenv("ARTEC_TRANSCRIPT_DB", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    status = tools._transcript.store_status()
+    assert status["available"] is False
+    assert "artec measure" in status["consequence"]

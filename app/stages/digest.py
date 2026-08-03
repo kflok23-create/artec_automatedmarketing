@@ -289,6 +289,24 @@ def _price_status(session: Session) -> dict:
     }
 
 
+def _agent_posture(cfg: dict, spent_cents: int) -> dict:
+    """A6·2 — what the brain may still spend the week's budget on. The degradation ORDER is
+    the point: scouting goes first, the gate conversation shortens second, and the gate
+    itself never stops. Computed here so the operator sees it before it bites."""
+    cap = int(cfg.get("agent_weekly_cap_minor") or 0)
+    fraction = (spent_cents / cap) if cap else 0.0
+    scouting = fraction < 0.60
+    gate_style = "full" if fraction < 0.85 else "short"
+    actions = []
+    if not scouting:
+        actions.append("scouting dropped")
+    if gate_style == "short":
+        actions.append("gate conversation shortened")
+    return {"fraction": round(fraction, 3), "scouting": scouting,
+            "gate_style": gate_style, "gate_runs": True, "actions": actions,
+            "degraded": bool(actions)}
+
+
 def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None) -> dict:
     since = datetime.now(UTC) - timedelta(days=7)
 
@@ -349,6 +367,8 @@ def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None
         "cac_is_health_only": True,
         "brevo_list_count": list_count,
         "email_min_recipients": cfg.get("email_min_recipients"),
+        "agent_posture": _agent_posture(cfg, agent_cents),
+        "memory_audit": get_config(session, "memory_audit", None),
         "price_table": price_table(session),
         "price_status": _price_status(session),
         "stale_prices": stale_prices(session),
@@ -546,6 +566,10 @@ def render_digest_text(payload: dict) -> str:
                          f"across {runs} render runs (no weekly fal cap — the cap is per run)")
     lines.append(f"agent · week to date: {format_usd_cents(s['agent_spend_cents_wtd'])} · "
                  f"weekly cap {format_usd_cents(s['agent_weekly_cap_minor'] or 0)}")
+    posture = s.get("agent_posture") or {}
+    if posture.get("degraded"):
+        lines.append("⚠️  agent spend posture: " + ", ".join(posture["actions"])
+                     + " — the gate still runs, in full")
     cac = s["system_cac_cents"]
     per_order = cac.get("cost_per_attributed_order_cents")
     counts = ", ".join(f"{c} {n}" for c, n in sorted(cac.get("attributed_orders", {}).items()))
@@ -572,6 +596,18 @@ def render_digest_text(payload: dict) -> str:
         lines.append(f"price table: reconciled against fal {ps.get('reconciled_at')}")
     else:
         lines.append(f"price table: seeded {ps.get('as_of')}, never reconciled against fal")
+    audit = s.get("memory_audit")
+    if audit is None:
+        lines.append("agent memory audit: NOT YET RUN — the brain reports it at boot and "
+                     "weekly with job 10")
+    elif audit.get("clean"):
+        lines.append(f"agent memory audit: clean ({audit.get('scanned_files', 0)} files, "
+                     f"{str(audit.get('audited_at', ''))[:10]})")
+    else:
+        lines.append(f"🚨 agent memory audit: {len(audit.get('hits', []))} metric-shaped "
+                     "hit(s) — numbers belong in Postgres, not agent memory")
+        for hit in (audit.get("hits") or [])[:3]:
+            lines.append(f"   {hit.get('file')}:{hit.get('line')} {hit.get('match')!r}")
     sc = s["scouting"]
     lines.append(f"scouting: {'available' if sc.get('available') else 'UNAVAILABLE'} — {sc.get('reason', '')}")
     if p.get("completeness_warning"):

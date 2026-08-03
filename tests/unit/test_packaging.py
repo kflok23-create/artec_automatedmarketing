@@ -49,7 +49,7 @@ def test_script_head_resolves_without_cwd_or_alembic_ini(tmp_path, monkeypatch):
     # The runtime head check must not depend on the working directory (alembic.ini is a
     # repo-root file; the deployed process imports from site-packages).
     monkeypatch.chdir(tmp_path)
-    assert script_head_revision() == "0004"
+    assert script_head_revision() == "0005"
 
 
 REPO_ROOT_WALK = re.compile(r"parent\s*\.\s*parent\s*\.\s*parent")

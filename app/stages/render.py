@@ -133,7 +133,7 @@ def _budget_wishlist(media_spec: dict) -> list[dict]:
 
 
 def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
-           all_approved: bool = False, log=print) -> dict:
+           all_approved: bool = False, log=print, recorder=None) -> dict:
     cfg_keys = ("model_endpoints", "enhance_whitelist", "loras", "fonts", "channel_media",
                 "allow_person_assets", "text_card_pairings", "render_run_cap_cents",
                 "per_call_ceiling_cents", "max_output_megapixels")
@@ -234,5 +234,9 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
                 post.park_reason = f"{type(e).__name__}: {e}"[:500]
                 session.flush()
                 log(f"{post.post_id}: FAILED (park also failed: {park_err})")
+    # Record the run's fal spend as a NUMBER so the digest can query week-to-date spend
+    # rather than parse it out of log text.
+    if recorder is not None:
+        recorder.cost_micros = budget.spent_micros
     log(f"render: spent {budget.spent_cents:.2f}¢ of {budget.run_cap_cents:.0f}¢ this run")
     return {"rendered": rendered, "parked": parked, "spent_cents": budget.spent_cents}

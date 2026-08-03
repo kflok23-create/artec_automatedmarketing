@@ -92,6 +92,23 @@ def report_cmd(body: CommandRequest):
         return build_report(session, week_start=body.week)
 
 
+@router.post("/digest-prepare")
+def digest_prepare_cmd(body: CommandRequest):
+    """Job 11 body over HTTPS. `week` doubles as the target date (default: yesterday).
+    Returns both the payload and the operator-facing text so a dry run is judgeable."""
+    from app.integrations.brevo_client import Brevo
+    from app.stages.digest import prepare_digest, render_digest_text
+
+    settings = get_settings()
+    with record_run("digest-prepare", {"date": str(body.week) if body.week else None}) as (session, rec):
+        try:
+            brevo = Brevo(settings)
+        except Exception:
+            brevo = None
+        payload = prepare_digest(session, brevo=brevo, target=body.week, log=rec.log)
+        return {"payload": payload, "text": render_digest_text(payload)}
+
+
 @router.post("/plan-diff")
 def plan_diff_cmd(body: CommandRequest):
     """Shadow-mode artefact: bespoke vs agent plans with per-field agreement and learning

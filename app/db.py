@@ -119,6 +119,9 @@ class RunRecorder:
         self.args = args or {}
         self.lines: list[str] = []
         self.started_at = datetime.now(UTC)
+        # v4: fal spend in micro-dollars, set by the render stage. Queryable rather than
+        # parsed back out of the log text.
+        self.cost_micros: int | None = None
 
     def log(self, line: str) -> None:
         self.lines.append(line)
@@ -133,6 +136,7 @@ class RunRecorder:
                 finished_at=datetime.now(UTC),
                 status=status,
                 log=self.lines[-200:],
+                cost_micros=self.cost_micros,
             )
         )
         session.flush()

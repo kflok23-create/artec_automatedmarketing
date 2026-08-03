@@ -283,6 +283,10 @@ class Run(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str | None] = mapped_column(Text)  # ok | error
     log: Mapped[list | None] = mapped_column(JSONVariant)
+    # v4: fal spend for this run, in micro-dollars. The digest's SPEND & HEALTH block needs
+    # a queryable source for week-to-date render spend; parsing it out of `log` would be
+    # fragile. `agent_runs.cost_cents` is the equivalent meter on the agent side.
+    cost_micros: Mapped[int | None] = mapped_column(BigInteger)
 
 
 # ---------------------------------------------------------------------------------------

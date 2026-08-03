@@ -316,6 +316,28 @@ def plan_diff(week: str = typer.Option(..., "--week", help="YYYY-MM-DD (Monday)"
         print_diff(build_diff(session, _parse_week(week)), log=rec.log)
 
 
+@cli.command("digest-prepare")
+def digest_prepare(
+    date_str: str = typer.Option(None, "--date", help="YYYY-MM-DD (default: yesterday)"),
+    show: bool = typer.Option(False, "--show", help="print the operator-facing text"),
+):
+    """Job 11 body: prepare the 21:00 digest into the digests table. Idempotent per date.
+    Registers with no cron — the twelve jobs are wired in Stage 2c."""
+    settings = _boot()
+    from app.integrations.brevo_client import Brevo
+    from app.stages.digest import prepare_digest, render_digest_text
+
+    with record_run("digest-prepare", {"date": date_str}) as (session, rec):
+        try:
+            brevo = Brevo(settings)
+        except Exception:
+            brevo = None   # count reported UNAVAILABLE, never 0
+        payload = prepare_digest(session, brevo=brevo, target=_parse_week(date_str),
+                                 log=rec.log)
+        if show:
+            typer.echo("\n" + render_digest_text(payload))
+
+
 @cli.command("audit-memory")
 def audit_memory_cmd(
     path: list[str] = typer.Option(None, "--path", help="file/dir to scan (default: $HERMES_HOME)"),  # noqa: B008

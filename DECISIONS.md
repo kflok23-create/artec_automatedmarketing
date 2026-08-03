@@ -219,6 +219,42 @@ unless marked.
     `artec audit-memory` makes metric leakage into agent memory visible (it cannot be
     perfect); numbers live in Postgres only.
 
-26. **`artec measure --csv` from the smoke-run example is not implemented** — the locked
+26. **v4 · `ffprobe` is present in the deployed container — with a qualification that
+    changes the implementation.** Verified in the `artec api` Railway shell:
+    `ffprobe version 7.1`, `--enable-ffprobe`, at `/root/.nix-profile/bin/ffprobe`. That
+    closes the packaging-class risk against the publish pre-flight *for a login shell* —
+    which is not the same thing as for the running process. Railway starts uvicorn and the
+    scheduler as non-login processes that may not source the nix profile, and treating a
+    shell reading as a process reading would be the identical substitution that made the
+    SQLite allocator look tested and StaticPool look like two replicas. Therefore:
+    `shutil.which` is resolved at runtime **inside the app process**, never a hardcoded
+    path; the doctor `ffprobe` check is reachable over authenticated HTTPS
+    `/commands/doctor` so it executes in-process, and **only that reading is evidence**;
+    and ffprobe is parsed as `-print_format json`, never human-readable output.
+
+27. **v4 · `TAVILY_API_KEY` is set on artec-brain; `BRAVE_API_KEY` is gone.** Set and
+    deliberately unused — `web` toolset enablement and the boot probe are Stage 2c. The
+    probe must hit Tavily's real search endpoint and gate on the response, exactly as the
+    Anthropic probe does: presence is not validity.
+
+28. **v4 · `RESTORE_TARGET_URL` is dead config.** Zero matches across source, config,
+    workflows and docs; set on artec-brain only; being deleted by the operator. It is not
+    the restore target under any circumstance — `restore-check` creates and drops its own
+    uniquely-named scratch database, with a free-disk check first and RED rather than a
+    schema-restore fallback if `CREATE DATABASE` is denied.
+
+29. **v4 · the absolute video byte floor was WITHDRAWN — do not reinstate it.** It had been
+    tuned down to 2 KB to accommodate a synthetic solid-colour fixture (~0.010
+    bits/pixel-second), and in doing so stopped catching a truncated render landing at
+    12 KB: the fixture had reshaped the spec. Replaced by a bitrate floor of **0.05
+    bits/pixel-second** — `(size_bytes × 8) ÷ (width × height × duration)` — which is
+    resolution- and duration-independent. Measured on this encoder: real 1080×1920 social
+    H.264 ≈ 1.45, `testsrc2` ≈ 2.95, solid colour ≈ 0.010, pure lavfi noise ≈ 105
+    (incompressible, and as unrepresentative as solid colour in the opposite direction).
+    The floor sits ~29× below real footage and ~5× above a degenerate encode. Fixtures for
+    anything measuring *content* must be realistic; solid colour remains fine for moov,
+    duration and aspect, which do not.
+
+30. **`artec measure --csv` from the smoke-run example is not implemented** — the locked
     decision table says "No channel APIs, no CSV files"; measure is interactive, `--json`,
     or `POST /commands/measure`. The RUNBOOK shows the correct invocation.

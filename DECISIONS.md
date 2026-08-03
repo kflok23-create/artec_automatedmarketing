@@ -258,3 +258,64 @@ unless marked.
 30. **`artec measure --csv` from the smoke-run example is not implemented** — the locked
     decision table says "No channel APIs, no CSV files"; measure is interactive, `--json`,
     or `POST /commands/measure`. The RUNBOOK shows the correct invocation.
+
+31. **v4 · the digest renders money in currency, not minor units.** Minor units stay the
+    storage invariant and the arithmetic is untouched; formatting happens only at the
+    render boundary (`format_money_minor`, `format_usd_cents`). `net CM 21200 minor` asked
+    a human at 21:00 to divide by 100 in their head — the digest is a human surface and a
+    figure that must be decoded is a figure that gets misread. An unknown currency renders
+    its code rather than guessing a symbol.
+
+32. **v4 · spend is always shown against its own denominator.** The dry run set
+    `fal (week): 18.66¢` beside `cap 250¢/run` — a week-to-date figure next to a per-RUN
+    cap. The same class of error the per-megapixel correction fixed in the price table: a
+    number displayed against the wrong denominator is how a cap silently stops meaning
+    what it was set to mean. The digest now reports the most recent render run against the
+    run cap, and week-to-date separately; when there was exactly one run this week it says
+    so rather than leaving the reader to assume it.
+
+33. **v4 · the price-table staleness line is emitted every night, in every state.** Absent
+    warnings read as "no problem" — the config-silence failure class, in the one place
+    designed to surface problems. Until Stage 2c lands reconciliation the honest line is
+    `price table: seeded <date>, never reconciled against fal`, and it becomes accurate
+    automatically the moment `acknowledge_price_table` writes `acknowledged_at`.
+
+34. **v4 · `agent_weekly_cap_minor` raised 500 → 1500 (USD 15.00/week).** USD 5.00 was a
+    guess made before the brain ran nightly. Its weekly load after this build is one
+    LEARN→IDEATE, one ~45-minute gate conversation and six digest sessions that stay open
+    to relay replies. The degradation order on approach is drop scouting, then SHORTEN THE
+    GATE CONVERSATION — so a cap set too low does not fail loudly, it quietly shortens the
+    single most valuable human touch in the system, every week, while reporting green.
+    `agent_runs.cost_cents` now meters it, so after two real weeks the number is set from
+    evidence. Revisit then; do not inherit it.
+
+35. **v4 · superseded shipped defaults are upgraded on seed; operator values never are.**
+    A non-destructive seed keeps whatever is stored, which is right for an operator's
+    choice and wrong for a corrected default — the old number was never chosen by anyone,
+    so it would be inherited forever. `SUPERSEDED_DEFAULTS` upgrades a key only when the
+    stored value is still exactly the old shipped default, and `artec config seed` reports
+    it under `upgraded`. Anything the operator set is untouched and still reported `kept`.
+
+36. **v4 · the digest is split for Telegram in tested code, not by the model.** The payload
+    knows nothing about the 4096-character limit and a silently truncated digest is a post
+    that becomes invisible forever. `prepare_digest` stores a `messages` list split on
+    SECTION boundaries (item boundaries only when one section exceeds a whole message,
+    never mid-line, marked `(continued)`), and `read_digest` hands it over to be sent
+    verbatim. NEEDS YOU is first by construction, not by compliance.
+
+37. **v4 · job 12 refuses to run on Sunday inside the body.** `read_digest` returns
+    `deliver: false` with the reason on a Sunday in Asia/Singapore and hands over no
+    payload: the 09:00 gate is that day's human touch, and a second session the same
+    evening spends the operator's attention twice. The cron expression says so too, but a
+    cron expression is one edit away from being wrong.
+
+38. **v4 · `record_metrics` writes nothing without `confirm: true`.** The first call
+    returns an echo of exactly what would be recorded and what would stay NULL, so a
+    mistyped figure is caught by the operator at 21:00 rather than by `learn` three weeks
+    later. Making the echo a *return value* rather than a prompt instruction is what makes
+    it happen every time. A single ordered line — `4200, 0.62, 12, 45, 8, 118` — is
+    accepted as one reply; an empty position is unmeasured, never zero; a thousands
+    separator is REFUSED rather than guessed at, because `4,200` would parse as two
+    positions and shift every later figure into the wrong column, which is worse than no
+    reading at all. The transcription hook polices an ordered line exactly like a figures
+    dict.

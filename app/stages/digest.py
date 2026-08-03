@@ -30,6 +30,39 @@ from app.toolbox.pricing import micros_to_cents, price_table, stale_prices
 MEASURE_FIELDS = ("impressions", "completion_rate", "watch_time_s", "saves", "shares",
                   "clicks")
 
+# Telegram hard limit on one message. The digest is split on SECTION boundaries before
+# delivery — a truncated digest is a post that becomes invisible forever.
+TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+# ---------------------------------------------------------------------------------------
+# money rendering — minor units are the STORAGE invariant and never change; formatting
+# happens here, at the render boundary, because the digest is a human surface and
+# "net CM 21200 minor" asks a human at 21:00 to divide by 100 in their head.
+# ---------------------------------------------------------------------------------------
+
+CURRENCY_SYMBOLS = {"SGD": "S$", "MYR": "RM", "USD": "US$"}
+
+
+def format_money_minor(currency: str, minor: int) -> str:
+    """21200, 'MYR' → 'RM212.00'. Integer arithmetic upstream is untouched: this divides
+    only to display, and an unknown currency renders its code rather than guessing."""
+    minor = int(minor)
+    sign = "-" if minor < 0 else ""
+    whole, cents = divmod(abs(minor), 100)
+    symbol = CURRENCY_SYMBOLS.get(currency)
+    body = f"{whole:,}.{cents:02d}"
+    return f"{sign}{symbol}{body}" if symbol else f"{sign}{currency} {body}"
+
+
+def format_usd_cents(cents: float) -> str:
+    """USD spend is metered in cents (fal micros → cents; agent cents). Sub-cent amounts
+    render as '<US$0.01' rather than as US$0.00, which would read as 'free'. The exact
+    figure stays in the payload — this rounds for display only."""
+    if cents and abs(cents) < 1:
+        return "<US$0.01"
+    return format_money_minor("USD", int(round(cents)))
+
 
 # ---------------------------------------------------------------------------------------
 # helpers
@@ -206,16 +239,55 @@ def _numbers(session: Session, target: date, cfg: dict) -> dict:
     return {"date": str(target), "revenue": revenue, "engagement": engagement}
 
 
+def _price_status(session: Session) -> dict:
+    """§6 requires SPEND & HEALTH to flag a stale price table or a failed fal pull. An
+    ABSENT warning reads as 'no problem' — the config-silence failure class, in the one
+    place designed to surface problems. So a line is emitted every night, always."""
+    table = price_table(session)
+    stale = stale_prices(session)
+    if not table:
+        return {"state": "empty", "stale": stale, "as_of": None, "reconciled_at": None,
+                "note": "EMPTY — no endpoint is priced, so every render will refuse"}
+    as_of = min((r["as_of"] for r in table if r["as_of"]), default=None)
+    acked = [r["acknowledged_at"] for r in table if r["acknowledged_at"]]
+    reconciled_at = max(acked) if acked else None
+    sources = {r["source"] for r in table}
+    if stale:
+        state = "stale"
+    elif reconciled_at:
+        state = "reconciled"
+    else:
+        state = "never_reconciled"
+    return {
+        "state": state,
+        "stale": stale,
+        "as_of": (as_of or "")[:10] or None,
+        "reconciled_at": (reconciled_at or "")[:10] or None,
+        "sources": sorted(sources),
+        # Accurate the moment 2c lands the fal pull: reconciliation sets acknowledged_at.
+        "note": ("seeded {as_of}, never reconciled against fal"
+                 if state == "never_reconciled" else ""),
+    }
+
+
 def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None) -> dict:
     since = datetime.now(UTC) - timedelta(days=7)
 
+    # Week-to-date total AND the most recent single run, kept apart. The run cap is a
+    # PER-RUN limit; setting a week-to-date figure beside it is the same class of error the
+    # per-megapixel correction fixed in the price table — a number displayed against the
+    # wrong denominator is how a cap silently stops meaning what it was set to mean.
     fal_micros = 0
+    fal_runs: list[tuple[datetime, int]] = []
     for run in session.execute(select(Run)).scalars():
         started = run.started_at
         if started and started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
         if run.cost_micros and started and started >= since:
             fal_micros += int(run.cost_micros)
+            fal_runs.append((started, int(run.cost_micros)))
+    fal_runs.sort()
+    last_run = fal_runs[-1] if fal_runs else None
 
     agent_cents = 0
     for arun in session.execute(select(AgentRun)).scalars():
@@ -248,6 +320,9 @@ def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None
 
     return {
         "fal_spend_cents_wtd": round(micros_to_cents(fal_micros), 2),
+        "fal_render_runs_this_week": len(fal_runs),
+        "fal_last_run_cents": round(micros_to_cents(last_run[1]), 2) if last_run else None,
+        "fal_last_run_at": last_run[0].isoformat() if last_run else None,
         "render_run_cap_cents": cfg.get("render_run_cap_cents"),
         "agent_spend_cents_wtd": agent_cents,
         "agent_weekly_cap_minor": cfg.get("agent_weekly_cap_minor"),
@@ -256,6 +331,7 @@ def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None
         "brevo_list_count": list_count,
         "email_min_recipients": cfg.get("email_min_recipients"),
         "price_table": price_table(session),
+        "price_status": _price_status(session),
         "stale_prices": stale_prices(session),
         # Reported EVERY night while no search backend is configured (§7·A5).
         "scouting": get_config(session, "scouting_status", None)
@@ -320,6 +396,12 @@ def prepare_digest(session: Session, brevo=None, target: date | None = None,
                     "that appears nowhere is invisible to the operator permanently",
         }
         log(f"digest: COMPLETENESS WARNING — {len(missing)} post(s) unrepresented: {missing}")
+
+    # The transport split is computed here, in tested code, and carried on the payload.
+    # `read_digest` hands the brain these messages to send verbatim, in order — so the
+    # 4096-character limit and "NEEDS YOU first" are properties of the system, not of the
+    # model remembering an instruction.
+    payload["messages"] = split_for_telegram(render_digest_text(payload))
 
     row = session.execute(
         select(Digest).where(Digest.digest_date == target)).scalar_one_or_none()
@@ -397,7 +479,9 @@ def render_digest_text(payload: dict) -> str:
     if not n["revenue"]["by_currency"]:
         lines.append("   no attributed orders")
     for cur, b in sorted(n["revenue"]["by_currency"].items()):
-        lines.append(f"   {cur}: {b['orders']} orders · net CM {b['net_cm_minor']} minor")
+        plural = "order" if b["orders"] == 1 else "orders"
+        lines.append(f"   {cur}: {b['orders']} {plural} · net CM "
+                     f"{format_money_minor(cur, b['net_cm_minor'])}")
     lines.append(f"   unattributed: {n['revenue']['unattributed']}")
     lines.append("ENGAGEMENT (events + metrics only)")
     if not n["engagement"]["measured"]:
@@ -409,14 +493,31 @@ def render_digest_text(payload: dict) -> str:
 
     s = p["spend_health"]
     lines += ["", "━━ 5 · SPEND & HEALTH ━━"]
-    lines.append(f"fal (week): {s['fal_spend_cents_wtd']}¢ · cap {s['render_run_cap_cents']}¢/run")
-    lines.append(f"agent (week): {s['agent_spend_cents_wtd']}¢ · cap {s['agent_weekly_cap_minor']}¢")
+    # Per-RUN spend against the per-RUN cap; week-to-date reported separately, never as if
+    # it were the capped quantity.
+    runs = s.get("fal_render_runs_this_week", 0)
+    cap = format_usd_cents(s["render_run_cap_cents"] or 0)
+    if not runs:
+        lines.append(f"fal · no render run this week · run cap {cap}")
+    else:
+        at = (s.get("fal_last_run_at") or "")[:16].replace("T", " ")
+        lines.append(f"fal · last render run ({at}): "
+                     f"{format_usd_cents(s['fal_last_run_cents'] or 0)} · run cap {cap}")
+        if runs == 1:
+            lines.append(f"fal · week to date: {format_usd_cents(s['fal_spend_cents_wtd'])} "
+                         "— the same figure; there was only one render run this week")
+        else:
+            lines.append(f"fal · week to date: {format_usd_cents(s['fal_spend_cents_wtd'])} "
+                         f"across {runs} render runs (no weekly fal cap — the cap is per run)")
+    lines.append(f"agent · week to date: {format_usd_cents(s['agent_spend_cents_wtd'])} · "
+                 f"weekly cap {format_usd_cents(s['agent_weekly_cap_minor'] or 0)}")
     cac = s["system_cac_cents"]
     per_order = cac.get("cost_per_attributed_order_cents")
     counts = ", ".join(f"{c} {n}" for c, n in sorted(cac.get("attributed_orders", {}).items()))
     lines.append(
         "production cost per attributed order (health only, never a kill rule): "
-        + (f"{per_order}¢" if per_order is not None else "n/a — no attributed orders")
+        + (format_usd_cents(per_order) if per_order is not None
+           else "n/a — no attributed orders")
         + (f"  ·  attributed: {counts}" if counts else ""))
     count = s["brevo_list_count"]
     if count is None:
@@ -424,8 +525,18 @@ def render_digest_text(payload: dict) -> str:
     else:
         below = " — below measurement threshold" if count < (s["email_min_recipients"] or 0) else ""
         lines.append(f"brevo list 3: {count} recipients{below}")
-    if s["stale_prices"]:
-        lines.append(f"⚠️  price table stale: {', '.join(s['stale_prices'])}")
+    # Always a line — an absent warning reads as "no problem".
+    ps = s.get("price_status") or {}
+    state = ps.get("state")
+    if state == "stale":
+        lines.append(f"⚠️  price table STALE: {', '.join(ps.get('stale', []))} "
+                     f"(as of {ps.get('as_of')}) — renders are costed against old rates")
+    elif state == "empty":
+        lines.append(f"🚨 price table: {ps.get('note')}")
+    elif state == "reconciled":
+        lines.append(f"price table: reconciled against fal {ps.get('reconciled_at')}")
+    else:
+        lines.append(f"price table: seeded {ps.get('as_of')}, never reconciled against fal")
     sc = s["scouting"]
     lines.append(f"scouting: {'available' if sc.get('available') else 'UNAVAILABLE'} — {sc.get('reason', '')}")
     if p.get("completeness_warning"):
@@ -433,3 +544,113 @@ def render_digest_text(payload: dict) -> str:
         lines.append(f"🛑 {p['completeness_warning']['note']}")
         lines.append(f"   {p['completeness_warning']['posts_missing_from_digest']}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------------------
+# transport — the payload does not know about Telegram's 4096-character message limit, and
+# a silently truncated digest is a post that becomes invisible forever. Splitting is done
+# HERE, deterministically, and the resulting messages are stored on the payload so the
+# brain sends them verbatim in order. Making this the model's job would make "NEEDS YOU is
+# always in the first message" a matter of compliance rather than a property of the code.
+# ---------------------------------------------------------------------------------------
+
+SECTION_MARK = "━━"
+_PREFIX_RESERVE = 48       # room for the "HERMES · YYYY-MM-DD (2/3)" continuation header
+
+
+def _section_blocks(text: str) -> list[list[str]]:
+    """Preamble first, then one block per '━━ n · SECTION ━━' heading."""
+    blocks: list[list[str]] = [[]]
+    for line in text.split("\n"):
+        if line.startswith(SECTION_MARK) and blocks[-1]:
+            blocks.append([line])
+        else:
+            blocks[-1].append(line)
+    return [b for b in blocks if b]
+
+
+def _sub_blocks(lines: list[str]) -> list[list[str]]:
+    """Item boundaries inside a section: a new item starts on a non-indented line; its
+    continuation lines are indented, and blank lines stay with what precedes them."""
+    out: list[list[str]] = []
+    for line in lines:
+        if out and (line.startswith((" ", "\t")) or not line.strip()):
+            out[-1].append(line)
+        else:
+            out.append([line])
+    return out
+
+
+def _hard_split(line: str, budget: int) -> list[str]:
+    """Last resort for a single line longer than a whole message. Never reached by real
+    content (captions are capped well below this) but silent loss is the one outcome that
+    must be impossible, so it wraps rather than truncates."""
+    return [line[i:i + budget] for i in range(0, len(line), budget)] or [""]
+
+
+def _split_oversized_section(block: list[str], budget: int) -> list[str]:
+    header, body = block[0], block[1:]
+    pieces: list[str] = []
+    current = [header]
+    for item in _sub_blocks(body):
+        candidate = current + item
+        if len("\n".join(candidate)) <= budget:
+            current = candidate
+            continue
+        if len(current) > 1:
+            pieces.append("\n".join(current))
+            current = [f"{header} (continued)"]
+        if len("\n".join(current + item)) <= budget:
+            current = current + item
+            continue
+        line_budget = budget - len(header) - 20   # a single item too big for one message
+        for line in item:
+            parts = _hard_split(line, line_budget) if len(line) > line_budget else [line]
+            for part in parts:
+                if len("\n".join(current + [part])) > budget:
+                    pieces.append("\n".join(current))
+                    current = [f"{header} (continued)"]
+                current.append(part)
+    if len(current) > 1 or not pieces:
+        pieces.append("\n".join(current))
+    return pieces
+
+
+def split_for_telegram(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split on SECTION boundaries only. NEEDS YOU is always in the first message because
+    packing is strictly in reading order and the preamble is tiny; a section too large for
+    one message splits at item boundaries, never mid-line, and says '(continued)'."""
+    if len(text) <= limit:
+        return [text]
+    budget = limit - _PREFIX_RESERVE
+    header_line = text.split("\n", 1)[0]
+
+    chunks: list[str] = []
+    current = ""
+    for block in _section_blocks(text):
+        body = "\n".join(block)
+        joined = f"{current}\n{body}" if current else body
+        if len(joined) <= budget:
+            current = joined
+        elif len(body) <= budget:
+            if current:
+                chunks.append(current)
+            current = body
+        else:
+            pieces = _split_oversized_section(block, budget)
+            # Keep whatever is pending attached to the FIRST piece where it fits — this is
+            # what keeps the two-line preamble in front of an oversized NEEDS YOU instead
+            # of spending a whole message on it.
+            if current and len(current) + 1 + len(pieces[0]) <= budget:
+                pieces[0] = f"{current}\n{pieces[0]}"
+            elif current:
+                chunks.append(current)
+            current = ""
+            chunks.extend(pieces[:-1])
+            current = pieces[-1]
+    if current:
+        chunks.append(current)
+
+    total = len(chunks)
+    return [c if i == 0 else f"{header_line} ({i + 1}/{total})\n{c}"
+            for i, c in enumerate(chunks)]

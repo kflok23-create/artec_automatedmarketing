@@ -144,7 +144,7 @@ def test_record_metrics_stores_verbatim_and_leaves_omitted_fields_null(session, 
     message = "post_6002 did 4200 impressions and 118 clicks — didn't check saves"
     call(tools, "record_metrics", engine, post_id="post_6002", channel="tiktok",
          metric_date=str(WEEK), figures={"impressions": 4200, "clicks": 118},
-         operator_message=message)
+         operator_message=message, confirm=True)
     session.expire_all()
     row = session.get(Metric, ("post_6002", "tiktok", WEEK))
     assert row.impressions == 4200 and row.clicks == 118
@@ -157,9 +157,10 @@ def test_record_metrics_upsert_never_zeroes_an_existing_field(session, tools, en
     _published(session, "post_6003")
     call(tools, "record_metrics", engine, post_id="post_6003", channel="tiktok",
          metric_date=str(WEEK), figures={"impressions": 500},
-         operator_message="500 impressions")
+         operator_message="500 impressions", confirm=True)
     call(tools, "record_metrics", engine, post_id="post_6003", channel="tiktok",
-         metric_date=str(WEEK), figures={"clicks": 12}, operator_message="12 clicks")
+         metric_date=str(WEEK), figures={"clicks": 12}, operator_message="12 clicks",
+         confirm=True)
     session.expire_all()
     row = session.get(Metric, ("post_6003", "tiktok", WEEK))
     assert row.impressions == 500 and row.clicks == 12

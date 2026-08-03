@@ -36,6 +36,13 @@ EDITABLE_EMAIL_VARS = ("subject", "headline", "body_copy", "cta_text", "story_bl
                        "hero_image_url", "tracked_url")
 METRIC_FIELDS = ("impressions", "completion_rate", "watch_time_s", "saves", "shares", "clicks")
 
+try:                                            # stdlib since 3.9; guarded for odd images
+    from zoneinfo import ZoneInfo
+
+    SGT = ZoneInfo("Asia/Singapore")
+except Exception:                               # pragma: no cover
+    SGT = UTC
+
 
 # ---------------------------------------------------------------------------------------
 # reads
@@ -70,17 +77,34 @@ def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
     return out
 
 
-def _read_digest_impl(digest_date: str | None = None, engine=None) -> dict:
-    """The digest payload prepared by job 11. READ ONLY — delivery is deliver_video's job."""
+def is_sunday(now: datetime | None = None) -> bool:
+    """Asia/Singapore, because the whole schedule is in SGT."""
+    return (now or datetime.now(SGT)).weekday() == 6
+
+
+def _read_digest_impl(digest_date: str | None = None, now: datetime | None = None,
+                      engine=None) -> dict:
+    """The digest payload prepared by job 11, plus the pre-split Telegram messages to send
+    verbatim in order. READ ONLY — delivery of video is deliver_video's job.
+
+    JOB 12 DOES NOT RUN ON SUNDAY: the 09:00 gate is that day's touch, and a second
+    Telegram session the same evening spends the operator's attention twice. The cron
+    expression says so too, but a cron expression is one edit away from being wrong — so
+    the refusal lives here, in the body, where nothing can route around it.
+    """
     eng = _get_engine(engine)
     target = str(digest_date or date.today())
+    if is_sunday(now):
+        return {"date": target, "deliver": False,
+                "skip_reason": "Sunday — job 12 does not run; the 09:00 gate is today's "
+                               "human touch and the digest resumes Monday 21:00"}
     with eng.begin() as conn:
         _log_run(conn, "read_digest", {"date": target})
         row = conn.execute(text(
             "SELECT payload, delivered_at FROM digests WHERE digest_date = :d"),
             {"d": target}).first()
         if row is None:
-            return {"date": target, "prepared": False,
+            return {"date": target, "prepared": False, "deliver": False,
                     "note": "no digest prepared for this date — job 11 has not run"}
         payload, delivered_at = row
         if isinstance(payload, str):
@@ -90,7 +114,7 @@ def _read_digest_impl(digest_date: str | None = None, engine=None) -> dict:
             conn.execute(text(
                 "UPDATE digests SET delivered_at = :t WHERE digest_date = :d"),
                 {"t": datetime.now(UTC), "d": target})
-    return {"date": target, "prepared": True, **(payload or {})}
+    return {"date": target, "prepared": True, "deliver": True, **(payload or {})}
 
 
 # ---------------------------------------------------------------------------------------
@@ -319,12 +343,95 @@ def transcription_violations(figures: dict, operator_message: str) -> list[str]:
     return bad
 
 
-def _record_metrics_impl(post_id: str, channel: str, metric_date: str, figures: dict,
-                         operator_message: str, engine=None) -> dict:
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+class MetricsLineError(ValueError):
+    """The ordered line does not parse. Refusing is correct: a mis-aligned line writes the
+    right digits into the wrong columns, which is worse than no reading at all."""
+
+
+def parse_metrics_line(line: str) -> dict:
+    """One ordered reply — '4200, 0.62, 12, 45, 8, 118' — in the fixed field order.
+
+    An EMPTY position is NULL, never zero: '4200, , , 45, , 118' records impressions,
+    saves and clicks and leaves completion_rate, watch_time_s and shares unmeasured. A
+    literal 0 is a measured zero and is kept.
+
+    Thousands separators are refused rather than guessed at: '4,200' would silently become
+    two positions and shift every later figure into the wrong field.
+    """
+    tokens = [t.strip() for t in str(line).split(",")]
+    if len(tokens) > len(METRIC_FIELDS):
+        raise MetricsLineError(
+            f"{len(tokens)} positions for {len(METRIC_FIELDS)} fields "
+            f"({', '.join(METRIC_FIELDS)}) — if you used a thousands separator, drop it "
+            "(4200, not 4,200) and send the line again"
+        )
+    figures: dict = {}
+    for index, (field, token) in enumerate(zip(METRIC_FIELDS, tokens, strict=False), start=1):
+        if token == "":
+            figures[field] = None            # unmeasured, never zero
+            continue
+        if not _NUMBER.fullmatch(token):
+            raise MetricsLineError(
+                f"position {index} ({field}) is not a number: {token!r} — send the figure "
+                "or leave the position empty to record it as unmeasured"
+            )
+        figures[field] = float(token) if "." in token else int(token)
+    return figures
+
+
+def figures_from_args(args: dict) -> dict:
+    """The figures a record_metrics call would write, from either input form. Used by the
+    transcription hook so an ordered line is policed exactly like an explicit dict."""
+    figures = {k: v for k, v in (args.get("figures") or {}).items() if k in METRIC_FIELDS}
+    line = args.get("figures_line")
+    if line:
+        try:
+            parsed = parse_metrics_line(line)
+        except MetricsLineError:
+            return figures                   # the tool refuses with the reason
+        parsed.update(figures)
+        return parsed
+    return figures
+
+
+def _echo(post_id: str, channel: str, metric_date: str, recorded: dict,
+          null_fields: list[str]) -> str:
+    body = ", ".join(f"{k}={v}" for k, v in recorded.items()) or "nothing"
+    tail = (f"; {', '.join(null_fields)} stay UNMEASURED (NULL, not zero)"
+            if null_fields else "")
+    return f"{post_id} · {channel} · {metric_date} → {body}{tail}"
+
+
+def _record_metrics_impl(post_id: str, channel: str, metric_date: str,
+                         figures: dict | None = None, operator_message: str = "",
+                         figures_line: str | None = None, confirm: bool = False,
+                         engine=None) -> dict:
     """Upsert on (post_id, channel, metric_date). Omitted fields stay NULL — never zero.
-    `operator_message` is stored VERBATIM as the audit trail."""
+    `operator_message` is stored VERBATIM as the audit trail.
+
+    NOTHING IS WRITTEN WITHOUT confirm=true. The default call returns an echo of exactly
+    what would be recorded, so a mistyped figure is caught by the operator at 21:00 rather
+    than by `learn` three weeks later. Making the echo a return value rather than an
+    instruction is what makes it happen every time.
+    """
     eng = _get_engine(engine)
-    clean = {k: v for k, v in (figures or {}).items() if k in METRIC_FIELDS}
+    clean = figures_from_args({"figures": figures, "figures_line": figures_line})
+    if figures_line:
+        parse_metrics_line(figures_line)     # surface a bad line as an error, not silence
+
+    recorded = {k: v for k, v in clean.items() if v is not None}
+    null_fields = [f for f in METRIC_FIELDS if f not in recorded]
+    echo = _echo(post_id, channel, metric_date, recorded, null_fields)
+    if not confirm:
+        return {"preview": True, "written": False, "post_id": post_id, "channel": channel,
+                "metric_date": metric_date, "will_record": recorded,
+                "will_stay_unmeasured": null_fields, "echo": echo,
+                "next": "read this back to the operator verbatim; call again with "
+                        "confirm=true only after they agree"}
+    clean = recorded
     with eng.begin() as conn:
         _log_run(conn, "record_metrics", {"post_id": post_id, "channel": channel,
                                           "metric_date": metric_date,
@@ -359,7 +466,9 @@ def _record_metrics_impl(post_id: str, channel: str, metric_date: str, figures: 
             conn.execute(text(f"UPDATE metrics SET {', '.join(sets)} WHERE post_id = :p "
                               "AND channel = :c AND metric_date = :d"), params)
     return {"post_id": post_id, "channel": channel, "metric_date": metric_date,
-            "recorded": sorted(clean), "source": "operator_via_agent"}
+            "written": True, "recorded": sorted(clean),
+            "left_unmeasured": null_fields, "echo": echo,
+            "source": "operator_via_agent"}
 
 
 # ---------------------------------------------------------------------------------------
@@ -463,7 +572,8 @@ def read_draft_posts(args: dict, **kwargs) -> str:
 
 def read_digest(args: dict, **kwargs) -> str:
     return _envelope(lambda a, **kw: _read_digest_impl(
-        a.get("date"), engine=kw.get("engine")), args, **kwargs)
+        a.get("date"), now=a.get("now") or kw.get("now"), engine=kw.get("engine")),
+        args, **kwargs)
 
 
 def deliver_video(args: dict, **kwargs) -> str:
@@ -487,6 +597,7 @@ def record_metrics(args: dict, **kwargs) -> str:
     return _envelope(lambda a, **kw: _record_metrics_impl(
         str(a["post_id"]), str(a["channel"]), str(a["metric_date"]),
         a.get("figures") or {}, str(a.get("operator_message", "")),
+        figures_line=a.get("figures_line"), confirm=bool(a.get("confirm")),
         engine=kw.get("engine")), args, **kwargs)
 
 

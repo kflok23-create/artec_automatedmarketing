@@ -84,6 +84,9 @@ def config_seed(
         if result["kept"]:
             rec.log("kept operator values (differ from shipped defaults, NOT overwritten): "
                     + ", ".join(result["kept"]) + "  — use --force to reset them")
+        if result.get("upgraded"):
+            rec.log("upgraded superseded defaults (stored value was the old shipped default, "
+                    "so nobody had chosen it): " + ", ".join(result["upgraded"]))
         if result["overwritten"]:
             rec.log("OVERWROTE: " + ", ".join(result["overwritten"]))
 

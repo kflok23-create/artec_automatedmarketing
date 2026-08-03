@@ -8,7 +8,8 @@ deploys, so a partially-built branch cannot strand a post.
 |---|---|---|
 | **2b-i** | A · F · G · H + the Postgres test substrate | **complete** |
 | **2b-ii(a)** | §0 CI gate · §0.1 bitrate floor · D2 investigation | **complete** |
-| 2b-ii(b) | **C · D — digest preparation and delivery, ending in a dry-run digest** | **NOT STARTED — next pass** |
+| **2b-ii(b)** | **C — digest preparation + the two dry-run digests** | **complete** |
+| **2b-ii(c)** | **D — digest delivery (job 12 body) + five polish items from reading the dry run** | **complete** |
 | 2b-iii | B · E · I — skip rules, review gates end to end, remaining tests, then merge | not started |
 
 ## MERGE RULE — binding
@@ -104,6 +105,10 @@ other dialect rather than pretending to lock.**
 | SQLite | 224 | 224 | **passing** |
 | Postgres (`-m pg`) | 13 | **13** | **passing — all executed in CI** |
 
+**After 2b-ii (local, `uv run pytest -m "not pg"`): 272 SQLite tests passing** — 224 at
+`1fa6553` → 239 after C → 272 after D and the polish items. The 13 pg tests are untouched
+by this pass and re-run in CI on every push.
+
 ### What CI caught that local testing could not
 
 **The two-replica advisory-lock test was meaningless and passed for the wrong reason.**
@@ -130,6 +135,48 @@ concurrent allocation without collision, `digests.payload` round-tripping as rea
 
 ---
 
+## Built in 2b-ii — C · D
+
+### C · Digest preparation — `app/stages/digest.py` (job 11 body)
+Five sections in reading order; idempotent on `digest_date`; the live Brevo count read at
+preparation time and reported UNAVAILABLE, never 0. `assert_complete()` is the
+safety-critical guard — a post that changes state and appears nowhere is invisible to the
+operator permanently — and its warning surfaces **inside** the digest, not only in a log
+line. `artec digest-prepare --date --show` and `POST /commands/digest-prepare`.
+
+**Two defects the dry run exposed that the unit tests did not:** `expires in Noned` (an
+unstarted review has the FULL window left, not an unknown one), and
+`system CAC: SGD=49.66, MYR=49.66` — the same USD spend divided by each currency's order
+count separately, presented as two currency-specific figures. Replaced by one honest
+number, production cost per attributed order, with the per-currency counts alongside,
+uncombined.
+
+### D · Digest delivery — job 12 body
+`deploy/hermes-brain/cron-nightly-digest.txt` (not registered with cron). Three things the
+prompt asks for are enforced in code instead, because a prompt is a request and a refusal
+is a property:
+- **Sunday.** `read_digest` returns `deliver: false` with the reason on a Sunday in SGT and
+  hands over no payload. The cron expression will say so too — but it is one edit away from
+  being wrong.
+- **The transport split.** `prepare_digest` stores a `messages` list already split on
+  SECTION boundaries under Telegram's 4096-character limit; the brain sends them verbatim.
+  NEEDS YOU is first by construction. A section too large for one message splits at item
+  boundaries, never mid-line, marked `(continued)`.
+- **The metrics echo.** `record_metrics` writes NOTHING without `confirm: true`; the first
+  call returns an echo of exactly what would be recorded and what stays NULL. A single
+  ordered line is accepted; an empty position is unmeasured, never zero; a thousands
+  separator is refused rather than guessed at.
+
+### Five polish items from reading the dry run as the operator
+Money renders in currency (`RM212.00`, `S$74.00`) with the integer arithmetic untouched ·
+spend is shown against its own denominator (last render run vs the per-run cap; week to
+date separately, and it says so when there was only one run) · the price-table staleness
+line is emitted every night in every state · orphaned-slot posts confirmed wired and now
+visible in the dry run · `agent_weekly_cap_minor` 500 → 1500 with a `SUPERSEDED_DEFAULTS`
+upgrade path that corrects a stale shipped default without ever touching an operator value.
+
+---
+
 ## Open operator items carried into the next pass
 
 | Item | State |
@@ -137,6 +184,8 @@ concurrent allocation without collision, `digests.payload` round-tripping as rea
 | `which ffprobe && ffprobe -version` on the deployed `artec api` | **outstanding** — the packaging risk against A is still open. A is not wired into any publish path (B does that, in 2b-iii), so nothing is blocked yet |
 | Delete `BRAVE_API_KEY`, set `TAVILY_API_KEY` on artec-brain | **outstanding** — scouting stays unavailable and the digest will report it nightly |
 | Make CI `test` a required status check on `main` | **outstanding** — see the merge rule above |
+| Delete `RESTORE_TARGET_URL` from artec-brain | **outstanding** — dead config, see D2 below |
+| **A live delivery of the digest over Telegram** | **blocked until this branch deploys** — the brain holds the only Telegram credentials and nothing on this branch is deployed. Job 12 is proven to the wire (`sendVideo` request asserted, receipt recorded) but has never reached a real chat |
 
 ### D2 · `RESTORE_TARGET_URL` — investigated, findings
 
@@ -156,9 +205,9 @@ restore-target resolution, and the production `DATABASE_URL` rejected under any 
 
 ## Not built (do not assume any of this exists)
 
-B (skip rules) · C (digest preparation) · D (digest delivery) · E (review gates end to end
-— the *tools* exist from 2a, the expiry sweep and live Brevo count do not) · I (remaining
-tests) · everything in Stage 2c (spend cap, HTTPS mirrors, pg_dump/restore-check, price
+B (skip rules) · E (review gates end to end — the *tools* exist from 2a and the live Brevo
+count now does too, but the expiry sweep does not) · I (remaining tests) · everything in
+Stage 2c (spend cap, HTTPS mirrors, pg_dump/restore-check, price
 reconciliation, `artec prove`, cron registration, DECISIONS/RUNBOOK consolidation).
 
 **Nothing is registered with cron.** Every job body is a plain function invocable by CLI and

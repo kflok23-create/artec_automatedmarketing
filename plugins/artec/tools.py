@@ -413,6 +413,7 @@ def _load_v4():
 _v4 = _load_v4()
 HANDLERS_V4 = _v4.HANDLERS_V4
 transcription_violations = _v4.transcription_violations
+figures_from_args = _v4.figures_from_args
 HANDLERS.update(HANDLERS_V4)
 
 # Built-in tool names blocked by the pre_tool_call hook — defense in depth on top of
@@ -436,7 +437,9 @@ def pre_tool_call(tool_name: str, args: dict | None = None, task_id: str | None 
             return {"action": "block",
                     "message": "record_metrics requires operator_message — the operator's "
                                "verbatim text is the audit trail and the source of every digit"}
-        bad = transcription_violations(payload.get("figures") or {}, message)
+        # An ordered line ('4200, , , 45, , 118') is policed exactly like an explicit
+        # figures dict — the compact reply form must not be a way around the rule.
+        bad = transcription_violations(figures_from_args(payload), message)
         if bad:
             return {"action": "block",
                     "message": ("refused: these figures contain digits absent from the "

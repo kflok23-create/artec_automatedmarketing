@@ -8,15 +8,19 @@ Also builds the seeded busy-Thursday used for the dry-run deliverable.
 """
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from app.config import set_config
 from app.models import Digest, Order, Post, Run
 from app.stages.digest import (
+    TELEGRAM_MESSAGE_LIMIT,
     assert_complete,
     build_payload,
+    format_money_minor,
+    format_usd_cents,
     prepare_digest,
     render_digest_text,
+    split_for_telegram,
 )
 
 TARGET = date(2026, 8, 27)
@@ -229,6 +233,144 @@ def test_asset_drop_lists_exact_folders(session):
     session.flush()
     text = render_digest_text(build_payload(session, brevo=FakeBrevoCount(1), target=TARGET))
     assert "raw-video/child-face/" in text
+
+
+# ---- money is a human surface: minor units are stored, currency is rendered -------------
+
+def test_money_formatter_handles_both_currencies():
+    assert format_money_minor("MYR", 21200) == "RM212.00"
+    assert format_money_minor("SGD", 7400) == "S$74.00"
+    assert format_money_minor("SGD", 0) == "S$0.00"
+    assert format_money_minor("MYR", 5) == "RM0.05"
+    assert format_money_minor("SGD", 123456789) == "S$1,234,567.89"
+    assert format_money_minor("SGD", -7400) == "-S$74.00"
+    # an unknown currency renders its code rather than guessing a symbol
+    assert format_money_minor("EUR", 100) == "EUR 1.00"
+
+
+def test_usd_cents_formatter_never_renders_a_real_cost_as_free():
+    assert format_usd_cents(250) == "US$2.50"
+    assert format_usd_cents(1500) == "US$15.00"
+    assert format_usd_cents(18.66) == "US$0.19"
+    assert format_usd_cents(0.3) == "<US$0.01"
+    assert format_usd_cents(0) == "US$0.00"
+
+
+def test_numbers_section_renders_currency_not_minor_units(session):
+    session.add(Post(post_id="post_8810", week_start=TARGET, channel="instagram",
+                     status="PUBLISHED", slot="evening",
+                     posted_at=datetime(2026, 8, 27, 9, tzinfo=UTC)))
+    session.add(Order(source="billplz", external_id="bp_1", post_id="post_8810",
+                      amount_minor=44900, currency="MYR",
+                      occurred_at=datetime(2026, 8, 27, 10, tzinfo=UTC)))
+    session.flush()
+    text = render_digest_text(build_payload(session, brevo=FakeBrevoCount(1), target=TARGET))
+    assert "net CM RM212.00" in text
+    assert "minor" not in text, "minor units are a storage invariant, not an operator surface"
+
+
+# ---- spend is compared against the right denominator ------------------------------------
+
+def test_run_cap_is_compared_against_one_run_not_the_week(session):
+    for day, micros in ((25, 62_208), (26, 62_208), (27, 62_208)):
+        session.add(Run(command="render", started_at=datetime.now(UTC) - timedelta(days=27 - day),
+                        status="ok", cost_micros=micros))
+    session.flush()
+    payload = build_payload(session, brevo=FakeBrevoCount(1), target=TARGET)
+    health = payload["spend_health"]
+    assert health["fal_render_runs_this_week"] == 3
+    assert health["fal_last_run_cents"] == 6.22          # ONE run, against the per-run cap
+    assert health["fal_spend_cents_wtd"] == 18.66        # the week, reported separately
+    text = render_digest_text(payload)
+    assert "last render run" in text and "run cap US$2.50" in text
+    assert "week to date: US$0.19 across 3 render runs" in text
+
+
+def test_a_single_run_week_says_so_rather_than_leaving_it_to_be_assumed(session):
+    session.add(Run(command="render", started_at=datetime.now(UTC), status="ok",
+                    cost_micros=62_208))
+    session.flush()
+    text = render_digest_text(build_payload(session, brevo=FakeBrevoCount(1), target=TARGET))
+    assert "only one render run this week" in text
+
+
+def test_agent_cap_is_weekly_on_both_sides(session):
+    text = render_digest_text(build_payload(session, brevo=FakeBrevoCount(1), target=TARGET))
+    assert "agent · week to date:" in text and "weekly cap US$15.00" in text
+
+
+# ---- an absent warning reads as "no problem" --------------------------------------------
+
+def test_price_table_staleness_is_flagged_every_night(session):
+    payload = build_payload(session, brevo=FakeBrevoCount(1), target=TARGET)
+    assert payload["spend_health"]["price_status"]["state"] == "never_reconciled"
+    assert "never reconciled against fal" in render_digest_text(payload)
+
+
+def test_a_stale_price_table_is_shouted_not_whispered(session):
+    from app.models import EndpointPrice
+
+    for row in session.query(EndpointPrice).all():
+        row.as_of = datetime.now(UTC) - timedelta(days=90)
+    session.flush()
+    text = render_digest_text(build_payload(session, brevo=FakeBrevoCount(1), target=TARGET))
+    assert "price table STALE" in text and "clarity-upscaler" in text
+
+
+# ---- transport: Telegram's 4096-character limit the payload knows nothing about ----------
+
+def _oversized_payload(session):
+    """Five unmeasured posts and four parked ones clears the limit, as flagged."""
+    for i in range(14):
+        session.add(Post(post_id=f"post_87{i:02d}", week_start=TARGET, channel="instagram",
+                         status="PARKED", slot="evening",
+                         park_reason="waiting on an asset " + "x" * 60,
+                         asset_wishlist=[{"target_folder": f"raw-photo/subject-{i}",
+                                          "medium": "photo",
+                                          "description": "a very long description " * 12}]))
+    for i in range(9):
+        session.add(Post(post_id=f"post_88{i:02d}", week_start=TARGET, channel="tiktok",
+                         status="PUBLISHED", slot="evening",
+                         posted_at=datetime(2026, 8, 27, 9, tzinfo=UTC)))
+        _pending_email(session, f"post_89{i:02d}")
+    session.flush()
+    return build_payload(session, brevo=FakeBrevoCount(1), target=TARGET)
+
+
+def test_an_oversized_digest_splits_on_section_boundaries(session):
+    text = render_digest_text(_oversized_payload(session))
+    assert len(text) > TELEGRAM_MESSAGE_LIMIT, "fixture must actually clear the limit"
+    parts = split_for_telegram(text)
+    assert len(parts) > 1
+    for part in parts:
+        assert len(part) <= TELEGRAM_MESSAGE_LIMIT, "a truncated digest is invisible forever"
+
+
+def test_needs_you_is_always_in_the_first_message(session):
+    parts = split_for_telegram(render_digest_text(_oversized_payload(session)))
+    assert "1 · NEEDS YOU" in parts[0]
+
+
+def test_the_split_loses_no_content(session):
+    text = render_digest_text(_oversized_payload(session))
+    parts = split_for_telegram(text)
+    # strip the "(2/5)" continuation headers and the "(continued)" section repeats
+    rebuilt = "\n".join(
+        ln for i, part in enumerate(parts) for j, ln in enumerate(part.split("\n"))
+        if not (i and j == 0) and not ln.endswith("(continued)"))
+    assert rebuilt == text
+
+
+def test_a_short_digest_is_one_message(session):
+    parts = split_for_telegram(
+        render_digest_text(build_payload(session, brevo=FakeBrevoCount(1), target=TARGET)))
+    assert len(parts) == 1
+
+
+def test_prepared_payload_carries_the_messages_to_send(session):
+    payload = prepare_digest(session, brevo=FakeBrevoCount(1), target=TARGET,
+                             log=lambda *_: None)
+    assert payload["messages"] == [render_digest_text(payload)]
 
 
 def test_fulfilled_wishlist_entries_drop_off_the_asset_list(session):

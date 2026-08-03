@@ -231,7 +231,47 @@ def _write_plan_impl(week_start: str, posts: list[dict], engine: Engine | None =
     return {"plan_source": plan_source, "post_ids": created_posts, "shadow_rows": shadow_rows}
 
 
-def _record_gate_decision_impl(post_id: str, action: str, edits: dict | None = None,
+def _inject_new_post(conn, edits: dict | None) -> dict:
+    """v4 (closes A2): `inject` with post_id=null CREATES a post. Injection is a first-class
+    path — the operator having a brand-new idea at the gate is normal, not an error."""
+    fields = {k: (edits or {}).get(k) for k in PLAN_FIELDS}
+    channel = fields.get("channel") or "instagram"
+    slot = fields.get("slot") or "evening"
+    # A7: an off-vocabulary slot would never publish and never error. Reject at write time.
+    slot_times = _config(conn, "slot_times", {}) or {}
+    if slot not in slot_times:
+        raise ValueError(
+            f"slot {slot!r} is not a key of slot_times {sorted(slot_times)} — a post with an "
+            "unknown slot would never publish and never error"
+        )
+    n = int(_config(conn, "post_id_counter", 1482))
+    conn.execute(_jtext("UPDATE config SET value = :v WHERE key = 'post_id_counter'", "v"),
+                 {"v": n + 1})
+    post_id = f"post_{n}"
+    medium = "email" if channel == "email" else "organic"
+    site = _config(conn, "site_base_url", "https://artec.my")
+    code = _config(conn, "email_code" if medium == "email" else "social_code", "SOCIAL50")
+    tracked = (f"{str(site).rstrip('/')}/?code={code}&utm_source={channel}"
+               f"&utm_medium={medium}&utm_campaign={post_id}")
+    now = datetime.now(UTC)
+    conn.execute(
+        _jtext("INSERT INTO posts (post_id, week_start, channel, status, angle, hook, "
+               "cta_type, cta_placement, keywords, slot, code, utm, tracked_url, "
+               "plan_source, gate_action, created_at, updated_at) VALUES "
+               "(:pid, :w, :c, 'APPROVED', :angle, :hook, :cta_type, :cta_placement, :kw, "
+               ":s, :code, :utm, :turl, 'agent', :g, :t, :t)", "kw", "utm", "g"),
+        {"pid": post_id, "w": date.today(), "c": channel, "angle": fields.get("angle"),
+         "hook": fields.get("hook"), "cta_type": fields.get("cta_type") or "discount",
+         "cta_placement": fields.get("cta_placement") or "caption_end",
+         "kw": fields.get("keywords") or [], "s": slot, "code": code,
+         "utm": {"utm_source": channel, "utm_medium": medium, "utm_campaign": post_id},
+         "turl": tracked,
+         "g": {"action": "inject", "edits": edits or {}, "at": now.isoformat()},
+         "t": now})
+    return {"post_id": post_id, "action": "inject", "status": "APPROVED", "created": True}
+
+
+def _record_gate_decision_impl(post_id: str | None, action: str, edits: dict | None = None,
                                engine: Engine | None = None) -> dict:
     if action not in ("approve", "edit", "reject", "inject"):
         raise ValueError(f"unknown gate action {action!r}")
@@ -239,6 +279,8 @@ def _record_gate_decision_impl(post_id: str, action: str, edits: dict | None = N
     with eng.begin() as conn:
         _log_run(conn, "record_gate_decision", {"post_id": post_id, "action": action,
                                                 "edits": edits or {}})
+        if action == "inject" and not post_id:
+            return _inject_new_post(conn, edits)
         row = conn.execute(text(
             "SELECT status, gate_action FROM posts WHERE post_id = :p"), {"p": post_id}).first()
         if row is None:
@@ -310,8 +352,9 @@ def write_plan(args: dict, **kwargs) -> str:
 
 def record_gate_decision(args: dict, **kwargs) -> str:
     return _envelope(
-        lambda a, **kw: _record_gate_decision_impl(str(a["post_id"]), str(a["action"]),
-                                                   a.get("edits"), engine=kw.get("engine")),
+        lambda a, **kw: _record_gate_decision_impl(
+            a.get("post_id") or None,            # null is legal: inject creates a post
+            str(a["action"]), a.get("edits"), engine=kw.get("engine")),
         args, **kwargs)
 
 
@@ -324,6 +367,40 @@ HANDLERS: dict[str, Any] = {
     "record_gate_decision": record_gate_decision,
 }
 
+# v4 adds nine: read_draft_posts, read_digest, deliver_video, review_video, review_email,
+# record_metrics, retry_post, fulfil_wishlist, acknowledge_price_table → FIFTEEN total.
+# Imported at the END so tools_v4's back-import resolves against a fully defined module.
+# Loaded tolerantly because this file runs BOTH as a package member (in the agent) and as a
+# bare file load (tests, diagnostics) — the same dual-context problem __init__.py solves.
+def _load_v4():
+    try:
+        from importlib import import_module
+
+        return import_module(".tools_v4", package=__package__ or "artec")
+    except (ImportError, TypeError, KeyError):
+        import importlib.util
+        import pathlib
+
+        path = pathlib.Path(__file__).resolve().parent / "tools_v4.py"
+        spec = importlib.util.spec_from_file_location("artec_plugin_tools_v4", path)
+        mod = importlib.util.module_from_spec(spec)
+        # tools_v4 back-imports the four shared helpers; when loaded bare we inject them
+        # directly and strip that import line, so no parent package is needed.
+        mod.__dict__["_get_engine"] = _get_engine
+        mod.__dict__["_jtext"] = _jtext
+        mod.__dict__["_log_run"] = _log_run
+        mod.__dict__["_config"] = _config
+        source = path.read_text(encoding="utf-8").replace(
+            "from .tools import _config, _get_engine, _jtext, _log_run", "")
+        exec(compile(source, str(path), "exec"), mod.__dict__)  # noqa: S102
+        return mod
+
+
+_v4 = _load_v4()
+HANDLERS_V4 = _v4.HANDLERS_V4
+transcription_violations = _v4.transcription_violations
+HANDLERS.update(HANDLERS_V4)
+
 # Built-in tool names blocked by the pre_tool_call hook — defense in depth on top of
 # agent.disabled_toolsets: [terminal, code_execution, file] in the profile config
 # (toolset names per https://hermes-agent.nousresearch.com/docs/reference/toolsets-reference).
@@ -333,7 +410,26 @@ BLOCKED_TOOL_PREFIXES = ("terminal", "shell", "exec", "write_file", "patch",
 
 def pre_tool_call(tool_name: str, args: dict | None = None, task_id: str | None = None,
                   **kwargs) -> dict | None:
-    """Hook: block file-write/shell for this profile; the six artec tools pass through."""
+    """Hook: enforce metric TRANSCRIPTION, then block the file-write/shell families.
+    The fifteen artec tools otherwise pass through."""
+    # v4 §4 — the agent is a transcriber, never an originator. Every digit it submits must
+    # appear in the operator's verbatim message. It may not compute, estimate, infer,
+    # round, or carry a figure forward.
+    if tool_name == "record_metrics":
+        payload = args or {}
+        message = str(payload.get("operator_message") or "")
+        if not message.strip():
+            return {"action": "block",
+                    "message": "record_metrics requires operator_message — the operator's "
+                               "verbatim text is the audit trail and the source of every digit"}
+        bad = transcription_violations(payload.get("figures") or {}, message)
+        if bad:
+            return {"action": "block",
+                    "message": ("refused: these figures contain digits absent from the "
+                                f"operator's message — {', '.join(bad)}. Ask the operator "
+                                "for the number; do not compute, estimate, or infer it.")}
+        return None
+
     if tool_name in HANDLERS:
         return None
     lowered = str(tool_name).lower()

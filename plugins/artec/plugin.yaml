@@ -4,19 +4,30 @@
 # Discovery requires this file AND __init__.py with register(ctx); enablement is opt-in:
 #   hermes plugins enable artec
 name: artec
-version: 0.2.0
+version: 0.4.0
 description: >
-  The artec marketing seam - six tools and nothing more. Four reads (brief, learnings,
-  asset inventory, parked posts) and two narrow writes (write_plan, record_gate_decision).
-  No tool touches orders, events, metrics or config: the capability boundary is the
-  security model.
+  The artec marketing seam - fifteen tools. Six reads (brief, learnings, asset inventory,
+  parked posts, draft posts, digest) and nine narrow writes (plan, gate decision, video
+  delivery + review, email review, metric transcription, retry, wishlist fulfilment, price
+  acknowledgement). No tool writes orders, events or config; metrics are writable by
+  TRANSCRIPTION ONLY, and every submitted digit must appear in the operator's verbatim
+  message. The capability boundary is the security model.
 provides_tools:
   - read_brief
   - read_learnings
   - read_asset_inventory
   - read_parked_posts
+  - read_draft_posts
+  - read_digest
   - write_plan
   - record_gate_decision
+  - deliver_video
+  - review_video
+  - review_email
+  - record_metrics
+  - retry_post
+  - fulfil_wishlist
+  - acknowledge_price_table
 provides_hooks:
   - pre_tool_call
 requires_env:

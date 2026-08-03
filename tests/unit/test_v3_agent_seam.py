@@ -42,18 +42,30 @@ PLAN = [
 ]
 
 
-def test_exactly_six_handlers_none_touch_money(tools):
-    # acceptance 12
-    assert len(tools.HANDLERS) == 6
-    assert set(tools.HANDLERS) == {"read_brief", "read_learnings", "read_asset_inventory",
-                                   "read_parked_posts", "write_plan", "record_gate_decision"}
-    import inspect
-
-    src = inspect.getsource(tools)
-    for stmt in ("INSERT INTO orders", "INSERT INTO events", "INSERT INTO metrics",
-                 "UPDATE orders", "UPDATE events", "UPDATE metrics",
-                 "DELETE FROM orders", "DELETE FROM events", "DELETE FROM metrics"):
-        assert stmt not in src, f"the seam must never contain {stmt!r}"
+def test_fifteen_handlers_and_none_touch_orders_events_or_config(tools, repo_root):
+    # v4 acceptance 1 + 2. The security property was never the COUNT — it is the absence of
+    # capability. orders/events/config stay unreachable; metrics became writable by
+    # TRANSCRIPTION ONLY (enforced by the pre_tool_call hook, tested in test_v4_seam.py).
+    assert len(tools.HANDLERS) == 15
+    assert set(tools.HANDLERS) == {
+        "read_brief", "read_learnings", "read_asset_inventory", "read_parked_posts",
+        "read_draft_posts", "read_digest", "write_plan", "record_gate_decision",
+        "deliver_video", "review_video", "review_email", "record_metrics", "retry_post",
+        "fulfil_wishlist", "acknowledge_price_table",
+    }
+    seam = "\n".join(
+        (repo_root / "plugins" / "artec" / name).read_text(encoding="utf-8")
+        for name in ("tools.py", "tools_v4.py")
+    )
+    for table in ("orders", "events"):
+        for verb in ("INSERT INTO", "UPDATE", "DELETE FROM"):
+            assert f"{verb} {table}" not in seam, f"the seam must never {verb} {table}"
+    # config is readable but never writable — except the post_id counter, which is an id
+    # allocator rather than policy, and is the only permitted exception.
+    config_writes = [line.strip() for line in seam.splitlines()
+                     if "UPDATE config" in line or "INSERT INTO config" in line]
+    assert all("post_id_counter" in line for line in config_writes), \
+        f"unexpected config write in the seam: {config_writes}"
 
 
 def test_handlers_return_json_string_and_never_raise(tools, engine):

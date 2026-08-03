@@ -90,19 +90,185 @@ SCHEMAS: dict[str, dict] = {
             "Record the operator's weekly-gate verdict for one post: approve | edit | "
             "reject | inject. Rejected means REJECTED — never draft a replacement; fewer "
             "posts that week is the correct outcome. Edit deltas are stored verbatim (they "
-            "train taste). Idempotent on post_id: the first decision stands."
+            "train taste). Idempotent on post_id: the first decision stands. For a brand-new "
+            "idea the operator raises at the gate, use action='inject' with post_id omitted "
+            "or null — a post is created and APPROVED."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": ["string", "null"],
+                            "description": "omit or null when action='inject' to create a new post"},
+                "action": {"type": "string",
+                           "description": "approve|edit|reject|inject"},
+                "edits": {"type": "object",
+                          "description": "field→new value; only angle/hook/cta_type/"
+                                         "cta_placement/slot/caption/keywords apply. For "
+                                         "inject, supply channel/hook/slot here."},
+            },
+            "required": ["action"],
+        },
+    },
+
+    # ---- v4 additions --------------------------------------------------------------
+    "read_draft_posts": {
+        "name": "read_draft_posts",
+        "description": (
+            "Every DRAFT post for a week with its full creative genome — the designed way "
+            "to run the weekly gate. Use this rather than fishing drafts out of the brief. "
+            "Read-only."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"week_start": {"type": "string",
+                                          "description": "Monday of the planned week, YYYY-MM-DD"}},
+            "required": ["week_start"],
+        },
+    },
+    "read_digest": {
+        "name": "read_digest",
+        "description": (
+            "The prepared 21:00 digest for a date. Deliver it top-down and STOP when nothing "
+            "needs the operator: NEEDS YOU first (video review, email review, unmeasured "
+            "posts, failures, parked posts, doctor RED), then what went out, tonight's asset "
+            "drop, yesterday's numbers (revenue and engagement kept separate), then spend and "
+            "health. If NEEDS YOU is empty, say so in one line. Read-only."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"date": {"type": "string",
+                                    "description": "YYYY-MM-DD; defaults to today"}},
+            "required": [],
+        },
+    },
+    "deliver_video": {
+        "name": "deliver_video",
+        "description": (
+            "Send a pending video into this chat as a NATIVE Telegram video message so the "
+            "operator can watch it inline, and record the delivery. MUST be called before "
+            "review_video — a video the operator was never shown cannot be approved. Never "
+            "paste a Drive link instead; Drive links are viewer pages, not playable media."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"post_id": {"type": "string"}},
+            "required": ["post_id"],
+        },
+    },
+    "review_video": {
+        "name": "review_video",
+        "description": (
+            "Record the operator's decision on a delivered video: approve (goes out at the "
+            "next occurrence of its slot), reject (parked with the reason), or rerender "
+            "(returns to the render queue with the operator's reason as guidance). Refused "
+            "unless the video was actually delivered to this chat first."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "post_id": {"type": "string"},
-                "action": {"type": "string",
-                           "description": "approve|edit|reject|inject"},
-                "edits": {"type": "object",
-                          "description": "field→new value; only angle/hook/cta_type/"
-                                         "cta_placement/slot/caption/keywords apply"},
+                "decision": {"type": "string", "description": "approve|reject|rerender"},
+                "reason": {"type": "string",
+                           "description": "required for reject and rerender — it is fed back "
+                                          "to the toolbox as guidance"},
             },
-            "required": ["post_id", "action"],
+            "required": ["post_id", "decision"],
+        },
+    },
+    "review_email": {
+        "name": "review_email",
+        "description": (
+            "Record the operator's decision on a rendered email. Email is the ONLY "
+            "irreversible surface — once sent it reaches every subscriber and cannot be "
+            "recalled — so it never auto-publishes. approve sends at the next occurrence of "
+            "its slot, never immediately. edit overwrites any of the seven Brevo variables "
+            "and re-presents next digest. reject parks it. send_test issues a test send to "
+            "the operator's own address and changes nothing."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "string"},
+                "decision": {"type": "string",
+                             "description": "approve|reject|edit|test_only"},
+                "edits": {"type": "object",
+                          "description": "subject, headline, body_copy, cta_text, "
+                                         "story_block, hero_image_url, tracked_url"},
+                "send_test": {"type": "boolean",
+                              "description": "send a test to the operator before deciding"},
+            },
+            "required": ["post_id", "decision"],
+        },
+    },
+    "record_metrics": {
+        "name": "record_metrics",
+        "description": (
+            "Transcribe engagement figures the operator typed. YOU ARE A TRANSCRIBER, NOT A "
+            "SOURCE: every digit you submit must appear in the operator's own message, which "
+            "you must pass verbatim as operator_message. Never compute, estimate, infer, "
+            "round, sum, or carry a figure forward from another day — if a number is missing "
+            "or ambiguous, ask for it. Omitted fields stay unmeasured (NULL); never send zero "
+            "to mean 'unknown'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "string"},
+                "channel": {"type": "string"},
+                "metric_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "figures": {
+                    "type": "object",
+                    "description": "any of impressions, completion_rate, watch_time_s, "
+                                   "saves, shares, clicks — omit what the operator did not say",
+                },
+                "operator_message": {"type": "string",
+                                     "description": "the operator's message, VERBATIM"},
+            },
+            "required": ["post_id", "channel", "metric_date", "figures", "operator_message"],
+        },
+    },
+    "retry_post": {
+        "name": "retry_post",
+        "description": (
+            "Retry a FAILED or PARKED post — back to render if it has no media yet, back to "
+            "publish if it does. Refuses if the post already holds an external id, because "
+            "that means the platform accepted it and retrying would double-publish."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"post_id": {"type": "string"}},
+            "required": ["post_id"],
+        },
+    },
+    "fulfil_wishlist": {
+        "name": "fulfil_wishlist",
+        "description": (
+            "Attach a newly uploaded bank asset to a PARKED post and return it to APPROVED "
+            "so it renders on the next pass. The asset must already be synced and active."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "string"},
+                "drive_file_id": {"type": "string"},
+            },
+            "required": ["post_id", "drive_file_id"],
+        },
+    },
+    "acknowledge_price_table": {
+        "name": "acknowledge_price_table",
+        "description": (
+            "Acknowledge a fal price reconciliation when the change is large enough to alter "
+            "how much the render cap can buy. Small deltas apply automatically and are only "
+            "reported. accept marks the table acknowledged; decline leaves it flagged."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "as_of": {"type": "string", "description": "YYYY-MM-DD of the pull"},
+                "decision": {"type": "string", "description": "accept|decline"},
+            },
+            "required": ["as_of", "decision"],
         },
     },
 }

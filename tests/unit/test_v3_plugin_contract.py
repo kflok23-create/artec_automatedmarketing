@@ -13,8 +13,15 @@ import subprocess
 
 import pytest
 
+# v4: the seam grew from six to FIFTEEN. The security property was never the count — it is
+# the absence of capability: no tool writes orders, events or config, and metrics are
+# writable by transcription only (asserted in test_v4_seam.py).
 SIX = ("read_brief", "read_learnings", "read_asset_inventory", "read_parked_posts",
        "write_plan", "record_gate_decision")
+V4_ADDED = ("read_draft_posts", "read_digest", "deliver_video", "review_video",
+            "review_email", "record_metrics", "retry_post", "fulfil_wishlist",
+            "acknowledge_price_table")
+FIFTEEN = SIX + V4_ADDED
 
 
 @pytest.fixture
@@ -40,12 +47,13 @@ def test_documented_layout(plugin_dir):
     assert len(rel.parts) == 2, "plugins/artec — flat layout, within the one-level nesting max"
 
 
-def test_manifest_declares_the_six_tools(plugin_dir):
+def test_manifest_declares_all_fifteen_tools(plugin_dir):
     manifest = (plugin_dir / "plugin.yaml").read_text(encoding="utf-8")
     assert re.search(r"^name:\s*artec\s*$", manifest, re.MULTILINE)
     tools_block = manifest.split("provides_tools:")[1].split("provides_hooks:")[0]
     declared = re.findall(r"-\s*(\w+)", tools_block)
-    assert declared == list(SIX)
+    assert set(declared) == set(FIFTEEN)
+    assert len(declared) == 15
 
 
 class FakeCtx:
@@ -71,8 +79,8 @@ def ctx(plugin_dir):
     return fake
 
 
-def test_register_installs_exactly_six_tools_with_documented_schemas(ctx):
-    assert set(ctx.tools) == set(SIX)
+def test_register_installs_all_fifteen_tools_with_documented_schemas(ctx):
+    assert set(ctx.tools) == set(FIFTEEN)
     for name, entry in ctx.tools.items():
         assert entry["toolset"] == "artec"
         assert entry["override"] is False
@@ -110,7 +118,7 @@ HAS_HERMES = shutil.which("hermes") is not None
 @pytest.mark.skipif(not HAS_HERMES, reason="hermes-agent binary not installed here — "
                     "this check runs wherever the agent is installed (the hermes-brain "
                     "entrypoint runs it on every boot and hard-fails without artec)")
-def test_hermes_discovers_artec_with_six_tools(plugin_dir, tmp_path):
+def test_hermes_discovers_artec_with_all_tools(plugin_dir, tmp_path):
     # The documented discovery check — the one that would have caught the loose-file bug.
     # Verified against a real hermes-agent install: `plugins list` proves discovery +
     # enablement; tool registration happens at gateway startup via register(ctx), which
@@ -128,8 +136,8 @@ def test_hermes_discovers_artec_with_six_tools(plugin_dir, tmp_path):
     artec_line = next(line for line in listing.splitlines() if "artec" in line)
     assert "enabled" in artec_line, f"artec discovered but not enabled: {artec_line!r}"
 
-    # Six tools registered — through the same register(ctx) call the gateway makes.
+    # All fifteen registered — through the same register(ctx) call the gateway makes.
     init = _load(home / "plugins" / "artec", "__init__")
     ctx = FakeCtx()
     init.register(ctx)
-    assert set(ctx.tools) == set(SIX)
+    assert set(ctx.tools) == set(FIFTEEN)

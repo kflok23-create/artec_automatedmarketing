@@ -36,6 +36,7 @@ COPY deploy/hermes-brain/cron-weekly-gate.txt /bootstrap/cron-weekly-gate.txt
 COPY deploy/hermes-brain/cron-nightly-digest.txt /bootstrap/cron-nightly-digest.txt
 COPY deploy/hermes-brain/probe_scouting.py /bootstrap/probe_scouting.py
 COPY deploy/hermes-brain/audit_memory_report.py /bootstrap/audit_memory_report.py
+COPY deploy/hermes-brain/purge_memory_claims.py /bootstrap/purge_memory_claims.py
 COPY deploy/hermes-brain/report_volume.py /bootstrap/report_volume.py
 COPY deploy/hermes-brain/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

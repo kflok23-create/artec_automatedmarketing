@@ -111,6 +111,12 @@ python /bootstrap/probe_scouting.py || echo "WARN: scouting probe script itself 
 # A4: memory.write_approval is false, so the agent writes memory autonomously. Numbers must
 # never live there. Audited HERE because $HERMES_HOME is this volume; job 10 will run it
 # weekly once the twelve jobs are registered.
+# D-2 · A.1 — purge stale CAPABILITY claims BEFORE the audit, so the audit's result
+# reflects the store the next session will actually read. Prints everything verbatim first
+# and records before/after to config.memory_purge, because a brain boot log has already
+# been dropped once at Railway's 500/s limit and evidence that lives only in a log can
+# vanish. Never fatal: a memory problem must not cost the week.
+python /bootstrap/purge_memory_claims.py || echo "WARN: memory purge script itself failed"
 python /bootstrap/audit_memory_report.py || echo "WARN: memory audit script itself failed"
 
 step "8/10 plugin discovery + enable"

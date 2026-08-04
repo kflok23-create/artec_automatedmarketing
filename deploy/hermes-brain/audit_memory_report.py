@@ -122,8 +122,48 @@ def capability_hits(path: Path, content: str, tools: set[str]) -> list[dict]:
     return hits
 
 
+def memory_roots(home: Path) -> list[Path]:
+    """Every directory agent memory can live in, PROFILE-SCOPED FIRST.
+
+    THE AUDIT HAS NEVER SEEN A SINGLE BYTE. Its first production run, 2026-08-04, printed:
+
+        audit-memory: clean — 0 file(s) scanned, no metric-shaped content in agent memory
+
+    while the memory it exists to audit demonstrably held a stale capability claim — the
+    agent quoted the claim back verbatim in a live session the same day. The scan looked at
+    $HERMES_HOME/MEMORY.md, $HERMES_HOME/memories and $HERMES_HOME/skills. hermes-agent
+    stores memory under the ACTIVE PROFILE: $HERMES_HOME/profiles/<profile>/.
+
+    This is the identical trap already documented for the transcript store in VERIFY.md —
+    "$HERMES_HOME/state.db is a decoy that opens cleanly and answers with a plausible
+    error". The same decoy shape, in a different subsystem, caught the same way: by asking
+    what the check actually read rather than what it reported.
+
+    Both layouts are returned, because an installation could use either and a scanner that
+    guesses wrong is what produced this defect.
+    """
+    roots = [home]
+    active = ""
+    try:
+        active = (home / "active_profile").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    if active:
+        roots.append(home / "profiles" / active)
+    # Any other profile too: a stale claim under a profile that is not currently active is
+    # still one restart away from being injected into every turn.
+    profiles = home / "profiles"
+    if profiles.is_dir():
+        roots += [p for p in sorted(profiles.iterdir())
+                  if p.is_dir() and p not in roots]
+    return roots
+
+
 def scan(home: Path) -> dict:
-    targets = [home / "MEMORY.md", home / "memories", home / "skills"]
+    targets: list[Path] = []
+    for root in memory_roots(home):
+        targets += [root / "MEMORY.md", root / "memories", root / "skills",
+                    root / "memory"]
     files: list[Path] = []
     for target in targets:
         if target.is_dir():
@@ -150,7 +190,23 @@ def scan(home: Path) -> dict:
                     hits.append({"file": str(path), "line": lineno, "kind": label,
                                  "match": match.group(0)})
         hits += capability_hits(path, content, tools)
-    return {"scanned_files": len(files), "hits": hits, "clean": not hits,
+    # A SCAN OF NOTHING IS NOT A CLEAN SCAN. `clean: not hits` was True when zero files were
+    # read, so the audit reported health for a store it had never opened — one side of the
+    # comparison absent while the check still passes, which is the standing review question
+    # verbatim. Zero files is now its own state: NOT `clean`, and it says why.
+    #
+    # It is deliberately NOT fatal. The brain must boot; an audit that takes the service
+    # down is the always-wrong-check-made-louder mistake that already caused one outage.
+    # It reports, the digest carries it, and it never claims to have looked when it has not.
+    nothing_scanned = not files
+    return {"scanned_files": len(files), "hits": hits,
+            "clean": (not hits) and not nothing_scanned,
+            "nothing_scanned": nothing_scanned,
+            "scan_warning": (
+                "0 files scanned — the audit found no memory store to read. This is NOT a "
+                "clean result: agent memory demonstrably exists (the agent quotes it), so "
+                "zero files means the paths are wrong, not that the store is empty."
+            ) if nothing_scanned else None,
             "audited_at": datetime.now(UTC).isoformat(),
             "registered_tools": len(tools),
             "memory_chars": memory_chars, "memory_cap": MEMORY_CAP_CHARS,
@@ -158,7 +214,10 @@ def scan(home: Path) -> dict:
             # utilisation is surfaced so an eviction is visible before it happens.
             "memory_utilisation": (round(memory_chars / MEMORY_CAP_CHARS, 2)
                                    if memory_chars else 0.0),
-            "scanned": [str(t) for t in targets if t.exists()]}
+            "scanned": [str(t) for t in targets if t.exists()],
+            # Every path LOOKED AT, not only those found. When the answer is zero files the
+            # only useful question is where it looked, and the old result could not say.
+            "searched": [str(t) for t in targets]}
 
 
 def main() -> int:
@@ -167,9 +226,16 @@ def main() -> int:
         print("audit_memory_report: HERMES_HOME unset", file=sys.stderr)
         return 0
     result = scan(Path(home))
-    if result["clean"]:
+    if result.get("nothing_scanned"):
+        print("audit-memory: NO MEMORY STORE FOUND — 0 files scanned. This is NOT clean.")
+        print(f"  looked in: {result['searched']}")
+        print("  agent memory demonstrably exists (the agent quotes it in sessions), so "
+              "zero files means these paths are wrong.")
+    elif result["clean"]:
         print(f"audit-memory: clean — {result['scanned_files']} file(s) scanned, no "
               "metric-shaped content in agent memory")
+        for name in result["scanned"]:
+            print(f"  read: {name}")
     else:
         print(f"audit-memory: {len(result['hits'])} metric-shaped hit(s) — numbers belong "
               "in Postgres, not agent memory:")

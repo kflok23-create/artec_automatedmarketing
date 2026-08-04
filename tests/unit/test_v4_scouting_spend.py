@@ -152,9 +152,34 @@ def test_the_probe_never_puts_the_key_in_its_own_status(probe):
 
 # ---- A4 · autonomous memory writes are observed from the first week ----------------------
 
-def test_the_audit_is_clean_on_empty_memory(audit, tmp_path):
+def test_an_empty_store_is_NOT_reported_clean(audit, tmp_path):
+    """CORRECTED 2026-08-05. This test used to assert `clean is True` for a store with no
+    files in it, and that assertion was the defect, encoded.
+
+    In production the audit printed `clean — 0 file(s) scanned` while agent memory held a
+    stale capability claim the agent then acted on for a whole session. It was reading the
+    wrong paths — memory is profile-scoped — and zero files satisfied `clean: not hits`.
+    The old test passed happily, because it asserted exactly the wrong behaviour: it
+    supplied an empty directory and demanded the word "clean".
+
+    A scan that read nothing has not established anything. `hits == []` still holds — there
+    genuinely were no hits — but `clean` must not, and the result now says why.
+    """
     (tmp_path / "skills").mkdir()
     result = audit.scan(tmp_path)
+    assert result["hits"] == []
+    assert result["clean"] is False
+    assert result["nothing_scanned"] is True
+    assert "NOT a clean result" in result["scan_warning"]
+
+
+def test_a_store_with_files_and_no_findings_is_clean(audit, tmp_path):
+    """The genuine clean case, which must still work: files were READ and were fine."""
+    (tmp_path / "MEMORY.md").write_text(
+        "Playbook: hooks that name a time work well.\n"
+        "The operator prefers short digests.\n", encoding="utf-8")
+    result = audit.scan(tmp_path)
+    assert result["scanned_files"] == 1
     assert result["clean"] is True and result["hits"] == []
 
 

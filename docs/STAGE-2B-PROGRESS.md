@@ -20,9 +20,10 @@ deploys, so a partially-built branch cannot strand a post.
    end of 2c-iv, immediately before Checkpoint 1
 2. every `pg` test executed and green
 3. **`POST /commands/*` accepts the correct bearer** (probe A′ — still open, see below)
-4. metrics entry either works against the production store layout (probe B — now
-   implemented, needs one live session) **or** is consciously accepted as HTTPS-only for
-   week one
+4. metrics entry either works against the production store layout — probe F1 confirms a
+   Telegram session DOES create a `sessions` row, and the guard now accepts either
+   `id` or `session_key` exactly, so this needs one live session to confirm rather than a
+   decision **or** is consciously accepted as HTTPS-only for week one
 5. the CI gate, per the operator's decision on branch protection (403 on this plan)
 
 Condition 1 is the governing one and the reason the branch runs long:
@@ -410,3 +411,49 @@ Either way it stops being guesswork:
 ```bash
 railway logs --service "artec api" | grep "401 on an authenticated route"
 ```
+
+
+---
+
+## 2c-i(c) — operator probes F1–F5
+
+| Probe | Outcome |
+|---|---|
+| **F1** Telegram session row | Exists. Guard matches uid=197609(KahFa) gid=197609 groups=197609 OR , exact, no widening; logs which one the runtime passes so VERIFY.md can record it. Merge condition 4 is now resolvable rather than a coin toss |
+| **F2** memory contradicts the build | **URGENT, closed.**  now flags stale capability claims against the LIVE manifest, and imperatives; MEMORY utilisation (89% of 2,200) surfaced so a silent eviction is visible |
+| **F3**  parked defect | **Real, fixed.** Pure recency window dropped long-parked posts; the planner reads that first |
+| **F4** prompt advertises disabled tools | Traced to ; not suppressible by  at this tag. Accepted noise, recorded with the reason |
+| **F5** doubled profile path | Not emitted by any installed hermes source; nothing WE write uses it. One DECISIONS.md
+MIGRATION.md
+README.md
+SPEC.md
+VERIFY.md
+alembic.ini
+app
+assets
+deploy
+dist
+docs
+nixpacks.toml
+plugins
+pyproject.toml
+railway.hermes-brain.json
+railway.json
+railway.scheduler.json
+tests
+uv.lock settles it |
+
+### F2 is the one worth remembering
+
+The agent was about to be told, in every turn, that tools it holds do not exist — and
+instructed to tell the operator so.  as built would have passed it: the
+patterns look for numbers, and this was a capability claim. **The check existed and was
+aimed at the wrong thing**, which is a different failure from a check that is missing, and
+harder to notice because it reports green.
+
+### F3 is the one worth acting on beyond the fix
+
+The agent found a real defect in production and wrote it into its own memory. It never
+reached the gap register, so it survived four passes of review by people who do not read
+agent memory. Memory is not a defect tracker — anything the agent discovers about the
+system needs a path out of memory and into the register.

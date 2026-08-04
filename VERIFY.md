@@ -358,3 +358,32 @@ The entrypoint already copies the repo-committed `deploy/hermes-brain/config.yam
 volume at **every boot** (step 5/10), so the canonical file IS version-controlled and a
 volume loss cannot take the posture with it. `artec agent-review` now also diffs the live
 file against the committed one and goes RED on drift, for the window between boots.
+
+---
+
+## PROBED · the Telegram session row (operator probe F1)
+
+```
+sessions: ('20260803_134659_591d8efc', 'telegram', '2111270140',
+           'agent:main:telegram:dm:2111270140', '2111270140', 'dm', …)
+by source: [('cli', 1), ('telegram', 1)]
+```
+
+**A Telegram interaction DOES create a `sessions` row**, so metrics-by-reply is
+implementable and merge condition 4 is resolvable. The earlier "cli and cron only" reading
+was of the laptop store, not this one.
+
+`sessions` columns: id, source, user_id, session_key, chat_id, chat_type, thread_id,
+display_name, origin_json, started_at, **ended_at (NULL while the gateway runs)**,
+end_reason, message_count, tool_call_count, …
+
+`messages` columns: id, session_id, role, content, tool_call_id, tool_calls, **tool_name**,
+effect_disposition, timestamp, token_count, …, platform_message_id, observed, active
+
+`role` and `content` are present as assumed, and `tool_name` confirms tool results are
+distinguishable from operator turns.
+
+**Not yet recorded:** which of `id` / `session_key` the runtime passes as `task_id`. The
+guard accepts either, exactly, and logs which one matched on first resolution —
+`artec transcript: task_id matched sessions.<column>` in the brain log. Record it here
+after the first digest session and the other can be dropped.

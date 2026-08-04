@@ -470,3 +470,62 @@ unless marked.
     back to a stream copy without knowing what changed. The solid-colour clip is KEPT
     alongside it: structurally perfect (leading moov, real stream, legal duration, right
     aspect) and still not footage. That pairing is the point of having a bitrate floor.
+
+56. **v4 · agent memory can go FALSE about capabilities, and the audit now catches that.**
+    The live MEMORY block asserted *"artec plugin exposes exactly 6 tools … There is NO
+    render, publish, measure … tool … Don't promise those; say so plainly"* while the seam
+    had grown to FIFTEEN. Memory is injected into EVERY turn, so the next gate would have
+    been told, with authority, that capabilities the agent holds do not exist — and
+    instructed to say so to the operator. **That is not a stale note; it is a standing
+    instruction to misreport.** The figure patterns could never have caught it: they look
+    for numbers and dates.
+    `audit-memory` now also flags (a) a tool COUNT or a "there is no X tool" claim that
+    contradicts the LIVE plugin manifest at audit time, and (b) IMPERATIVES — memories are
+    declarative facts, and an imperative in memory is re-read as a directive in every later
+    session. An unknown registry never accuses: it can only fail to detect.
+    **MEMORY utilisation is reported too** (observed at 89% of a 2,200-character cap): at
+    the cap a new durable fact evicts an old one with NO signal, so the digest says so
+    before it happens.
+
+57. **v4 · `v_brief` under-reported the parked backlog — found by the AGENT, in production,
+    and written into its own memory rather than into the gap register.** The post section
+    was a pure recency window (`ORDER BY week_start DESC LIMIT 14`), so a post parked weeks
+    ago — post_1485 exactly — fell out of it while `read_parked_posts` still returned it.
+    `read_brief` is the read the planner makes FIRST, and a backlog it cannot see is a
+    backlog it plans over. Fixed: the post section is now the 14 most recent UNION every
+    PARKED post (bounded at 20), and the outer cap rose 40 → 70 so the sections most at
+    risk of silent truncation — the parked COUNT and the asset INVENTORY, the two the
+    planner needs to know what it cannot service — are not eaten by the post rows. A test
+    asserts `read_brief` and `read_parked_posts` agree on the PARKED set.
+    **The second finding is where it was recorded.** A defect the agent discovers belongs
+    in the gap register, not only in agent memory, or it is invisible to everyone who does
+    not read the agent's memory.
+
+58. **v4 · a Telegram session carries TWO plausible identifiers; accept both, exactly.**
+    `sessions.id` (`20260803_134659_591d8efc`) and `sessions.session_key`
+    (`agent:main:telegram:dm:2111270140`). Rather than guess which one `pre_tool_call`
+    passes as `task_id`, the guard matches EITHER column exactly — same table, same row, no
+    LIKE, no prefix. That is deterministic, not widened. Which one the runtime actually
+    passes is logged once on first resolution so VERIFY.md can record it and the other can
+    be dropped. `ended_at` is NULL for the life of the gateway; nothing filters on it.
+
+59. **v4 · the system prompt advertises disabled tools — ACCEPTED NOISE, with the reason.**
+    `agent/prompt_builder.py` at this tag emits *"Terminal backend: ssh. Your `terminal`,
+    `read_file`, `write_file`, `patch`, and `search_files` tools all operate…"* from the
+    REMOTE-backend branch, built from the terminal-backend setting alone —
+    `disabled_toolsets` is not referenced anywhere in that module, so the block cannot be
+    suppressed by disabling the toolset. The sentence originates in the remote branch only;
+    a LOCAL backend emits host hints instead and never claims those tools. Our committed
+    `config.yaml` sets no terminal backend, so the `ssh` value does not come from this
+    repo. The `pre_tool_call` hook blocks the calls it invites, so the cost is a wasted
+    turn, not a capability. Recorded here so it is not rediscovered as a bug.
+
+60. **v4 · the doubled profile path in the prompt is not ours.** *"reads and writes
+    /data/hermes/profiles/artec-brain/profiles/artec-brain/"* — no code in the installed
+    hermes-agent at this tag emits that string, so it could not be traced from here; it is
+    consistent with a display-only concatenation of a base that already includes
+    `profiles/<profile>`. **What was verifiable is that nothing WE write uses it:** the
+    entrypoint writes `$HERMES_HOME/profiles/$PROFILE/…` and the transcript module resolves
+    `HERMES_HOME / "profiles" / profile / "state.db"`. One `ls` on the container settles the
+    rest; it is the decoy shape again — a path that looks plausible and is not the one that
+    matters.

@@ -40,6 +40,9 @@ import sqlite3
 # conversation and are never a source for a figure.
 OPERATOR_ROLE = "user"
 
+# Which identifier the runtime actually passes, observed once and reported.
+_OBSERVED: dict = {"logged": False, "column": None}
+
 
 REQUIRED_TABLES = ("sessions", "messages")
 
@@ -135,15 +138,32 @@ def operator_turns(task_id: str | None) -> list[str] | None:
     except sqlite3.Error:
         return None
     try:
+        # EXACTLY TWO columns, both exact matches, no LIKE and no prefix matching. A
+        # Telegram session row carries two plausible identifiers —
+        #   id          = '20260803_134659_591d8efc'
+        #   session_key = 'agent:main:telegram:dm:2111270140'
+        # — and rather than guess which one `pre_tool_call` passes, accept either and
+        # nothing else. Deterministic, not widened: both name the same row in the same
+        # table, so a match cannot resolve to a different conversation.
         session = conn.execute(
-            "SELECT id FROM sessions WHERE id = ?", (str(task_id),)).fetchone()
+            "SELECT id, session_key FROM sessions WHERE id = ? OR session_key = ?",
+            (str(task_id), str(task_id))).fetchone()
         if session is None:
-            # A task id that names no session cannot be vouched for. Do NOT widen the
-            # search: matching loosely is how a guard authorises the wrong conversation.
+            # A task id that names no session cannot be vouched for.
             return None
+        session_id = session[0]
+        if not _OBSERVED["logged"]:
+            # Once, at debug, so VERIFY.md can record WHICH identifier the runtime passes
+            # instead of carrying both forever.
+            matched = "id" if session[0] == str(task_id) else "session_key"
+            print(f"artec transcript: task_id matched sessions.{matched}")
+            _OBSERVED["logged"] = True
+            _OBSERVED["column"] = matched
+        # NOTE: a Telegram session is long-lived — `ended_at` is NULL while the gateway
+        # runs, and the digest conversation happens inside one. Nothing here filters on it.
         rows = conn.execute(
             "SELECT content FROM messages WHERE session_id = ? AND role = ? ORDER BY id",
-            (str(task_id), OPERATOR_ROLE)).fetchall()
+            (session_id, OPERATOR_ROLE)).fetchall()
     except sqlite3.Error:
         return None
     finally:

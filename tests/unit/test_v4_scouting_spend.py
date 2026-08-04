@@ -192,7 +192,7 @@ def test_the_digest_reports_the_audit_and_says_so_when_it_has_never_run(session)
         {"file": "/data/hermes/MEMORY.md", "line": 2, "kind": "currency amount",
          "match": "RM45.00"}]})
     text = render_digest_text(build_payload(session, brevo=Brevo()))
-    assert "agent memory audit: 1 metric-shaped hit" in text
+    assert "agent memory audit: 1 currency amount" in text
     assert "RM45.00" in text
 
 
@@ -263,3 +263,89 @@ def test_scouting_unavailable_renders_the_reason(session):
                {"available": False, "backend": "tavily", "reason": "HTTP 401: Unauthorized"})
     text = _digest_text(session)
     assert "scouting: UNAVAILABLE" in text and "401" in text
+
+
+# ---- F2 · memory that contradicts the build, and memory that gives orders -----------------
+
+def _memory_home(tmp_path, text: str, tools: int = 15):
+    (tmp_path / "plugins" / "artec").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "plugins" / "artec" / "plugin.yaml").write_text(
+        "provides_tools:\n" + "\n".join(f"  - tool_{i}" for i in range(tools))
+        + "\nprovides_hooks:\n", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+LIVE_MEMORY = (
+    "artec plugin exposes exactly 6 tools. There is NO tool_3 tool. "
+    "Don't promise those; say so plainly.\n")
+
+
+def test_a_stale_tool_count_is_caught(audit, tmp_path):
+    """THE LIVE CASE. Memory asserted six tools while the seam had fifteen — and memory is
+    injected into every turn, so the next gate would have been told, with authority, that
+    capabilities the agent holds do not exist."""
+    result = audit.scan(_memory_home(tmp_path, LIVE_MEMORY))
+    stale = [h for h in result["hits"] if h["kind"] == "stale capability claim"]
+    assert stale, result["hits"]
+    assert any("says 6 tools" in h["detail"] and "has 15" in h["detail"] for h in stale)
+
+
+def test_denying_a_tool_that_exists_is_caught(audit, tmp_path):
+    result = audit.scan(_memory_home(tmp_path, LIVE_MEMORY))
+    assert any("denies tools that EXIST" in h.get("detail", "") for h in result["hits"])
+
+
+def test_an_imperative_in_memory_is_caught(audit, tmp_path):
+    """'Don't promise those; say so plainly' is not a fact — it is a standing instruction
+    re-read in every later session."""
+    result = audit.scan(_memory_home(tmp_path, LIVE_MEMORY))
+    imperatives = [h for h in result["hits"] if h["kind"] == "imperative in memory"]
+    assert {h["match"].lower() for h in imperatives} >= {"don't", "say so"}
+
+
+def test_declarative_playbook_memory_stays_clean(audit, tmp_path):
+    result = audit.scan(_memory_home(
+        tmp_path, "Hooks that name a time outperform hooks that name a feeling.\n"
+                  "Parents respond to finished builds more than to loose blocks.\n"))
+    assert result["clean"] is True, result["hits"]
+
+
+def test_an_unknown_registry_never_accuses(audit, tmp_path):
+    """No plugin.yaml on the volume = unknown registry. Unknown must not manufacture a
+    contradiction — it can only fail to detect one."""
+    (tmp_path / "MEMORY.md").write_text("artec exposes exactly 6 tools.\n", encoding="utf-8")
+    result = audit.scan(tmp_path)
+    assert not [h for h in result["hits"] if h["kind"] == "stale capability claim"]
+
+
+def test_memory_utilisation_is_reported(audit, tmp_path):
+    result = audit.scan(_memory_home(tmp_path, "x" * 1958))       # 89% of 2200
+    assert result["memory_cap"] == 2200
+    assert result["memory_utilisation"] == 0.89
+
+
+def test_the_digest_warns_before_a_silent_eviction(session):
+    from app.config import set_config
+    from app.stages.digest import build_payload, render_digest_text
+
+    class Brevo:
+        def get_list_count(self):
+            return 1
+
+    set_config(session, "memory_audit", {
+        "clean": True, "scanned_files": 2, "memory_chars": 1958, "memory_cap": 2200,
+        "memory_utilisation": 0.89})
+    text = render_digest_text(build_payload(session, brevo=Brevo()))
+    assert "MEMORY 89% of 2200 chars" in text
+    assert "silently evicts an old one" in text
+
+
+def test_the_capability_patterns_do_not_drift_from_the_cli_version(audit):
+    from app.stages.agent_review import CAPABILITY_PATTERNS, MEMORY_CAP_CHARS, WORD_NUMBERS
+
+    assert MEMORY_CAP_CHARS == audit.MEMORY_CAP_CHARS
+    assert WORD_NUMBERS == audit.WORD_NUMBERS
+    live = [audit.TOOL_COUNT_RE.pattern, audit.NO_SUCH_TOOL_RE.pattern,
+            audit.IMPERATIVE_RE.pattern]
+    assert [p for _, p in CAPABILITY_PATTERNS] == live

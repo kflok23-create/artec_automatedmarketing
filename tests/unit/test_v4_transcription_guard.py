@@ -217,3 +217,34 @@ def test_a_missing_active_profile_refuses_and_says_which_file(tools, monkeypatch
     assert status["available"] is False
     assert "active_profile" in status["reason"]
     assert "artec measure" in status["consequence"]
+
+
+# ---- F1 · a Telegram session carries TWO plausible identifiers ----------------------------
+
+def test_either_identifier_resolves_the_same_row(tools, operator_session):
+    """`id` and `session_key` both name the row. Rather than guess which one the runtime
+    passes as task_id, accept either — exact match, same table, no LIKE, no prefix."""
+    operator_session(TASK, "4200, 0.62, 12, 45, 8, 118", "yes")
+    by_id = tools._transcript.operator_turns(TASK)
+    by_key = tools._transcript.operator_turns(f"agent:main:telegram:dm:{TASK}")
+    assert by_id == by_key == ["4200, 0.62, 12, 45, 8, 118", "yes"]
+
+
+def test_the_guard_accepts_a_session_key_task_id(tools, operator_session):
+    task = operator_session(TASK, "4200, 0.62, 12, 45, 8, 118", "yes")
+    assert hook(tools, f"agent:main:telegram:dm:{task}",
+                figures_line="4200, 0.62, 12, 45, 8, 118",
+                operator_message="4200, 0.62, 12, 45, 8, 118", confirm=True) is None
+
+
+def test_a_partial_identifier_still_resolves_nothing(tools, operator_session):
+    """Accepting two columns is not the same as widening: neither is matched loosely."""
+    operator_session(TASK, "4200 impressions")
+    assert tools._transcript.operator_turns("agent:main:telegram") is None
+    assert tools._transcript.operator_turns(TASK[:8]) is None
+
+
+def test_an_open_ended_session_is_readable(tools, operator_session):
+    """ended_at is NULL for the life of the gateway — the lookup must not assume closure."""
+    operator_session(TASK, "4200 impressions")
+    assert tools._transcript.operator_turns(TASK) == ["4200 impressions"]

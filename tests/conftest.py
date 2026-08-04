@@ -95,15 +95,19 @@ def operator_session(tmp_path, monkeypatch):
     db = profile_dir / "state.db"
     conn = sqlite3.connect(db)
     conn.executescript(
-        "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, source TEXT);"
+        "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, source TEXT, "
+        "session_key TEXT, chat_id TEXT, ended_at TEXT);"
         "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "session_id TEXT, role TEXT, content TEXT, tool_name TEXT);")
     conn.commit()
 
     def _write(task_id: str, *operator_turns: str, assistant: tuple = (),
                tool: tuple = ()) -> str:
-        conn.execute("INSERT OR IGNORE INTO sessions (id, source) VALUES (?, 'telegram')",
-                     (task_id,))
+        # ended_at stays NULL: a Telegram session is long-lived and the digest
+        # conversation runs inside an open one.
+        conn.execute("INSERT OR IGNORE INTO sessions (id, source, session_key, chat_id) "
+                     "VALUES (?, 'telegram', ?, '2111270140')",
+                     (task_id, f"agent:main:telegram:dm:{task_id}"))
         for turn in operator_turns:
             conn.execute("INSERT INTO messages (session_id, role, content) "
                          "VALUES (?, 'user', ?)", (task_id, turn))

@@ -602,14 +602,26 @@ def render_digest_text(payload: dict) -> str:
     if audit is None:
         lines.append("agent memory audit: NOT YET RUN — the brain reports it at boot and "
                      "weekly with job 10")
-    elif audit.get("clean"):
-        lines.append(f"agent memory audit: clean ({audit.get('scanned_files', 0)} files, "
-                     f"{str(audit.get('audited_at', ''))[:10]})")
     else:
-        lines.append(f"🚨 agent memory audit: {len(audit.get('hits', []))} metric-shaped "
-                     "hit(s) — numbers belong in Postgres, not agent memory")
-        for hit in (audit.get("hits") or [])[:3]:
-            lines.append(f"   {hit.get('file')}:{hit.get('line')} {hit.get('match')!r}")
+        used = audit.get("memory_utilisation")
+        # At the cap, a NEW durable fact evicts an OLD one with no signal of any kind.
+        fill = (f" · MEMORY {int(used * 100)}% of {audit.get('memory_cap', '?')} chars"
+                + (" — at this level a new fact silently evicts an old one"
+                   if used and used >= 0.8 else "")) if used else ""
+        if audit.get("clean"):
+            lines.append(f"agent memory audit: clean ({audit.get('scanned_files', 0)} files, "
+                         f"{str(audit.get('audited_at', ''))[:10]}){fill}")
+        else:
+            hits = audit.get("hits") or []
+            kinds: dict = {}
+            for hit in hits:
+                kinds[hit.get("kind", "?")] = kinds.get(hit.get("kind", "?"), 0) + 1
+            summary = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
+            lines.append(f"🚨 agent memory audit: {summary}{fill}")
+            for hit in hits[:4]:
+                detail = hit.get("detail") or "numbers belong in Postgres, not agent memory"
+                lines.append(f"   {hit.get('file')}:{hit.get('line')} "
+                             f"{hit.get('match')!r} — {detail}")
     sc = s["scouting"]
     if sc is None:
         lines.append("scouting: NOT YET PROBED — the brain probes the search backend at "

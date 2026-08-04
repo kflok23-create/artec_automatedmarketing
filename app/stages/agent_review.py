@@ -30,6 +30,27 @@ def _hermes_home() -> Path | None:
     return Path(home) if home else None
 
 
+# F2 — the same two detectors the brain-side audit runs. Duplicated because the brain image
+# carries no app package; a test asserts the pattern lists stay identical, because
+# duplicated is fine and silently divergent is not.
+MEMORY_CAP_CHARS = 2200
+
+WORD_NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+                "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16}
+
+CAPABILITY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("stale capability claim",
+     r"(?i)\b(?:exactly\s+)?(\d{1,2}|" + "|".join(WORD_NUMBERS) + r")\s+tools?\b"),
+    ("stale capability claim",
+     r"(?i)\b(?:there\s+is\s+no|there\s+are\s+no|has\s+no|no)\s+"
+     r"([a-z_0-9,\s]{2,120}?)\s+tools?\b"),
+    ("imperative in memory",
+     r"(?im)(?:^|[.;]\s+)(don't|do not|never|always|refuse|say so|tell the|ask the|"
+     r"promise|make sure|be sure|remember to|you must|you should)\b"),
+)
+
+
 def audit_memory(paths: list[Path] | None = None, log=print) -> list[dict]:
     """Scan MEMORY.md + all skill files for metric-shaped content. Returns every hit."""
     if paths is None:

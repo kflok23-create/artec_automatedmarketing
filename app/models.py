@@ -307,7 +307,25 @@ SELECT section, line FROM (
          || ' hook=' || COALESCE(p.hook, '-')
          || ' cta=' || COALESCE(p.cta_type, '-') || '/' || COALESCE(p.cta_placement, '-')
          || ' slot=' || COALESCE(p.slot, '-') AS line
-  FROM (SELECT * FROM posts ORDER BY week_start DESC, post_id LIMIT 14) p
+  FROM (
+    -- The 14 most recent posts, PLUS every PARKED post regardless of age.
+    --
+    -- THE DEFECT THIS FIXES (found by the agent in production and written into its own
+    -- memory, never into the gap register): the post section was a pure recency window,
+    -- so a post parked weeks ago — post_1485 is exactly this — fell out of it entirely.
+    -- read_brief then under-reported the parked backlog while read_parked_posts returned
+    -- it, and read_brief is the read the planner makes FIRST. A backlog the planner cannot
+    -- see is a backlog it plans over.
+    SELECT * FROM posts WHERE post_id IN (
+      SELECT post_id FROM (
+        SELECT post_id FROM posts ORDER BY week_start DESC, post_id LIMIT 14
+      )
+      UNION
+      SELECT post_id FROM (
+        SELECT post_id FROM posts WHERE status = 'PARKED' ORDER BY post_id LIMIT 20
+      )
+    )
+  ) p
   UNION ALL
   SELECT 2, 'learning',
          l.lever || '=' || COALESCE(l.lever_value, '')
@@ -332,7 +350,13 @@ SELECT section, line FROM (
   GROUP BY a.subject, a.medium
 ) b
 ORDER BY section, line
-LIMIT 40
+-- Raised from 40 when PARKED posts joined the post section. The outer LIMIT sorts by
+-- section, so posts come first and the sections at risk of being silently eaten are the
+-- PARKED COUNT and the asset INVENTORY — the two the planner needs in order to know what
+-- it cannot service. The cap still exists (an unbounded brief is a cost problem), but it
+-- now has headroom above the bounded inputs: 14 recent + at most 20 parked + 10 learnings
+-- + 10 config + 1 parked count + inventory.
+LIMIT 70
 """
 
 DROP_V_BRIEF_SQL = "DROP VIEW IF EXISTS v_brief"

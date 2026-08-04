@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -481,6 +482,47 @@ HANDLERS.update(HANDLERS_V4)
 BLOCKED_TOOL_PREFIXES = ("terminal", "shell", "exec", "write_file", "patch",
                          "code_execution", "run_python")
 
+# CRON MUTATION IS A DEPLOYMENT ACT, NOT A CONVERSATIONAL ONE.
+#
+# The cron wrapper that delivered the 2026-08-04 digest ended by telling the operator:
+#   "To stop or manage this job, send me a new message (e.g. 'stop reminder nightly-digest')"
+# The surface that carries touches 2–7 was advertising its own kill switch, and the
+# instruction works: `stop reminder nightly-digest` is a live capability. So is creating a
+# thirteenth job, or removing job 5 — the weekly gate, the single human touch in the week.
+#
+# Neither existing guard covers it. The repo test that asserts exactly twelve jobs reads
+# `app/jobs.py` and cannot see a job created at runtime. The boot-time listing check fires
+# on the next boot, which may be days away. Between those two, a job can be added or
+# removed and nothing notices.
+#
+# LISTING STAYS PERMITTED. Verify-by-listing is load-bearing — it is what caught job 12's
+# missing prompt file when `hermes cron create` exited 0 on failure. Only mutation is
+# blocked.
+CRON_MUTATION_MARKERS = ("cron_create", "cron_delete", "cron_update", "cron_modify",
+                         "cron_remove", "cron_stop", "cron_pause", "cron_enable",
+                         "cron_disable", "create_cron", "delete_cron", "update_cron",
+                         "remove_cron", "stop_reminder", "schedule_create",
+                         "schedule_delete", "create_reminder", "delete_reminder")
+CRON_READ_MARKERS = ("cron_list", "cron_status", "list_cron", "cron_show")
+
+
+def _is_cron_mutation(tool_name: str) -> bool:
+    """True for cron create/modify/delete, False for listing.
+
+    Matches on the NORMALISED name so `cron.create`, `cron-create` and `cronCreate` are all
+    caught — a block that a rename walks around is not a block.
+    """
+    lowered = re.sub(r"[^a-z0-9]+", "_", str(tool_name).lower()).strip("_")
+    if any(marker in lowered for marker in CRON_READ_MARKERS):
+        return False
+    if any(marker in lowered for marker in CRON_MUTATION_MARKERS):
+        return True
+    # `cron` plus a mutating verb, in either order, for names not enumerated above.
+    return "cron" in lowered and any(
+        verb in lowered for verb in
+        ("create", "add", "delete", "remove", "update", "modify", "stop", "pause",
+         "disable", "enable", "set"))
+
 
 def _normalise(text: str) -> str:
     return " ".join(str(text).split()).strip().lower()
@@ -557,11 +599,23 @@ def pre_tool_call(tool_name: str, args: dict | None = None, task_id: str | None 
 
     if tool_name in HANDLERS:
         return None
+    # Checked BEFORE the prefix families: a cron tool matches none of those prefixes, and
+    # the twelve jobs are a deployment artefact that a chat message must not be able to
+    # change. See CRON_MUTATION_MARKERS.
+    if _is_cron_mutation(tool_name):
+        return {"action": "block",
+                "message": "cron mutation is disabled for the artec profile. The twelve "
+                           "jobs are a deployment artefact defined in app/jobs.py, not a "
+                           "conversational one — changing them from a chat message would "
+                           "escape every guard the schedule has (the repo test reads the "
+                           "file; the boot check runs at boot). Listing IS permitted: "
+                           "`cron list` is how registration gets verified. To change the "
+                           "schedule, change app/jobs.py and deploy."}
     lowered = str(tool_name).lower()
     if any(lowered.startswith(p) or p in lowered for p in BLOCKED_TOOL_PREFIXES):
         return {"action": "block",
                 "message": "file-write and shell are disabled for the artec profile — "
-                           "use the six artec tools only"}
+                           "use the fifteen artec tools only"}
     return None
 
 

@@ -1167,3 +1167,180 @@ Redaction is the operator's call, and it is recorded here rather than silently s
     Keying by the data window would orphan Sunday, since job 12 does not run that day.
     Job 12 has THREE states and never collapses them: deliver · a digest exists under a
     different key (named as `digest_date_mismatch`, both dates printed) · nothing at all.
+
+100. **2026-08-05 · TWO CHECKS ABOUT ONE TELEGRAM TOKEN, AND ONE HAD TO BE RED WHATEVER THE
+     OPERATOR DID.** D1 made the brain the sole Telegram owner *structurally*: on a bespoke
+     service the token must NOT exist, because two pollers on one token is a 409 that breaks
+     the live gate. `telegram ownership` encoded that correctly. `telegram bot`, forty lines
+     later, called `get_me()` unconditionally.
+
+     So the moment the D1 post-deploy step deleted the token from `artec api` and
+     `artec-scheduler` — doing exactly what the first check demands — the second began
+     failing forever:
+
+         🚨 DOCTOR RED — telegram bot: TelegramError: telegram getMe failed: Not Found
+
+     **A pair of checks that cannot both pass is not two guards. It is one guard and one
+     false alarm**, and a permanent false RED is how a real RED stops being read. Fixed:
+     `getMe` runs only where `HERMES_HOME` is set — the brain, the one service that is
+     supposed to hold the token.
+
+     **Both readings were real, and they are not the same finding.** The RED dated
+     2026-08-03 PREDATES the deletion, so at that time it meant something else entirely: the
+     token on that service was genuinely wrong. Collapsing "was true then for reason A" into
+     "is true now for reason B" would have hidden one of them.
+
+101. **2026-08-05 · WITHDRAWN POSTS — a flag, not a status.** `post_1488` (facebook) and
+     `post_1489` (linkedin) published on 2026-08-04 at 01:00, before page targeting existed,
+     to the personal profile of the OAuth account. The operator removed both at source.
+
+     They *were* published — that is a true fact about the ledger, and `external_post_id`
+     stays set, which is what makes the never-republish guard keep refusing them. Withdrawal
+     is an ADDITIONAL fact, not a replacement. **`posts` is the ledger of record; a
+     withdrawal is an event on the ledger, not an erasure of it.** Rewriting history to make
+     the present tidy is how a system starts lying about what it did.
+
+     `learn` excludes them and reports `withdrawn` — never zero. Left alone those rows say
+     facebook and linkedin published and earned nothing, marking down two channels for a
+     TARGETING defect that has nothing to do with the creative. That is the
+     `email_min_recipients` trap arriving on two other channels.
+
+     Stamped in migration 0008 rather than by hand, so a restore from backup marks them too;
+     a hand-run would be forgotten and the false negative would silently return.
+
+102. **2026-08-05 · THE FOURTH NEVER-ARRIVED-DATA INSTANCE, proven by timestamp.** The
+     digest carried `🚨 DOCTOR RED — endpoint price table: unpriced: ['fal-ai/clarity-upscaler',
+     'fal-ai/qwen-image-2512/lora']`. Unpriced endpoints are uncallable by design, and
+     `clarity-upscaler` is the only live model path — so ENHANCE could not run and Sunday's
+     render would have parked everything needing it.
+
+     Three possibilities needed separating: rows absent, rows present but unreadable, or rows
+     present with a shape doctor rejects. **The rows were absent.** The proof is the `as_of`
+     on the rows that exist now:
+
+         fal-ai/clarity-upscaler  30000 micros  per_megapixel  as_of=2026-08-04 15:53:11
+
+     15:53:11 is the exact minute `seed_config` first ran at boot, from decision 94's fix.
+     `seed_prices` is called *inside* `seed_config`, so the same defect that hid four config
+     keys was hiding the entire price table.
+
+     | # | what never arrived | why nothing noticed |
+     |---|---|---|
+     | 1 | `post_id_seq` | fixture used `create_all`; production uses migrations |
+     | 2 | `v_brief`'s PARKED union | created by 0001 only; alembic never re-runs it |
+     | 3 | four config keys incl. the render cap | every read passes a default |
+     | 4 | the whole `endpoint_prices` table | seeded by a hand-run nothing scheduled |
+
+     **The class is now named: data that is correct in the source and never reaches
+     production, because arrival depends on something nobody scheduled.** The counter in
+     every case is the same — make arrival structural: a migration, or a boot-seed.
+
+103. **2026-08-05 · A FILTER APPLIED TO A GUARD'S OUTPUT IS PART OF THE GUARD.** CI Lint
+     failed on an unused variable that my local check had been reporting the whole time. I
+     was running `ruff check . | tail -1`, which prints
+
+         No fixes available (1 hidden fix can be enabled with the --unsafe-fixes option)
+
+     while the line ABOVE it said `Found 1 error`. I read the last line and called it clean.
+
+     The guard was correct and the *reading* of it was not — which makes the pipeline, not
+     the tool, the thing that failed. Same shape as everything else here: looking at the
+     wrong part of the output and treating absence-of-visible-error as a pass. Grep for the
+     verdict line, never trust position.
+
+104. **2026-08-05 · `learn` SCORED SIX LEVERS AT ZERO FROM A WEEK NOBODY MEASURED —
+     invariant 2, breached at the one place it matters most.** Probed against week
+     2026-08-03's real shape (five PUBLISHED, zero `metrics`, two withdrawn):
+
+         lever=angle    value=build     score=0E-10 n=3 verdict=test
+         lever=channel  value=instagram score=0E-10 n=2 verdict=test
+         lever=channel  value=tiktok    score=0E-10 n=1 verdict=test
+         lever=cta_type value=shop      score=0E-10 n=3 verdict=test
+         lever=hook     value=time      score=0E-10 n=3 verdict=test
+         lever=slot     value=lunch     score=0E-10 n=3 verdict=test
+
+     Six real verdicts from no measurement at all. **IDEATE reads these**, so Sunday's plan
+     would have been shaped by the claim that `hook=time` underperformed — when nobody
+     looked.
+
+     Three defaults produced it, each reasonable in isolation: `eng_n.get(value, 0.0)` for
+     absent engagement, `traffic[value] = 0.0` for no events, `sales_score = 0.0` for no
+     orders. Together they assert "these levers performed at the bottom of the range".
+
+     **The honest pattern already existed one function away**: `channel_cac` reports
+     `unmeasurable (no spend configured)` rather than scoring a zero CAC. It had simply never
+     been applied to the weighted levers.
+
+     THE RULE, which generalises beyond this file: **a post is MEASURED if it carries any
+     evidence — a metrics row, an event, or an order. The lanes are separate for COMBINATION,
+     not for EXISTENCE.** Unmeasured posts are excluded from scoring and NAMED, exactly as
+     withdrawn posts are. Never imputed, never defaulted.
+
+     Testable without an LLM, which is what made it closable: the agent does interpretation,
+     **SQL does arithmetic**. The scoring is reachable directly.
+
+105. **2026-08-05 · THREE TARGET STATES, AND `None` MEANT TWO OF THEM.**
+     `verify_publish_target` returned `None` both when the platform confirmed the right page
+     and when the platform named no owner at all. **"Verified correct" and "could not be
+     checked" are different facts**, and merging them is how an unperformed check reads as a
+     pass — the identical conflation as job 12 announcing that job 11 had not run.
+
+     | state | meaning | surfaced |
+     |---|---|---|
+     | `verified` | platform named an owner and it matches | no |
+     | `mismatch` | platform named an owner and it is WRONG | 🚩 WRONG SURFACE |
+     | `unverified` | platform named no owner — check could not run | ❓ TARGET UNVERIFIED |
+
+     Sunday publishes unattended by operator decision, so prevention is not available and
+     **surfacing is the entire safety net.** Both non-verified states reach NEEDS YOU the
+     same evening, so a wrong-surface post is deletable in hours rather than days —
+     `post_1488` and `post_1489` sat on a personal timeline because this outcome existed only
+     in a run log.
+
+     **`target_alerts` had to be added to the NEEDS YOU emptiness tuple.** That section
+     renders one line and stops when `empty` is true, so a section omitted from the tuple can
+     never be seen — which would have reproduced the very failure being closed, one layer
+     deeper.
+
+106. **2026-08-05 · AN ABSENT ROW CAN ONLY MEAN "DID NOT RUN" IF A RUN THAT HAPPENS ALWAYS
+     LEAVES ONE.** `agent_runs` held two rows and both were operator conversations. Jobs 3, 5
+     and 12 had never written one. On 2026-08-09 jobs 3 (07:00) and 5 (09:00, THE GATE) fire
+     for the first time — and if either failed there would be no record it ran at all, only
+     its absence, indistinguishable from the cron never firing.
+
+     Migration 0009 adds `agent_runs.trigger ∈ 'cron' | 'manual'`; without it a job the
+     operator started by hand is indistinguishable from Sunday's firing, and "the Sunday gate
+     ran" would be true of a Tuesday run-now. Existing rows backfill to `manual` — both are
+     operator conversations, and leaving them NULL would make the column's first real use
+     ambiguous. A brain-side stdout line prints at execution, matching the scheduler's
+     pattern, so a failure BEFORE the database write is still visible.
+
+     Same reasoning as verifying cron registration by listing rather than by exit code: the
+     absence of a signal is only evidence if the signal is guaranteed when the thing happens.
+
+107. **2026-08-05 · D-vii — `next_week_start` IS WRONG ON SUNDAYS, AND IS DELIBERATELY NOT
+     FIXED BEFORE 2026-08-09.**
+
+         next_week_start(2026-08-09) == 2026-08-03
+
+     It computes `today - timedelta(days=today.weekday())`. Sunday's `weekday()` is 6, so it
+     returns **the Monday that already passed** — despite its name. Sunday's `ideate`
+     therefore targets week 2026-08-03: the same week as the nine existing DRAFTs, which also
+     holds five PUBLISHED posts. And `ideate` tops up to cadence counting existing
+     non-REJECTED posts, so with nine DRAFTs already present it will likely add **nothing**.
+
+     **The failure mode is a Sunday that looks like it worked.** Not a crash — a plan that
+     was never made, and a gate presenting stale drafts as the new week.
+
+     **OPERATOR DECISION (D-vii): it stays as it is through 2026-08-09**, for three reasons
+     recorded so this is a decision and not an accident:
+     - `learn` now correctly returns `cold_start` / `unmeasured` with `score=None`, so there
+       is no signal to shape a fresh plan with this week regardless
+     - the nine drafts give a real gate → render → publish → measure exercise, which is what
+       a first run is for
+     - changing a Sunday job's date arithmetic under 72 hours before it first fires is the
+       class of change that has taken this system down three times
+
+     **What converts the deferral into a decision:** the gate states, in its opening summary,
+     which `week_start` it is gating, how many drafts it found, and the age of the oldest. A
+     wrong week must be visible on the screen, never inferred. Fix deferred to after Sunday.

@@ -67,8 +67,10 @@ def _is_capability_claim(line: str, tools: set[str]) -> str | None:
 def _memory_files(home: Path) -> list[Path]:
     files: list[Path] = []
     for root in memory_roots(home):
-        for target in (root / "MEMORY.md", root / "memories", root / "skills",
-                       root / "memory"):
+        # skills/ excluded, matching the audit: it recurses into shipped skill packages
+        # (documentation, templates, other people prose) and is not autonomously written
+        # agent memory, which is what memory.write_approval: false makes dangerous.
+        for target in (root / "MEMORY.md", root / "memories", root / "memory"):
             if target.is_dir():
                 files += sorted(f for f in target.rglob("*")
                                 if f.is_file() and f.suffix in SCANNED_SUFFIXES)
@@ -113,17 +115,34 @@ def main() -> int:
             print(f"  !! unreadable {path}: {e}")
             continue
         before[str(path)] = content
-        print(f"\n--- {path} ({len(content)} chars) ---")
-        print(content)
 
         kept: list[str] = []
+        hit_count = 0
         for lineno, line in enumerate(content.splitlines(), start=1):
             reason = _is_capability_claim(line, tools)
             if reason is None:
                 kept.append(line)
                 continue
+            hit_count += 1
             removed.append({"file": str(path), "line": lineno,
                             "content": line, "reason": reason})
+
+        # DO NOT PRINT EVERY FILE. The first corrected run found 401 files and dumping them
+        # all cost 74,812 dropped log messages at Railway's 500/s limit — destroying the
+        # very evidence this script exists to preserve, in the same run that gathered it.
+        # The warning against precisely this is in this file's own docstring. That is twice
+        # in two passes that a correct diagnosis sat directly above the code that ignored it.
+        #
+        # The full content still reaches config.memory_purge, in Postgres, whole. What is
+        # PRINTED is MEMORY.md — the block injected into every turn, the thing that caused
+        # the incident — and any file that actually produced a hit. The rest is counted.
+        if path.name == "MEMORY.md":
+            print(f"\n--- {path} ({len(content)} chars) — INJECTED INTO EVERY TURN ---")
+            print(content)
+        elif hit_count:
+            print(f"\n--- {path} ({len(content)} chars) — printed because it HIT ---")
+            print(content)
+
         if len(kept) != len(content.splitlines()):
             path.write_text("\n".join(kept) + ("\n" if content.endswith("\n") else ""),
                             encoding="utf-8")

@@ -162,8 +162,12 @@ def memory_roots(home: Path) -> list[Path]:
 def scan(home: Path) -> dict:
     targets: list[Path] = []
     for root in memory_roots(home):
-        targets += [root / "MEMORY.md", root / "memories", root / "skills",
-                    root / "memory"]
+        # `skills` is DELIBERATELY NOT HERE. The first corrected run scanned 401 files
+        # because skills/ recurses into shipped skill packages — documentation, templates,
+        # other people's prose. None of it is autonomously written agent memory, which is
+        # what `memory.write_approval: false` makes dangerous and what this audits. Widening
+        # the net until it catches everything is how a signal becomes noise.
+        targets += [root / "MEMORY.md", root / "memories", root / "memory"]
     files: list[Path] = []
     for target in targets:
         if target.is_dir():

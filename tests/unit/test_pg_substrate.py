@@ -81,9 +81,25 @@ def test_lock_keys_are_stable_and_distinct():
     assert 0 < lock_key("job-one") < 2**63
 
 
-def test_advisory_lock_refuses_on_non_postgres(engine):
-    # The guarantee is Postgres-only; on SQLite it must RAISE rather than pretend.
-    with engine.connect() as conn, pytest.raises(NotPostgres):
+def test_advisory_lock_refuses_on_non_postgres():
+    """The guarantee is Postgres-only; on SQLite it must RAISE rather than pretend.
+
+    THIS TEST BUILDS ITS OWN SQLITE ENGINE, and that is the whole point of the fix. It
+    used to take the `engine` fixture, which was SQLite in every run that had ever
+    existed — so the precondition its NAME states was supplied by the environment rather
+    than by the test. The moment `engine` could be Postgres, the test inverted: it began
+    asserting that Postgres raises NotPostgres, and failed. The standing review question
+    catches it exactly — one side of the comparison, the substrate, could change without
+    the test noticing.
+
+    Skipping it on the Postgres run was the wrong repair: the non-Postgres refusal path
+    would stop being covered in precisely the run we made canonical. Pinning its own
+    substrate means it now runs, and means the same thing, under BOTH configurations.
+    """
+    from sqlalchemy import create_engine
+
+    sqlite_engine = create_engine("sqlite://")
+    with sqlite_engine.connect() as conn, pytest.raises(NotPostgres):
         try_acquire(conn, "any-job")
 
 

@@ -155,17 +155,25 @@ def _publish_bytes(post_id: str) -> tuple[bytes, str, str]:
             "ARTEC_API_BASE / HERMES_API_TOKEN are not set on this service — the video "
             "cannot be read from Drive, and a fal URL is not an acceptable substitute",
             park=False)
+    url = f"{base}/commands/media/{post_id}"
     try:
-        resp = httpx.get(f"{base}/commands/media/{post_id}",
-                         headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        resp = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=120)
     except Exception as e:
-        raise MediaUnavailable(f"media fetch failed: {type(e).__name__}: {e}",
-                               park=False) from None
+        # NAME THE URL. ARTEC_API_BASE carries a hardcoded :8080 while Railway injects
+        # PORT, so a port change must surface as "cannot reach artec api at <url>" rather
+        # than as a mute deliver_video refusal that looks like a bad file.
+        raise MediaUnavailable(
+            f"cannot reach artec api at {url} — {type(e).__name__}: {e}. Check "
+            "ARTEC_API_BASE (the port is pinned there; Railway injects PORT).",
+            park=False) from None
     if resp.status_code == 404:
         raise MediaUnavailable(
             f"the rendered file is not in Drive _generated/ ({resp.text[:200]})", park=True)
     if resp.status_code >= 400:
-        raise MediaUnavailable(f"media endpoint returned HTTP {resp.status_code}", park=False)
+        raise MediaUnavailable(
+            f"artec api at {url} returned HTTP {resp.status_code}"
+            + (" — the bearer was rejected; HERMES_API_TOKEN differs between services"
+               if resp.status_code == 401 else ""), park=False)
     data = resp.content
     claimed = resp.headers.get("X-Artec-Media-SHA256", "")
     actual = hashlib.sha256(data).hexdigest()

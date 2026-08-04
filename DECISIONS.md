@@ -431,3 +431,42 @@ unless marked.
     the file id from that post's row, requires the resolved Drive path to sit under
     `_generated/`, and never lists. A traversal-shaped id is simply a key that matches no
     row. Both properties are tested, including a parametrised set of hostile ids.
+
+52. **The packaging/environment class extends to PROBED FACTS, not just to code.** The
+    original class was "works from the repo root, vanishes under `pip install .`" — code
+    tested one way and deployed another. Probe B is the same error one level up: a fact
+    established on a development laptop (`$HERMES_HOME/state.db`) and relied on in a
+    container where the real path is
+    `$HERMES_HOME/profiles/$(cat active_profile)/state.db`. It was worse than an absence,
+    because the laptop path EXISTS in production as a 1 MiB file that opens cleanly and
+    answers `no such table: sessions` — a plausible error, which reads as "wrong schema"
+    rather than "wrong file". **A probed fact carries the environment it was probed in.
+    If it will be relied on in the container, probe it in the container.**
+
+53. **v4 · `POST /commands/doctor` raised KeyError on `main`, and the check now reports RED
+    instead of escaping.** `run_doctor` read `OPERATOR_CONSTANTS['endpoint_prices_cents']`,
+    which v4 deleted when prices moved to the `endpoint_prices` TABLE (§7·C5). Every call —
+    CLI and HTTPS — died. A doctor that cannot run is worse than a missing check: it is a
+    green light that never lights. The price check now reads the table, and a database it
+    cannot query produces a RED CHECK rather than a 500 that takes every other check with
+    it.
+
+54. **v4 · a 401 now names itself, server-side only.** A production 401 against a token
+    verified byte-identical in the shell, in `/proc/1/environ` and in a fresh interpreter
+    left nothing to go on. `require_token` logs which failure it was — no header, empty
+    after `Bearer `, non-ASCII, or value mismatch — with lengths and **sha256[:8]** of each
+    side. Eight hex characters of a digest is not reversible and is the same comparison the
+    operator made by hand across layers. The RESPONSE stays generic: an unauthenticated
+    caller learns nothing. The bearer is now asserted OVER HTTP against the real app, not
+    against the dependency in isolation — the dependency was already correct, which is
+    exactly why testing it again would have kept agreeing with it (see #45).
+
+55. **v4 · the real-encode fixture, and what it cost.** `tests/fixtures/real_raw_video.mp4`
+    — 1,401,754 bytes, 3.000 s, 1920×1080, h264+aac = **1.803 bits/pixel-second** against a
+    floor of 0.05, i.e. 36× headroom. The 1.45 previously used as the "real footage"
+    reference was a guess standing in for a measurement, and it was about right; it is now
+    measured. **The source was 19.8 Mbps (9.54 bits/pixel-second) and this is a CRF 24
+    re-encode, so re-encoding cost a factor of five.** Recorded so nobody later "fixes" it
+    back to a stream copy without knowing what changed. The solid-colour clip is KEPT
+    alongside it: structurally perfect (leading moov, real stream, legal duration, right
+    aspect) and still not footage. That pairing is the point of having a bitrate floor.

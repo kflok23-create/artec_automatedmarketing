@@ -182,12 +182,35 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                         warn=False))
 
     # v3 Rule 4: every surviving model endpoint must be priced or it is uncallable.
+    # v4 moved prices OUT of config into the `endpoint_prices` TABLE (§7·C5) so that
+    # reconciliation can write them without any tool writing config. This check was left
+    # reading the deleted config key and raised KeyError on every call — which took
+    # `artec doctor` AND `POST /commands/doctor` down with it, on main. A doctor that
+    # cannot run is worse than a missing check: it is a green light that never lights.
     endpoints = set(OPERATOR_CONSTANTS["model_endpoints"].values())
-    prices = set(OPERATOR_CONSTANTS["endpoint_prices_cents"])
-    unpriced = sorted(endpoints - prices)
-    checks.append(Check("endpoint price table", not unpriced,
-                        "every model endpoint priced" if not unpriced else f"unpriced: {unpriced}",
-                        "add the endpoint to config.endpoint_prices_cents — unpriced endpoints are uncallable"))
+    if session is None:
+        checks.append(Check("endpoint price table", True,
+                            "not checked — no database session", warn=True))
+    else:
+        from app.toolbox.pricing import price_table
+
+        try:
+            priced = {row["endpoint"] for row in price_table(session)}
+        except Exception as e:
+            # A doctor that raises is worse than a doctor that reports RED: it takes every
+            # OTHER check down with it and answers 500 to the endpoint whose whole job is
+            # to say what is wrong.
+            checks.append(Check("endpoint price table", False,
+                                f"cannot read endpoint_prices: {type(e).__name__}",
+                                "run `alembic upgrade head`, then `artec config seed`"))
+        else:
+            unpriced = sorted(endpoints - priced)
+            checks.append(Check(
+                "endpoint price table", not unpriced,
+                f"every model endpoint priced ({len(priced)} rows)" if not unpriced
+                else f"unpriced: {unpriced}",
+                "run `artec config seed` — prices live in the endpoint_prices TABLE in v4, "
+                "and an unpriced endpoint is uncallable by design"))
 
     # v3 §5: the hermes-brain volume. Local probe when HERMES_HOME is set; otherwise
     # verified through the Postgres row the brain's entrypoint writes at every boot.

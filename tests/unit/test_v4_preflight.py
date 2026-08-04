@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 from datetime import date
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -17,6 +18,7 @@ from app.config import OperatorError
 from app.models import Post
 from app.scheduler import sweep_orphaned_slots
 from app.stages.preflight import (
+    MIN_BITS_PER_PIXEL_SECOND,
     check_caption,
     ffprobe_available,
     preflight,
@@ -217,3 +219,45 @@ def test_orphan_sweep_finds_rendered_posts_no_slot_pass_will_ever_select(session
     orphans = sweep_orphaned_slots(session)
     assert [o["post_id"] for o in orphans] == ["post_7701"]
     assert "afternoon" in orphans[0]["reason"]
+
+
+# ---- the realistic fixture is now a REAL ENCODE, not a stand-in --------------------------
+
+REAL_VIDEO = Path(__file__).resolve().parent.parent / "fixtures" / "real_raw_video.mp4"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG or not REAL_VIDEO.is_file(),
+                    reason="ffprobe or tests/fixtures/real_raw_video.mp4 not available")
+def test_real_bank_footage_clears_the_bitrate_floor_with_room():
+    """1,401,754 bytes / 3.000s / 1920x1080 h264+aac = 1.803 bits/pixel-second, against a
+    floor of 0.05 — 36x headroom.
+
+    The 1.45 figure previously used as the "real footage" reference was a guess standing in
+    for a measurement; it turns out to have been about right, and now it is measured.
+
+    TRADE-OFF, recorded so nobody 'fixes' it back to a stream copy without knowing the
+    cost: the source was 19.8 Mbps (9.54 bits/pixel-second) and this fixture is a CRF 24
+    re-encode, so re-encoding cost a factor of five. Still two orders of magnitude above
+    the floor, which is exactly what the test needs to demonstrate — a fixture that only
+    just passes would put the floor at the mercy of the encoder.
+    """
+    result = preflight_video(str(REAL_VIDEO), aspect_ratio="16:9",
+                             duration_bounds=(1.0, 10.0))
+    assert result.ok, result.failures
+    size = REAL_VIDEO.stat().st_size
+    bits_per_pixel_second = (size * 8) / (1920 * 1080 * 3.0)
+    assert bits_per_pixel_second > MIN_BITS_PER_PIXEL_SECOND * 30, \
+        f"{bits_per_pixel_second:.3f} bits/pixel-second — the fixture must clear the floor "
+    assert 1.7 < bits_per_pixel_second < 1.9, "the measured figure, pinned"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe not on PATH here")
+def test_a_structurally_perfect_solid_colour_clip_still_fails_on_bitrate(tmp_path):
+    """THE PAIRING IS THE POINT. This clip has a leading moov, a real video stream, a legal
+    duration and the right aspect — everything the structural checks look at — and it is
+    still not footage. Only the bitrate floor can tell the difference, which is why the
+    floor exists and why it is not calibrated against a clip like this one."""
+    path = _video(tmp_path, name="solid.mp4", seconds=3, size="1080x1920", realistic=False)
+    result = preflight_video(path, aspect_ratio="9:16", duration_bounds=(1.0, 10.0))
+    assert not result.ok
+    assert any("bit" in f.lower() for f in result.failures), result.failures

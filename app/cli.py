@@ -375,11 +375,12 @@ def audit_memory_cmd(
 def agent_review_cmd():
     """Monthly first-Sunday session: print the agent's skill list and MEMORY.md."""
     _boot()
-    from app.stages.agent_review import agent_review, toolset_drift_check
+    from app.stages.agent_review import agent_review, config_drift_check, toolset_drift_check
 
     agent_review(log=typer.echo)
     drift = toolset_drift_check(log=typer.echo)
-    if drift["missing"]:
+    config_drift = config_drift_check(log=typer.echo)
+    if drift["missing"] or config_drift["drifted"]:
         raise typer.Exit(code=1)
 
 

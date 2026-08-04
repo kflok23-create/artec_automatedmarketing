@@ -150,22 +150,6 @@ def test_the_probe_never_puts_the_key_in_its_own_status(probe):
     assert "SUPERSECRET" not in str(status)
 
 
-def test_the_digest_reports_the_probe_result_nightly(session):
-    from app.config import set_config
-    from app.stages.digest import build_payload, render_digest_text
-
-    set_config(session, "scouting_status",
-               {"available": False, "backend": "tavily",
-                "reason": "HTTP 401: Unauthorized: invalid API key"})
-
-    class Brevo:
-        def get_list_count(self):
-            return 1
-
-    text = render_digest_text(build_payload(session, brevo=Brevo()))
-    assert "scouting: UNAVAILABLE" in text and "401" in text
-
-
 # ---- A4 · autonomous memory writes are observed from the first week ----------------------
 
 def test_the_audit_is_clean_on_empty_memory(audit, tmp_path):
@@ -238,3 +222,44 @@ def test_hermes_absent_is_a_skip_never_a_pass():
     result = toolset_drift_check(runner=lambda _: (_ for _ in ()).throw(FileNotFoundError()),
                                  log=lambda *_: None)
     assert result["checked"] is False and result["missing"] == []
+
+
+# ---- C · scouting has THREE states; absent is not passing ---------------------------------
+
+class _Brevo:
+    def get_list_count(self):
+        return 1
+
+
+def _digest_text(session):
+    from app.stages.digest import build_payload, render_digest_text
+
+    return render_digest_text(build_payload(session, brevo=_Brevo()))
+
+
+def test_scouting_absent_renders_as_not_yet_probed(session):
+    """The probe's status write failed once (postgres.railway.internal does not resolve
+    outside Railway), which leaves the key ABSENT rather than wrong. An absent probe must
+    never read as a passing one, and must never be silently omitted."""
+    text = _digest_text(session)
+    assert "scouting: NOT YET PROBED" in text
+    assert "not a passing one" in text
+
+
+def test_scouting_available_renders_the_backend_and_reason(session):
+    from app.config import set_config
+
+    set_config(session, "scouting_status",
+               {"available": True, "backend": "tavily",
+                "reason": "HTTP 200, 1 result(s) for the probe query"})
+    text = _digest_text(session)
+    assert "scouting: available via tavily" in text and "HTTP 200" in text
+
+
+def test_scouting_unavailable_renders_the_reason(session):
+    from app.config import set_config
+
+    set_config(session, "scouting_status",
+               {"available": False, "backend": "tavily", "reason": "HTTP 401: Unauthorized"})
+    text = _digest_text(session)
+    assert "scouting: UNAVAILABLE" in text and "401" in text

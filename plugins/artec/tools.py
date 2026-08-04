@@ -123,6 +123,18 @@ def _spend_posture_lines(conn, engine) -> list[str]:
                + ("" if posture["gate_style"] == "full" else
                   " — fewer clarifying turns per draft, the same decisions"))
     out.append("  the gate is never skipped, at any spend level")
+    # `Web Search & Scraping` is enabled on the deployed brain, so scouting is CALLABLE
+    # whether or not a backend was ever probed. The brief is where that gets said, because
+    # the brief is what the agent reads before deciding to scout.
+    status = _config(conn, "scouting_status", None)
+    if status is None:
+        out.append("  search backend: NOT YET PROBED — treat scouting as unavailable and "
+                   "say so in your plan rather than calling it blind")
+    elif not status.get("available"):
+        out.append(f"  search backend: UNAVAILABLE ({status.get('reason', '')}) — do not "
+                   "call web search; plan without it and report that you did")
+    else:
+        out.append(f"  search backend: available via {status.get('backend', '?')}")
     return out
 
 

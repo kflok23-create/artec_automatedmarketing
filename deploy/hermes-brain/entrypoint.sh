@@ -124,6 +124,16 @@ else
     fail "artec plugin did not load — see the discovery log above"
 fi
 
+# `hermes tools --summary` lists TOOLSETS, not tools: seeing "Artec" proves the toolset is
+# present, not that fifteen handlers registered. register(ctx) failing halfway would leave a
+# partial set and nothing would say so. Count by listing, and name the shortfall.
+echo "--- proof: artec tool registration ---"
+ARTEC_TOOLS=$(hermes tools 2>&1 | grep -ciE "read_brief|read_learnings|read_asset_inventory|read_parked_posts|read_draft_posts|read_digest|write_plan|record_gate_decision|deliver_video|review_video|review_email|record_metrics|retry_post|fulfil_wishlist|acknowledge_price_table" || true)
+echo "artec tools registered: $ARTEC_TOOLS / 15"
+if [ "$ARTEC_TOOLS" -lt 15 ]; then
+    echo "WARN: only $ARTEC_TOOLS of 15 artec tools are registered — a partial register(ctx) leaves the gate or the digest without its tools. Check the discovery log above."
+fi
+
 step "9/10 cron jobs (numeric day-of-week; create exits 0 on failure, so VERIFY by listing)"
 if ! hermes cron list 2>/dev/null | grep -qi "learn-ideate"; then
     hermes cron create "0 7 * * 0" "$(cat /bootstrap/cron-learn-ideate.txt)" \

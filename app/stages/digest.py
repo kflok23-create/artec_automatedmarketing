@@ -373,9 +373,11 @@ def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None
         "price_status": _price_status(session),
         "stale_prices": stale_prices(session),
         # Reported EVERY night while no search backend is configured (§7·A5).
-        "scouting": get_config(session, "scouting_status", None)
-                    or {"available": False,
-                        "reason": "no search backend probed yet (Stage 2c wires the boot probe)"},
+        # THREE states, never two: available · unavailable-with-reason · NEVER PROBED.
+        # An absent probe must not read as a passing one — the same rule as the memory
+        # audit, and the reason it is applied here is that the probe's own status write
+        # failed once, which leaves the key ABSENT rather than wrong.
+        "scouting": get_config(session, "scouting_status", None),
     }
 
 
@@ -609,7 +611,13 @@ def render_digest_text(payload: dict) -> str:
         for hit in (audit.get("hits") or [])[:3]:
             lines.append(f"   {hit.get('file')}:{hit.get('line')} {hit.get('match')!r}")
     sc = s["scouting"]
-    lines.append(f"scouting: {'available' if sc.get('available') else 'UNAVAILABLE'} — {sc.get('reason', '')}")
+    if sc is None:
+        lines.append("scouting: NOT YET PROBED — the brain probes the search backend at "
+                     "boot; an absent result is not a passing one")
+    elif sc.get("available"):
+        lines.append(f"scouting: available via {sc.get('backend', '?')} — {sc.get('reason', '')}")
+    else:
+        lines.append(f"scouting: UNAVAILABLE — {sc.get('reason', '')}")
     if p.get("completeness_warning"):
         lines.append("")
         lines.append(f"🛑 {p['completeness_warning']['note']}")

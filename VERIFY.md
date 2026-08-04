@@ -269,3 +269,92 @@ match. `tests/unit/test_v4_transcription_guard.py` asserts the request-dump case
 not, the guard fails closed — refuses and names `artec measure` — which is the safe
 direction, but it means metrics entry does not work until confirmed. One real digest
 session settles it.
+
+---
+
+## PROBED · deployed environment (operator probes A–E, 2026-08-04)
+
+| Fact | Value |
+|---|---|
+| hermes-agent on artec-brain | v0.19.1 (tag 2026.7.30), git install, `/opt/hermes-agent`, Python 3.12.13 |
+| `HERMES_HOME` | `/data/hermes` (Railway volume `hermes-brain-volume`) |
+| artec api interpreter | **`/opt/venv/bin/python`** — NOT the system Python. `python` at an SSH prompt has no pydantic; every in-container diagnostic must use the venv path |
+| artec api start command | `/opt/venv/bin/python /opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080` |
+| `RAILWAY_PRIVATE_DOMAIN` (artec api) | `artecautomatedmarketing.railway.internal` |
+
+### Internal networking WORKS — the IPv6 concern was wrong
+
+```
+$ getent hosts artecautomatedmarketing.railway.internal
+fd12:223a:dbc4:1:d000:164:71b2:a7f2
+
+$ urlopen('http://artecautomatedmarketing.railway.internal:8080/healthz')
+b'{"status":"ok","db":true,"migrations_current":true,"resources_packaged":true}'
+```
+
+The name resolves to IPv6 and the request succeeds against a service bound to
+`--host 0.0.0.0`. **No start-command change is needed.** Recorded so nobody revisits it.
+
+`ARTEC_API_BASE` pins `:8080` while Railway injects `PORT`, so `_publish_bytes` now fails
+with `cannot reach artec api at <url>` naming the attempted URL — a port change must not
+present as a mute `deliver_video` refusal that looks like a bad file.
+
+### CORRECTED · the message store is PROFILE-SCOPED
+
+```
+/data/hermes/active_profile                          ->  artec-brain
+/data/hermes/profiles/artec-brain/state.db           <- THE STORE
+/data/hermes/state.db                                <- DECOY, exactly 1048576 bytes
+```
+
+The earlier entry in this file named `$HERMES_HOME/state.db`. That file exists, **opens
+cleanly, and answers `no such table: sessions`** — a plausible error rather than an
+absence, which is why the first probe concluded the schema was wrong. Both earlier
+investigations ran against a development machine whose layout differs.
+
+Resolution is now `active_profile` → `profiles/<profile>/state.db`, with the `sessions` and
+`messages` tables asserted before the file is trusted, and **no fallback, no glob, no
+search**. Anything else is `cannot verify` → refuse → `artec measure`.
+
+### Tool posture, verified BY LISTING on the deployed brain
+
+```
+⚕ Tool Summary
+  🖥️  CLI  (8/28)      Artec · Clarifying Questions · Cron Jobs · Memory ·
+                       Session Search · Skills · Vision · Web Search & Scraping
+  📱 Telegram  (6/28)  Artec · Clarifying Questions · Memory · Session Search ·
+                       Skills · Web Search & Scraping
+```
+
+Absent from both surfaces: Browser Automation, Code Execution, Computer Use, File
+Operations, Terminal & Processes, Task Delegation, Task Planning, Image Generation,
+Text-to-Speech, **and both `kanban` and `todo`**. A default install shows all of them, so
+the lockdown is doing real work rather than describing a default. **C6 is satisfied by
+observation**, and `artec agent-review` keeps it satisfied by asserting the identifiers
+still exist.
+
+`hermes tools --summary` lists TOOLSETS, not tools — "Artec" present does not prove fifteen
+handlers registered. The entrypoint now counts them by listing and names the shortfall.
+
+**`Web Search & Scraping` is already live** on the deployed brain, which runs `main`. So
+scouting is CALLABLE whether or not a backend was ever probed — which is why the brief now
+carries the search-backend state, and why an absent probe renders as NOT YET PROBED.
+
+### Tavily is LIVE
+
+```
+scouting: AVAILABLE via tavily — HTTP 200, 1 result(s) for the probe query
+```
+
+The credential is valid. A5's remaining work is enablement and the boot probe, not the key.
+The same run failed to write `config.scouting_status` (`postgres.railway.internal` does not
+resolve outside Railway — expected for `railway run`), which leaves the key **absent**
+rather than wrong. Hence the three-state rendering.
+
+### The profile `config.yaml` lives only on the volume — mitigated
+
+Four in-place versions in one day (`config.yaml.bak.20260803_*`), plus a `kanban.db` fossil.
+The entrypoint already copies the repo-committed `deploy/hermes-brain/config.yaml` onto the
+volume at **every boot** (step 5/10), so the canonical file IS version-controlled and a
+volume loss cannot take the posture with it. `artec agent-review` now also diffs the live
+file against the committed one and goes RED on drift, for the window between boots.

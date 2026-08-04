@@ -14,11 +14,18 @@ deploys, so a partially-built branch cannot strand a post.
 
 ## MERGE RULE — binding · SUPERSEDED 2c-i, see below
 
-### THE GOVERNING CONDITION (2c-i)
+### THE MERGE GATE — five conditions, all required (updated after operator probes A–E)
 
-**`v4-stage-2b` merges to `main` only after jobs 11 and 12 are REGISTERED and verified by
-listing, with `+08:00` next-run timestamps — i.e. at the end of 2c-iv, immediately before
-Checkpoint 1.**
+1. **jobs 11 and 12 registered and verified BY LISTING**, `+08:00` next-run timestamps —
+   end of 2c-iv, immediately before Checkpoint 1
+2. every `pg` test executed and green
+3. **`POST /commands/*` accepts the correct bearer** (probe A′ — still open, see below)
+4. metrics entry either works against the production store layout (probe B — now
+   implemented, needs one live session) **or** is consciously accepted as HTTPS-only for
+   week one
+5. the CI gate, per the operator's decision on branch protection (403 on this plan)
+
+Condition 1 is the governing one and the reason the branch runs long:
 
 Why this outranks everything below: B makes production's already-scheduled publish job skip
 every email and every video-bearing post. Nothing on a clock prepares or delivers a digest
@@ -366,4 +373,40 @@ Operator alternative, if you want the answer sooner — one command, key never p
 
 ```bash
 railway run --service artec-brain python deploy/hermes-brain/probe_scouting.py
+```
+
+
+---
+
+## 2c-i(b) — operator probes A–E applied
+
+| Probe | Outcome |
+|---|---|
+| **A** internal networking | WORKS over IPv6 against `--host 0.0.0.0`. No start-command change. Hardened: `_publish_bytes` names the attempted URL, so a PORT change cannot present as a mute refusal |
+| **A′** 401 on `POST /commands/*` | **NOT REPRODUCIBLE locally** — see below. Fixed a different live bug on the same route; added the over-HTTP acceptance suite and a self-naming 401 log |
+| **B** session store | Profile-scoped; the obvious path is a decoy. Module rewritten, tests re-run against the production layout |
+| **B′** tool posture | C6 satisfied by observation. Entrypoint now counts the fifteen artec tools by listing |
+| **B″** profile config.yaml | Already restored from the repo at every boot (step 5/10); `agent-review` now also diffs live vs committed |
+| **C** Tavily | LIVE. Three-state rendering added — absent is NOT YET PROBED, never passing |
+| **D** `RESTORE_TARGET_URL` | Deleted. Closed |
+| **E** real video fixture | Wired in at 1.803 bits/pixel-second, paired with the solid-colour clip that fails on bitrate alone |
+
+### A′ — what I found, and what I could not
+
+**Could not reproduce.** Driven over HTTP against the real app: `GET` → 405, `POST` without
+a header → 401, `POST` with the correct bearer → **past auth** into the route body. The
+dependency, the router-level dependency, the CORS middleware and the routing all behave.
+
+**Found instead:** `POST /commands/doctor` raised `KeyError: 'endpoint_prices_cents'` on
+`main` — a live bug on the exact route being probed, on every call, CLI and HTTPS alike.
+Fixed (DECISIONS #53). It does not explain a 401, but that route could not have succeeded
+regardless.
+
+**The next probe is now one request.** A 401 logs which failure it was, with `sha256[:8]`
+of the presented and expected tokens. If the fingerprints differ, the running process holds
+a different value from the one on disk; if they match, the failure is upstream of the app.
+Either way it stops being guesswork:
+
+```bash
+railway logs --service "artec api" | grep "401 on an authenticated route"
 ```

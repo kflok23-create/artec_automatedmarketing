@@ -166,3 +166,43 @@ def toolset_drift_check(runner=None, log=print) -> dict:
         log(f"agent-review: toolset identifiers OK — all {len(EXPECTED_DISABLED)} "
             f"expected-disabled names recognised ({len(known)} toolsets in this build)")
     return {"checked": True, "missing": missing, "known": sorted(known)}
+
+
+# ---------------------------------------------------------------------------------------
+# B″ — the toolset lockdown must not live only on a Railway volume.
+#
+# The brain's entrypoint already copies `deploy/hermes-brain/config.yaml` from the image
+# onto the volume on EVERY boot, so the canonical file is version-controlled and a volume
+# loss cannot quietly take the security posture with it. But hermes-agent also rewrites
+# that file in place (four `config.yaml.bak.*` in one day on the live volume), and between
+# boots the live file can differ from the committed one with nothing saying so.
+# ---------------------------------------------------------------------------------------
+
+def config_drift_check(repo_config: Path | None = None, log=print) -> dict:
+    """Compare the live profile config against the repo-committed canonical one."""
+    home = _hermes_home()
+    if home is None:
+        log("agent-review: HERMES_HOME not set — config drift NOT CHECKED")
+        return {"checked": False, "drifted": False}
+    if repo_config is None:
+        repo_config = Path(__file__).resolve().parents[2] / "deploy" / "hermes-brain" / "config.yaml"
+    profile = ""
+    marker = home / "active_profile"
+    if marker.is_file():
+        profile = marker.read_text(encoding="utf-8", errors="replace").strip()
+    live = (home / "profiles" / profile / "config.yaml") if profile else (home / "config.yaml")
+    if not live.is_file() or not repo_config.is_file():
+        log(f"agent-review: config drift NOT CHECKED — {live} or {repo_config} missing")
+        return {"checked": False, "drifted": False, "live": str(live)}
+
+    live_text = live.read_text(encoding="utf-8", errors="replace")
+    repo_text = repo_config.read_text(encoding="utf-8", errors="replace")
+    drifted = live_text.strip() != repo_text.strip()
+    if drifted:
+        log(f"agent-review: RED — the live profile config at {live} differs from the "
+            f"repo-committed {repo_config.name}. The toolset lockdown is a security "
+            "posture; it must not live only on a volume. Redeploy to restore it from the "
+            "image, or commit the intended change.")
+    else:
+        log("agent-review: profile config matches the repo-committed canonical file")
+    return {"checked": True, "drifted": drifted, "live": str(live)}

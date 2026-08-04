@@ -164,3 +164,56 @@ def test_store_status_names_the_consequence_when_absent(tools, monkeypatch):
     status = tools._transcript.store_status()
     assert status["available"] is False
     assert "artec measure" in status["consequence"]
+
+
+# ---- the store is PROFILE-SCOPED, and the obvious path is a decoy (operator probe B) ------
+
+def test_the_store_resolves_through_active_profile(tools, operator_session, tmp_path):
+    """`$HERMES_HOME/profiles/$(cat active_profile)/state.db`. Probed on the deployed
+    brain — both previous investigations ran against a development machine whose layout
+    differs, which is the packaging/environment class one level up: not code tested from a
+    source tree and shipped as a wheel, but a FACT probed on a laptop and relied on in a
+    container."""
+    operator_session(TASK, "4200 impressions")
+    resolved = tools._transcript.store_path()
+    assert resolved == tmp_path / "profiles" / "artec-brain" / "state.db"
+    assert resolved.is_file()
+
+
+def test_the_decoy_at_the_obvious_path_is_never_read(tools, operator_session, tmp_path):
+    """`$HERMES_HOME/state.db` exists on the brain, opens cleanly, and answers
+    `no such table: sessions` — a plausible error rather than an absence, which is what
+    made the earlier probe conclude the schema was wrong."""
+    operator_session(TASK, "4200 impressions")
+    decoy = tmp_path / "state.db"
+    assert decoy.is_file(), "the fixture must actually build the decoy"
+    assert tools._transcript.store_path() != decoy
+
+
+def test_a_wrong_shaped_database_at_the_right_path_is_refused(tools, monkeypatch, tmp_path):
+    """A file at the right path is not the right file. If a future layout change puts
+    something else there, this must fail closed rather than read it."""
+    import sqlite3
+
+    monkeypatch.delenv("ARTEC_TRANSCRIPT_DB", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "active_profile").write_text("artec-brain", encoding="utf-8")
+    profile = tmp_path / "profiles" / "artec-brain"
+    profile.mkdir(parents=True)
+    conn = sqlite3.connect(profile / "state.db")
+    conn.execute("CREATE TABLE something_else (x TEXT)")
+    conn.commit()
+    conn.close()
+
+    assert tools._transcript.store_path() is None
+    status = tools._transcript.store_status()
+    assert status["available"] is False and "does not carry" in status["reason"]
+
+
+def test_a_missing_active_profile_refuses_and_says_which_file(tools, monkeypatch, tmp_path):
+    monkeypatch.delenv("ARTEC_TRANSCRIPT_DB", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    status = tools._transcript.store_status()
+    assert status["available"] is False
+    assert "active_profile" in status["reason"]
+    assert "artec measure" in status["consequence"]

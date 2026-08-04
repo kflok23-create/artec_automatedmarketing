@@ -10,7 +10,8 @@ the agent does not author.
 
 PROBED, NOT INFERRED (against a real hermes-agent install, v4 Stage 2c-i — see VERIFY.md):
 
-    $HERMES_HOME/state.db          SQLite, WAL mode
+    $HERMES_HOME/active_profile                       -> 'artec-brain'
+    $HERMES_HOME/profiles/<profile>/state.db          SQLite, WAL mode
       sessions(id, source, started_at, …)          id e.g. '20260802_212025_9f03c9'
       messages(id, session_id, role, content, tool_name, timestamp, …)
         role ∈ {'user', 'assistant', 'tool'}
@@ -40,17 +41,58 @@ import sqlite3
 OPERATOR_ROLE = "user"
 
 
+REQUIRED_TABLES = ("sessions", "messages")
+
+
+def _has_required_tables(path: pathlib.Path) -> bool:
+    """A file at the right path is not the right file. Checked because the decoy below
+    OPENS CLEANLY and answers with a plausible error rather than an absence."""
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return False
+    try:
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+    return all(table in names for table in REQUIRED_TABLES)
+
+
 def store_path() -> pathlib.Path | None:
-    """The message store, or None if this process cannot see one."""
+    """The message store, or None if this process cannot see one.
+
+    THE STORE IS PROFILE-SCOPED:
+        $HERMES_HOME/profiles/$(cat $HERMES_HOME/active_profile)/state.db
+
+    `$HERMES_HOME/state.db` ALSO EXISTS on the deployed brain — exactly 1048576 bytes — and
+    it is a decoy in the most dangerous available form: it sits at the obvious path, it
+    opens cleanly, and it answers `no such table: sessions` rather than being absent. An
+    earlier probe hit it and concluded the schema was wrong.
+
+    There is NO fallback, no glob and no search: if the profile cannot be resolved, or the
+    per-profile file is missing, or the file does not carry the expected tables, this
+    returns None and the caller REFUSES. Fail closed beats reading a wrong-shaped database.
+    """
     explicit = os.environ.get("ARTEC_TRANSCRIPT_DB")
     if explicit:
         path = pathlib.Path(explicit)
-        return path if path.is_file() else None
+        return path if path.is_file() and _has_required_tables(path) else None
+
     home = os.environ.get("HERMES_HOME")
     if not home:
         return None
-    path = pathlib.Path(home) / "state.db"
-    return path if path.is_file() else None
+    root = pathlib.Path(home)
+    try:
+        profile = (root / "active_profile").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not profile:
+        return None
+    path = root / "profiles" / profile / "state.db"
+    return path if path.is_file() and _has_required_tables(path) else None
 
 
 def _text_of(content) -> str:
@@ -114,9 +156,20 @@ def store_status() -> dict:
     deciding policy. 'available' does not mean any particular session is verifiable."""
     path = store_path()
     if path is None:
+        home = os.environ.get("HERMES_HOME", "")
+        detail = "HERMES_HOME is not set"
+        if home:
+            root = pathlib.Path(home)
+            if not (root / "active_profile").is_file():
+                detail = f"{root / 'active_profile'} is missing — cannot resolve the profile"
+            else:
+                profile = (root / "active_profile").read_text(
+                    encoding="utf-8", errors="replace").strip()
+                candidate = root / "profiles" / profile / "state.db"
+                detail = (f"{candidate} is missing or does not carry "
+                          f"{list(REQUIRED_TABLES)}")
         return {"available": False,
-                "reason": "no message store: set HERMES_HOME (the agent volume) or "
-                          "ARTEC_TRANSCRIPT_DB",
+                "reason": f"no message store: {detail}",
                 "consequence": "record_metrics REFUSES; figures enter via `artec measure`"}
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)

@@ -80,8 +80,19 @@ def operator_session(tmp_path, monkeypatch):
     """
     import sqlite3
 
-    db = tmp_path / "state.db"
-    monkeypatch.setenv("ARTEC_TRANSCRIPT_DB", str(db))
+    # The PRODUCTION layout, not a convenient one: the store is profile-scoped, and
+    # $HERMES_HOME/state.db is a decoy that opens cleanly and answers with a plausible
+    # error. Both are built here so the tests run against the shape that actually ships.
+    monkeypatch.delenv("ARTEC_TRANSCRIPT_DB", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "active_profile").write_text("artec-brain", encoding="utf-8")
+    profile_dir = tmp_path / "profiles" / "artec-brain"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    decoy = sqlite3.connect(tmp_path / "state.db")     # the obvious path, wrong file
+    decoy.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT)")
+    decoy.commit()
+    decoy.close()
+    db = profile_dir / "state.db"
     conn = sqlite3.connect(db)
     conn.executescript(
         "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, source TEXT);"

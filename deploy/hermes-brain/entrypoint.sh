@@ -143,13 +143,17 @@ fi
 # the toolset is discoverable. The count belongs to the session, and the live catalog is
 # authoritative there.
 echo "--- proof: artec toolset present (COUNT DEFERRED — tools register at session start) ---"
-if hermes tools 2>&1 | grep -qi "artec"; then
-    echo "artec toolset discoverable at boot; the 15 handlers register at session start"
-else
-    fail "the artec toolset is not discoverable at all — register(ctx) did not run. This is
-the real fault the old 0/15 warning was pretending to detect, and unlike a count it CAN be
-known at boot: the toolset either appears in the catalog or it does not."
-fi
+# NO ASSERTION HERE, DELIBERATELY. The first attempt at this fix replaced the always-wrong
+# count with `hermes tools | grep artec` as a FATAL — and it took the service down on the
+# very next deploy, because `hermes tools` cannot see the toolset at boot FOR THE SAME
+# REASON the count was zero. Registration happens at session start. Swapping an always-wrong
+# warning for an always-wrong fatal made it strictly worse.
+#
+# There is nothing about tool registration that boot can honestly check. Step 8/10 already
+# hard-fails if the plugin does not load, which IS knowable here. The catalog is
+# authoritative at session start and that is where the count belongs.
+echo "artec plugin enabled; the 15 handlers register at SESSION START, so no boot-time"
+echo "count is possible — step 8/10 above is the check that can actually be made here"
 
 step "9/10 cron jobs (numeric day-of-week; create exits 0 on failure, so VERIFY by listing)"
 if ! hermes cron list 2>/dev/null | grep -qi "learn-ideate"; then

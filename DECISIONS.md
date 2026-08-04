@@ -1428,3 +1428,70 @@ Redaction is the operator's call, and it is recorded here rather than silently s
      A function that reads the clock supplies one side of its own comparison, and no test can
      pin it from outside. The same reasoning as every other instance in this file — name both
      sides, or the check is not a check.
+
+113. **2026-08-05 · BOTH HELD SURFACES PROBED AND CONFIRMED HELD — and a contradiction in my
+     own reporting corrected.** I had described `post_1499` as reaching "EMAIL REVIEW +
+     review_email" and, in the same report, called it "the only irreversible surface into its
+     first **unattended** run". Those cannot both be true. They are not: **the email lane is
+     held**, and the second statement was wrong.
+
+     The predicate, verbatim from `app/stages/publish.py::skip_reason`:
+
+         if post.channel == "email":
+             if post.status != "APPROVED_TO_SEND":
+                 return ("email never auto-publishes: it is the only irreversible surface, "
+                         f"so it requires an email review approval (status is {post.status})")
+             decision = (post.email_review or {}).get("decision")
+             if decision != "approve":
+                 return (f"email review decision is {decision!r}, not 'approve' — no code "
+                         "path sends an email without a recorded approval")
+
+     **CONNECTED, not merely declared** — the thing five previous guards were not.
+     `skip_reason` is called at `publish.py:195`, inside `publish()`'s own loop, before any
+     post reaches the publishable list. Job 7 calls `publish()`. So the scheduler's path and
+     the CLI path are the same path.
+
+     **Two independent conditions, and the second is the load-bearing one.** A status is
+     reachable by routes the review never took; a recorded decision is not. And the gate
+     cannot shortcut either: `record_gate_decision` sets `APPROVED` or `REJECTED` and
+     **never `APPROVED_TO_SEND`** — only `review_email` and `review_video` write that. So
+     Sunday's gate approval puts `post_1499` at RENDERED → EMAIL REVIEW in the digest → a
+     second, separate approval. **Two humans-in-the-loop, not one.**
+
+     The video lane is held by the same predicate with a third condition, and the third is
+     the one that cannot be forged: `telegram_message_id` is read from **Telegram's own API
+     response** inside `deliver_video` (`body["result"]["message_id"]`). `review_video` only
+     READS it. An approval for a video nobody was shown is therefore not constructible,
+     rather than merely disallowed — the receipt is supplied by a party that is neither the
+     approver nor the agent.
+
+     A clean probe is a result. Recorded so the next reader does not re-derive it.
+
+114. **2026-08-05 · A8 WAS NOT WIRED: plan-diff reported a one-sided comparison as
+     disagreement. Instance #6.** With `plans_shadow` empty for the week, `build_diff`
+     returned `agreement[field] = 0.0` for every field, and `print_diff` fell through to
+
+         == OVERLAP — none: the planners filled disjoint slots ==
+
+     **Both statements are false when one planner produced nothing.** "Disjoint slots" is a
+     claim about two planners that both spoke, and `0.0` reads as "they disagreed about
+     everything" when the truth is that there was nothing to compare. Same defect as `learn`
+     scoring an unmeasured week at zero, as job 12 announcing that job 11 had not run, and as
+     the memory audit reporting `clean — 0 files`: **an absence reported as a value.**
+
+     A8 exists precisely to prevent plan-diff degrading into a one-sided comparison that
+     reports agreement with itself — the failure job 2's missing dispatch would have caused
+     from the other direction. The rule was written and the code did not implement it.
+
+     **This is not an edge case on 2026-08-09.** Job 3 — the agent's LEARN→IDEATE at 07:00 —
+     has never completed a session in production, so an empty `plans_shadow` at 08:00 is the
+     LIKELY state, and plan-diff runs between ideate and the gate.
+
+     Fixed: `agreement` is `None` when nothing was compared and renders as
+     `— (nothing to compare)`, never as a percentage; the payload carries `one_sided`,
+     `bespoke_count` and `agent_count` as named facts rather than leaving them to be inferred
+     from an empty list; and `print_diff` opens with a banner naming which planner was silent
+     and pointing at job 3's `agent_runs` row. The "disjoint slots" line is now unreachable
+     when one side is empty.
+
+     Three states, never collapsed: nothing planned at all · one planner silent · both spoke.

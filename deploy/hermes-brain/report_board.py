@@ -71,7 +71,52 @@ def main() -> int:
     section("1.1 endpoint_prices — the RED that blocks Sunday's render", _prices)
     section("3.1 confirm_first_publish — THE ROW, not an inference", _gate)
     section("3.2 facebook DRAFTs available for the controlled publish", _fb_drafts)
+    section("B THE NINE DRAFTS — Sunday's plan, never inspected", _nine_drafts)
     return 0
+
+
+def _nine_drafts(conn, text):
+    """These were written by an older ideate for a week that has ended and nobody has read
+    them. Per D-vii they ARE Sunday's plan, so every silent-failure surface they can hit
+    needs naming before 09:00 rather than after."""
+    import json as _json
+
+    slot_times = conn.execute(text(
+        "SELECT value FROM config WHERE key = 'slot_times'")).scalar()
+    media = conn.execute(text(
+        "SELECT value FROM config WHERE key = 'channel_media'")).scalar()
+    if isinstance(slot_times, str):
+        slot_times = _json.loads(slot_times)
+    if isinstance(media, str):
+        media = _json.loads(media)
+    slot_times = slot_times or {}
+    media = media or {}
+    print(f"  slot_times keys: {sorted(slot_times)}")
+
+    rows = conn.execute(text(
+        "SELECT post_id, channel, slot, angle, hook, cta_type, week_start, "
+        "asset_wishlist, media_drive_file_id FROM posts "
+        "WHERE status = 'DRAFT' ORDER BY post_id")).all()
+    print(f"  {len(rows)} DRAFT(s)")
+    off_vocab, lanes = [], {}
+    for pid, channel, slot, angle, hook, cta, week, _wish, _drive in rows:
+        kind = (media.get(channel) or {}).get("media", "photo")
+        if channel == "email":
+            kind = "email"
+        lanes.setdefault(kind, []).append(pid)
+        ok = "OK " if slot in slot_times else "OFF"
+        if slot not in slot_times:
+            off_vocab.append((pid, slot))
+        print(f"  {pid} {channel:<10} slot={slot:<8}[{ok}] media={kind:<6} week={week} "
+              f"angle={str(angle)[:18]:<18} hook={str(hook)[:14]:<14} cta={cta}")
+    print("\n  LANES Sunday will exercise: "
+          + " · ".join(f"{k}={len(v)} {v}" for k, v in sorted(lanes.items())))
+    if off_vocab:
+        print(f"  *** OFF-VOCABULARY SLOTS (A7 silent dead-end): {off_vocab}")
+        print("  *** These would render, then never be selected by any slot pass, and")
+        print("  *** never error. sweep_orphaned_slots catches RENDERED posts only.")
+    else:
+        print("  every DRAFT slot is a key of slot_times — no A7 dead-end among them")
 
 
 def _prices(conn, text):

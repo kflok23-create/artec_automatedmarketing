@@ -48,8 +48,18 @@ def test_read_draft_posts_returns_every_draft_no_window_loss(session, tools, eng
                      status="APPROVED", hook="already approved", slot="lunch"))
     session.commit()
 
-    drafts = call(tools, "read_draft_posts", engine, week_start=str(WEEK))
+    # SHAPE CHANGED 2026-08-05: read_draft_posts now returns {week_start, drafts, summary,
+    # vocabulary} rather than a bare list. The summary is D-vii's requirement — the gate
+    # must STATE which week it is gating, because next_week_start returns the Monday that
+    # already passed when called on a Sunday, and a deferral is only a decision if the
+    # thing deferred is visible. The vocabulary is D-5: a draft may not be presented
+    # without the exact wording that acts on it.
+    result = call(tools, "read_draft_posts", engine, week_start=str(WEEK))
+    drafts = result["drafts"]
     assert len(drafts) == 30, "every draft must be enumerated — no 14-row window"
+    assert result["week_start"] == str(WEEK)
+    assert any(str(WEEK) in line for line in result["summary"])
+    assert any("approve <post_id>" in line for line in result["vocabulary"])
     assert all(d["status"] == "DRAFT" for d in drafts)
     # full creative genome, not a summary line
     first = drafts[0]

@@ -23,6 +23,19 @@ COPY plugins/artec /bootstrap/plugins/artec
 COPY deploy/hermes-brain/config.yaml /bootstrap/config.yaml
 COPY deploy/hermes-brain/cron-learn-ideate.txt /bootstrap/cron-learn-ideate.txt
 COPY deploy/hermes-brain/cron-weekly-gate.txt /bootstrap/cron-weekly-gate.txt
+# THESE THREE WERE MISSING AND THE FIRST DEPLOY CRASHED ON ONE OF THEM. All three exist in
+# the repo; none was COPYed, so `cat` and `python` inside the entrypoint hit a file that was
+# never in the image. Packaging/environment class — the code was right and never shipped.
+#   cron-nightly-digest.txt → `cat` returned nothing, so `hermes cron create` got an empty
+#     prompt, answered "create requires either prompt or at least one skill", AND EXITED 0.
+#     Job 12 never registered; the boot guard hard-failed, which is why the service CRASHED.
+#   probe_scouting.py, audit_memory_report.py → both guarded by `|| echo WARN`, so they
+#     failed SILENTLY. The digest has been reporting "scouting: NOT YET PROBED" and an
+#     agent-memory-audit line for scripts that were not in the image at all.
+# tests/unit/test_deploy_packaging.py now asserts every path the entrypoint reads is COPYed.
+COPY deploy/hermes-brain/cron-nightly-digest.txt /bootstrap/cron-nightly-digest.txt
+COPY deploy/hermes-brain/probe_scouting.py /bootstrap/probe_scouting.py
+COPY deploy/hermes-brain/audit_memory_report.py /bootstrap/audit_memory_report.py
 COPY deploy/hermes-brain/report_volume.py /bootstrap/report_volume.py
 COPY deploy/hermes-brain/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

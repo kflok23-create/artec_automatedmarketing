@@ -336,11 +336,69 @@ def tick(now: datetime, fired: set[str], log=print) -> set[str]:
     return fired
 
 
+def wait_for_schema(timeout_s: int = 300, poll_s: int = 5) -> None:
+    """Block until the database carries the schema this build expects.
+
+    THE FIRST PRODUCTION DEPLOY OF `main` FOUND THIS. Railway starts all services together;
+    the migrations run in the `artec api` release step. The scheduler booted at 08:00:49 and
+    alembic did not finish until 08:02:06, so for 76 seconds every tick died on
+
+        ProgrammingError: (psycopg.errors.UndefinedColumn) column config.set_by does not exist
+
+    `set_by` is added by migration 0006. Nothing was wrong with the code or the migration —
+    the scheduler was simply reading a schema that did not exist yet, and Railway reported
+    the service SUCCESS throughout, because the process was alive and the tick loop swallows
+    its own exceptions by design.
+
+    WHY THAT MATTERS BEYOND THE NOISE: `tick()` reads `slot_times` AFTER the registry-job
+    loop and OUTSIDE its per-job try/except, so a failed config read skips `run_publish_job`
+    and `run_measure_job` for that tick. Slot matching is minute-exact (`hhmm == at`), and
+    the tick that would have matched is the one that raised — so a slot falling inside the
+    window is missed FOR THE DAY, with no retry, and the only trace is a line in a log
+    nobody reads at 08:00. Publishing is the one job whose omission is invisible: the digest
+    reports posts still RENDERED, which looks like nothing was due.
+
+    A fixed sleep would be a guess. This waits on the actual condition and says what it is
+    waiting for, then fails loudly rather than ticking against a schema it cannot use.
+    """
+    from sqlalchemy import text
+
+    from app.db import session_scope
+
+    deadline = time.monotonic() + timeout_s
+    announced = False
+    while True:
+        try:
+            with session_scope() as s:
+                # A column added by the newest migration. Reading it is the cheapest honest
+                # proof that migrations have caught up with this build — the same reasoning
+                # as test_schema_provenance.py: assert an object that only the migration
+                # path produces, never one the model metadata could have supplied.
+                s.execute(text("SELECT set_by FROM config LIMIT 1"))
+            if announced:
+                print("scheduler: schema is current — starting the tick loop")
+            return
+        except Exception as e:                                  # noqa: BLE001
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"schema still not current after {timeout_s}s: {type(e).__name__}: {e}. "
+                    "The scheduler refuses to tick against a schema it cannot read — a "
+                    "missed slot is silent, and silence is the failure mode this exists to "
+                    "prevent."
+                ) from e
+            if not announced:
+                print(f"scheduler: waiting for migrations to land ({type(e).__name__}) — "
+                      "not ticking until the schema is current")
+                announced = True
+            time.sleep(poll_s)
+
+
 def main() -> None:
     settings = get_settings()
     install_redaction(settings)
     from app.jobs import artec_jobs
 
+    wait_for_schema()
     print(f"artec-scheduler up — {len(artec_jobs())} registry jobs, timezone Asia/Singapore")
     for row in next_runs():
         # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the

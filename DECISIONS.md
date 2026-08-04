@@ -929,3 +929,108 @@ Redaction is the operator's call, and it is recorded here rather than silently s
     What was NOT true is the adjacent claim: that run **gated** nothing. The ruleset was
     disabled, so `main` was green *and* unprotected. Green and gated are different facts and
     had been read as one. See decision 68.
+
+89. **2026-08-04 · THE FIRST PRODUCTION DEPLOY OF `main` CRASHED, AND EVERY GREEN SIGNAL WE
+    HAD SAID IT WOULD NOT.** Merge commit `3fb7437` passed CI on its own sha — lint, the tip
+    and full-history secret scans, migrations, the SQLite suite, and **474 tests on real
+    Postgres**. `artec-brain` then went `CRASHED` on first boot, and `artec-scheduler`
+    reported `SUCCESS` while every tick failed for 76 seconds.
+
+    **Nothing in the test suite and nothing in CI looks at what ships.** CI builds no image
+    and runs no entrypoint; the suite reads application code. The gap between *the code is
+    correct* and *the correct code is in the container* had no guard at all — the
+    packaging/environment class, the first of the three this build names.
+
+    **B-1 · Three files the entrypoint reads were never `COPY`ed into the image.**
+    `deploy/hermes-brain/entrypoint.sh` reads nine `/bootstrap/…` paths; the Dockerfile
+    COPYed six. All three missing files existed in the repo and were correct.
+
+    | missing file | guarded how | what the operator saw |
+    |---|---|---|
+    | `cron-nightly-digest.txt` | none | `cat: No such file or directory` → empty prompt → `hermes cron create` answered *"create requires either prompt or at least one skill"* **and exited 0** → job 12 unregistered → boot guard FATAL → **CRASHED** |
+    | `probe_scouting.py` | `\|\| echo WARN` | **silence.** The digest's `scouting: NOT YET PROBED` line reports on a script absent from the image |
+    | `audit_memory_report.py` | `\|\| echo WARN` | **silence.** The digest's `agent memory audit` line likewise |
+
+    The two silent ones are the more dangerous. **"NOT YET PROBED" reads as a pending task,
+    not as a missing file** — the failure disguised itself as the system working correctly
+    and honestly reporting unfinished work. Only the unguarded one crashed, and only because
+    the boot check verifies cron by LISTING rather than trusting an exit code that is 0 on
+    failure (VERIFY.md V2, probed twice). **The guard that worked was the one built on the
+    assumption that the tool lies.**
+
+    Guarded by `tests/unit/test_deploy_packaging.py`, asserting the structural property from
+    OUTSIDE both files: *every `/bootstrap/…` path the entrypoint reads must be COPYed.*
+    Neither file satisfies it alone and neither can drift without the other noticing. Run
+    against the shipped Dockerfile it names all three and fails — **verified, because a
+    guard that has never failed is not known to be a guard.** Same shape as the test that
+    caught job 2's missing dispatch.
+
+90. **2026-08-04 · The scheduler ticked against a schema that did not exist yet, and a
+    missed publish slot is SILENT. Fixed with `wait_for_schema()`.** Railway starts all
+    services together; migrations run in the `artec api` release step. The scheduler booted
+    at 08:00:49; alembic finished at 08:02:06. For 76 seconds every tick died on
+
+        ProgrammingError: (psycopg.errors.UndefinedColumn) column config.set_by does not exist
+
+    `set_by` is added by migration 0006 — **no code and no migration was wrong.** The
+    scheduler was reading a schema that had not landed. Railway reported `SUCCESS`
+    throughout, correctly: the process was alive, and the tick loop swallows its own
+    exceptions by design so one bad job cannot take the night down.
+
+    **The noise is not the defect. This is:** `tick()` reads `slot_times` *after* the
+    registry-job loop and *outside* its per-job `try/except`, so a failed config read skips
+    `run_publish_job` and `run_measure_job` entirely. Slot matching is minute-exact
+    (`hhmm == at`), and the tick that would have matched is the tick that raised — so **a
+    slot falling inside the window is missed for the day, with no retry.** Publishing is the
+    one job whose omission is invisible: the digest shows posts still `RENDERED`, which is
+    indistinguishable from nothing having been due.
+
+    Fixed by blocking on the actual condition before the loop starts — `SELECT set_by FROM
+    config`, the newest migration's column — rather than sleeping a guessed interval. It
+    announces what it waits for and raises after 300 s instead of ticking against a schema it
+    cannot read. Reading a migration-only column is the same reasoning as
+    `test_schema_provenance.py`: assert an object only the migration path can produce.
+
+    **Corrected mid-diagnosis, recorded because the wrong version is the tempting one:** I
+    first read this as a double-execution bug, on the grounds that `fired = tick(now, fired)`
+    loses the assignment when `tick` raises. It does not — `fired.add()` mutates the caller's
+    set in place, so state survives the exception. The real consequence is narrower and
+    worse: not a job running twice, but a slot never running at all.
+
+91. **2026-08-04 · GAP S2 — `artec tools registered: 0 / 15`, AND THE EVIDENCE NEEDED TO
+    DIAGNOSE IT WAS DESTROYED BY THE LOG RATE LIMIT.** The boot proof counts registered
+    artec tools by grepping `hermes tools`; it reported **0 of 15** with the plugin
+    confirmed `ENABLED`. Immediately after, twice:
+
+        Railway rate limit of 500 logs/sec reached for replica … Messages dropped: 945
+        Railway rate limit of 500 logs/sec reached for replica … Messages dropped: 463
+
+    **The raw `hermes tools` output — the only thing that separates the three hypotheses —
+    is inside those 1,408 dropped messages.** The candidates are a genuinely empty
+    `register(ctx)`; the plugin's own `✓ Takes effect on next session` meaning a same-boot
+    count is structurally premature; or a grep that cannot match the rendered table. **I am
+    not picking one from the logs I have, and I am not calling it a proof artifact to make it
+    go away** — that would be reclassifying rather than diagnosing.
+
+    Recorded **S2, open**, with the deeper finding stated plainly: **a boot loud enough to be
+    rate-limited cannot be relied on for boot diagnostics.** Follow-up: print raw output on
+    shortfall and cut boot log volume below the 500/s ceiling so the next occurrence is
+    diagnosable. Until then, no claim about artec tool registration in the brain is
+    evidence-backed.
+
+    **Not a defect, stated so it is not miscounted:** `⚠ Gateway is not running` appears in
+    the same boot. It is emitted by `hermes cron list` at step 9/10; the gateway starts at
+    step 10 (`exec hermes gateway run`). It is a snapshot from before the gateway exists, not
+    a fault. The gateway genuinely never started — but as a *consequence* of the B-1 FATAL,
+    not as an independent problem.
+
+92. **2026-08-04 · The corrected record did not reach `main` with the merge, and was
+    reported as delivered.** Decisions 83–88 and the RUNBOOK corrections were committed to
+    `v4-stage-2b` as `1ed03bb` **after** the merge commit `3fb7437` was created. The merge
+    therefore carried the code and not the corrections, so `main` continued to state
+    "condition 5 is ENFORCED" — the exact false claim that pass existed to retract — while
+    the checkpoint reported it corrected.
+
+    Caught only because a later edit failed to find its anchor text in a file that had been
+    checked out from `main`. **A document correction is not delivered when it is written; it
+    is delivered when it is on the branch that ships.** Merged forward here.

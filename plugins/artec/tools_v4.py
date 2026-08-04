@@ -54,11 +54,98 @@ except Exception:                               # pragma: no cover
 # reads
 # ---------------------------------------------------------------------------------------
 
+GATE_ACTIONS = {
+    "approve": 'say  approve <post_id>            — e.g. "approve post_1497"',
+    "edit": 'say  edit <post_id> <field>=<value>  — e.g. "edit post_1497 hook=time"',
+    "reject": 'say  reject <post_id> <reason>      — e.g. "reject post_1497 stale week"',
+    "inject": 'say  inject <channel> <slot>        — e.g. "inject facebook lunch"',
+}
+
+# The fields `edit` may overwrite. Named so the agent states them BEFORE applying, rather
+# than the operator discovering afterwards which parts of the genome moved.
+EDITABLE_GENOME = ("angle", "hook", "cta_type", "cta_placement", "slot", "caption",
+                   "keywords")
+
+
+def gate_vocabulary() -> list[str]:
+    """The exact wording that invokes each action, rendered inline with the drafts.
+
+    D-5. The operator typed `Job 11 approved` at the first live digest — a reasonable thing
+    to type and not a defined action. Nothing in the message had told them what was. Sunday
+    is 45 minutes of consequential decisions in free text and it happens BEFORE any digest
+    work, so this is the larger of the two surfaces and it comes first.
+
+    THE AGENT DOES NOT INFER OPERATOR INTENT. That is the transcriber invariant generalised:
+    it may not guess what `Job 11 approved` meant any more than it may originate a figure.
+    An unrecognised reply asks, naming the valid actions for what is actually pending.
+    """
+    lines = ["ACTIONS — use these exact words:"]
+    lines += [f"  {v}" for v in GATE_ACTIONS.values()]
+    lines.append(f"  edit overwrites ONLY: {', '.join(EDITABLE_GENOME)} — it will say which "
+                 "field it is changing, and to what, before applying it")
+    lines.append("  anything else: I will ask rather than guess. I do not infer what an "
+                 "instruction meant.")
+    return lines
+
+
+def _gate_opening_summary(week_start: str, drafts: list[dict],
+                          today=None) -> list[str]:
+    """WHICH WEEK IS BEING GATED, ON THE SCREEN, NEVER INFERRED.
+
+    D-vii. `next_week_start` returns the Monday that already passed when called on a Sunday,
+    so 2026-08-09's gate reads week 2026-08-03 — the week that just ended, which already
+    holds nine DRAFTs and five PUBLISHED posts. The operator decided to leave that arithmetic
+    alone through Sunday rather than change a date function 72 hours before it first fires.
+
+    A deferral becomes a decision only if the thing deferred is visible. So the gate opens by
+    stating the week it is gating, how many drafts it found, and how old the oldest is. If
+    the week is wrong, it is wrong ON THE SCREEN at 09:00 — not discovered afterwards from
+    a plan that quietly never happened.
+    """
+    from datetime import date, datetime
+
+    today = today or datetime.now(SGT).date()
+    lines = [f"GATE — week_start {week_start}", f"  {len(drafts)} draft(s) found"]
+    if not drafts:
+        lines.append("  NO DRAFTS FOR THIS WEEK. That is either a week nobody planned or "
+                     "the wrong week — check the date above before concluding either.")
+        return lines
+    try:
+        started = date.fromisoformat(str(week_start))
+        day = (today - started).days
+        lines.append(f"  day {day} of that week (it runs {started} to "
+                     f"{started.fromordinal(started.toordinal() + 6)})")
+        # THE THRESHOLD IS 6, NOT 7, AND THE FIRST VERSION OF THIS GOT IT WRONG.
+        # A gate is meant to plan the week AHEAD. Week 2026-08-03 runs Mon 03 → Sun 09, so
+        # on Sunday 2026-08-09 it is day 6 — the week is ENDING, not ended. A `>= 7` test
+        # would never have fired on the one day this check exists for, which is a guard
+        # that cannot fail on the case it was written for.
+        if day >= 6:
+            lines.append(
+                f"  *** THIS WEEK IS ALREADY OVER OR ENDING TODAY (day {day} of 7). These "
+                "drafts were planned for it, so approving them publishes into a week with "
+                "almost no slots left — the remaining ones spill into next week or never "
+                "fire at all. See DECISIONS.md 107 (D-vii): next_week_start returns the "
+                "Monday that already passed when called on a Sunday.")
+    except ValueError:
+        lines.append(f"  could not parse week_start {week_start!r}")
+    off = [d for d in drafts if d.get("slot_off_vocabulary")]
+    if off:
+        lines.append(f"  *** {len(off)} draft(s) carry a slot that is NOT in slot_times: "
+                     f"{[d['post_id'] for d in off]}. A post with an off-vocabulary slot "
+                     "renders, then is never selected by any slot pass, and never errors. "
+                     "Approving one spends render money on a post that cannot publish.")
+    return lines
+
+
 def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
     """Every DRAFT for the week with its full creative genome — closes gap A1.
 
     The gate previously had to fish drafts out of v_brief's LIMIT 14 window, which was
     undesigned and breaks as cadence rises. This is the designed path.
+
+    Each draft carries `slot_off_vocabulary` and the action vocabulary travels with the
+    result, so the gate cannot present a draft without also presenting how to act on it.
     """
     eng = _get_engine(engine)
     with eng.begin() as conn:
@@ -68,6 +155,7 @@ def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
             "keywords, slot, plan_source, tracked_url FROM posts "
             "WHERE week_start = :w AND status = 'DRAFT' ORDER BY channel, slot, post_id"),
             {"w": week_start}).all()
+        slot_times = _config(conn, "slot_times", {}) or {}
     out = []
     for r in rows:
         keywords = r[7]
@@ -79,8 +167,16 @@ def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
         out.append({"post_id": r[0], "channel": r[1], "status": r[2], "angle": r[3],
                     "hook": r[4], "cta_type": r[5], "cta_placement": r[6],
                     "keywords": keywords or [], "slot": r[8], "plan_source": r[9],
-                    "tracked_url": r[10]})
-    return out
+                    "tracked_url": r[10],
+                    # A7 AT THE GATE, NOT AFTER THE RENDER. `sweep_orphaned_slots` catches
+                    # an off-vocabulary slot only once the post is RENDERED — which is
+                    # after the fal spend. Surfacing it here makes it impossible to approve
+                    # one without having been told.
+                    "slot_off_vocabulary": r[8] not in slot_times,
+                    "actions": list(GATE_ACTIONS)})
+    return {"week_start": week_start, "drafts": out,
+            "summary": _gate_opening_summary(week_start, out),
+            "vocabulary": gate_vocabulary()}
 
 
 def is_sunday(now: datetime | None = None) -> bool:

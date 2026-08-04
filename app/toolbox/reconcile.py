@@ -8,10 +8,26 @@ Writes `endpoint_prices`. **Never `config`.** The no-config-writes rule is not w
 make this convenient — that is precisely how a security property erodes, and the seam grep
 must still return zero.
 
-WHAT IS AND IS NOT VERIFIED: fal publishes no pricing API this project has confirmed. So
-`pull_rates` PROBES a candidate endpoint and reports exactly what came back — status, shape,
-and whether anything usable was parsed. It never fabricates a rate, and a failed pull is not
-a failure of job 1: the table is flagged stale, the digest says so, and the week continues.
+PROBED 2026-08-04 — THERE IS NO FAL PRICING API. §7·C5 said "pull it from the fal API"; that
+instruction did not survive contact, the same shape as `web_search` supporting Brave.
+
+    https://fal.ai/api/pricing              200/429, text/html — an Astro marketing page
+    https://api.fal.ai/pricing              404 {"error":{"type":"not_found"}}
+    https://fal.run/pricing                 404
+    https://rest.alpha.fal.ai/billing/...   404
+
+Neither a pricing endpoint nor a billing/usage endpoint could be confirmed, so option (c)
+holds: **reconciliation cannot be automated.** The design that follows from that, rather
+than from the instruction:
+
+  * the SEEDED invoice rates are authoritative
+  * staleness is reported BY AGE, every night, in the digest
+  * `acknowledge_price_table` is the operator's PERIODIC CONFIRMATION, not an exception path
+  * `endpoint_prices` is never written from a fabricated rate, and `config` is never written
+
+`pull_rates` is retained but is now OPT-IN — it runs only when a client is injected. Leaving
+a reconciler probing an endpoint nobody has confirmed exists, reporting "unreachable"
+forever, is an absent check wearing a status message.
 """
 
 from __future__ import annotations
@@ -25,6 +41,13 @@ from app.models import EndpointPrice
 from app.toolbox.pricing import UNIT_PER_MEGAPIXEL
 
 FAL_PRICING_URL = "https://fal.ai/api/pricing"
+
+# Set to True ONLY when a real, JSON, rate-carrying endpoint has been probed and recorded in
+# VERIFY.md. Until then the reconciler does not pretend one exists.
+PRICING_API_CONFIRMED = False
+
+# Beyond this, the table needs the operator's eyes — the confirmation path, not an exception.
+STALE_AFTER_DAYS = 30
 
 # The reference render the cap is reasoned about in: one 1080×1920 upscale.
 REFERENCE_MEGAPIXELS = (1080 * 1920) / 1_000_000
@@ -97,10 +120,33 @@ def pull_rates(client=None, url: str = FAL_PRICING_URL) -> tuple[dict, str]:
     return rates, f"fal pricing: {len(rates)} endpoint rate(s)"
 
 
+def age_in_days(row, now: datetime) -> int | None:
+    if row.as_of is None:
+        return None
+    as_of = row.as_of if row.as_of.tzinfo else row.as_of.replace(tzinfo=UTC)
+    return (now - as_of).days
+
+
 def reconcile_prices(session: Session, cap_cents: int, client=None,
                      now: datetime | None = None, log=print) -> Reconciliation:
-    """Job 1's first action. Never raises; a failed pull flags stale and continues."""
+    """Job 1's first action. Never raises.
+
+    With no confirmed pricing API this is AGE-BASED: rates older than STALE_AFTER_DAYS are
+    reported for the operator to confirm with `acknowledge_price_table`. The fal probe runs
+    only when a client is injected, and only ever ADDS information.
+    """
     now = now or datetime.now(UTC)
+    if client is None and not PRICING_API_CONFIRMED:
+        rows = session.query(EndpointPrice).order_by(EndpointPrice.endpoint).all()
+        stale = [r.endpoint for r in rows
+                 if (age := age_in_days(r, now)) is None or age > STALE_AFTER_DAYS]
+        note = ("no fal pricing API exists (probed 2026-08-04) — the seeded invoice rates "
+                "are authoritative and staleness is reported by age")
+        if stale:
+            log(f"reconcile: {len(stale)} price(s) older than {STALE_AFTER_DAYS}d — "
+                f"{stale}. Confirm with acknowledge_price_table.")
+        return Reconciliation(pulled=False, source=note, stale=stale, reason=note)
+
     rates, source = pull_rates(client=client)
     rows = session.query(EndpointPrice).order_by(EndpointPrice.endpoint).all()
 

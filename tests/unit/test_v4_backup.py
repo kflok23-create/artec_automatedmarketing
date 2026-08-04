@@ -233,10 +233,36 @@ def test_the_jobs_command_lists_all_twelve():
     assert "brain — hermes cron" in result.stdout
 
 
-def test_the_registry_says_out_loud_that_it_is_reconstructed():
-    """The canonical twelve-job table was not recoverable when this was written. Saying so
-    in the file is the difference between a reconstruction and a claim."""
+def test_the_numbering_is_confirmed_and_the_caveat_has_been_retired():
+    """The registry carried "RECONSTRUCTED, NOT RECOVERED" until the numbering was
+    confirmed at 2c-iv. A caveat that outlives its reason becomes noise, and noise is what
+    people learn to skip."""
     import app.jobs as jobs_mod
 
-    assert "RECONSTRUCTED, NOT RECOVERED" in (jobs_mod.__doc__ or "")
+    assert "RECONSTRUCTED, NOT RECOVERED" not in (jobs_mod.__doc__ or "")
+    assert "NUMBERING CONFIRMED" in (jobs_mod.__doc__ or "")
     assert os.path.exists("app/jobs.py")
+
+
+def test_every_artec_job_has_a_firing_time_except_the_slot_driven_one():
+    """Job 7 is slot-driven and has no fixed time by design. Every other artec job must
+    have one, or it is a job that never fires."""
+    timeless = [j.number for j in artec_jobs() if not j.at]
+    assert timeless == [7], f"artec jobs with no firing time: {timeless}"
+
+
+def test_the_scheduler_lists_its_own_next_runs_with_an_explicit_offset():
+    """Registration is only ever proven by LISTING — `cron create` has been observed
+    rejecting SUN while exiting 0. The artec side has no external registry, so it lists
+    itself, and every timestamp carries +08:00 so a timezone regression is visible."""
+    from app.scheduler import next_runs
+
+    rows = next_runs()
+    assert len(rows) == 9, "nine artec jobs have a fixed time; job 7 is slot-driven"
+    assert all("+08:00" in r["next_run"] for r in rows)
+    sunday = [r for r in rows if r["at"].startswith("0 ")]
+    assert sunday, "the Sunday jobs must resolve to a Sunday"
+    for row in sunday:
+        from datetime import datetime
+
+        assert datetime.fromisoformat(row["next_run"]).weekday() == 6

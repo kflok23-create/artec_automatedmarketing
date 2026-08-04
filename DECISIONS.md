@@ -610,3 +610,46 @@ unless marked.
     is not "the pass selects correctly"; proving the first unattended action this system
     takes against nothing is exactly the comparison-with-a-missing-side pattern. It now
     fails with that sentence until there is something to select.
+
+73. **v4 · the permissive CI fallback was PROPOSED, BUILT, and REJECTED ON EVIDENCE.**
+    Recorded with its reason because a rejected approach is worth more than silence — the
+    next reader will otherwise propose it again. The proposal (from the operator) was that
+    `pull_request` runs record the merge commit as `head_sha`, so the gate should fall back
+    to `pull_requests[].head.sha`. Probed against the real API: PR runs DO carry the branch
+    commit as `head_sha`, and `total_count: 0` meant CI had not run for that commit —
+    **the original blocking note was correct.** Worse, `pull_requests[0].head.sha` reports
+    the PR's CURRENT head, so every historical run claimed the newest commit; matching on it
+    would have reported a green run for a commit CI never saw. The branch query is retained
+    for ENUMERATION only: a run counts iff its own `head_sha` is the commit.
+
+74. **v4 · THE REVIEW QUESTION, promoted from five instances to a standing check.**
+    *For every guard, name what supplies each side of the comparison. If the thing under
+    test supplies either side, or one side can be absent while the check still passes, it is
+    not a guard.* The five: the circular transcription hook (agent supplied both sides); the
+    StaticPool advisory-lock test (the fixture removed the second session); the memory audit
+    (patterns aimed at numbers while the danger was capability claims); the CI gate (a false
+    NOT CHECKED on the branch it guards); and the permissive fallback above. Now a `FALSE_PASS`
+    map in `app/stages/prove.py` — every prover names what would make it report success
+    without demonstrating the thing, ENFORCED as a precondition rather than left as a
+    comment, because `publish-by-slot` reported PROVEN over an empty board and nothing in
+    the code showed it.
+
+75. **v4 · THERE IS NO FAL PRICING API — probed 2026-08-04, option (c) holds.**
+    `https://fal.ai/api/pricing` returns an Astro HTML marketing page; `api.fal.ai/pricing`,
+    `fal.run/pricing` and `rest.alpha.fal.ai/billing/user_spending` all 404. §7·C5's "pull it
+    from the fal API" did not survive contact — the same shape as `web_search` supporting
+    Brave, which cost a cycle. Neither a pricing endpoint nor a billing/usage endpoint could
+    be confirmed, so: the **seeded invoice rates are authoritative**, staleness is reported
+    **by age** (30 days) every night in the digest, and `acknowledge_price_table` becomes the
+    operator's **periodic confirmation** rather than an exception path. `pull_rates` is
+    retained but OPT-IN, gated on `PRICING_API_CONFIRMED = False`: leaving a reconciler
+    probing an endpoint nobody has confirmed exists, reporting "unreachable" forever, is an
+    absent check wearing a status message. `endpoint_prices` is never written from a
+    fabricated rate; `config` is never written.
+
+76. **v4 · the numbering is CONFIRMED and the caveat retired.** Job 1 is the weekly report
+    snapshot (SUN 06:00, operator-confirmed) with price reconciliation as its first action;
+    publish-by-slot moved to 7 and is the one artec job with no fixed time, because it is
+    slot-driven. The tenth artec-owned job is the bespoke half of learn-ideate. "RECONSTRUCTED,
+    NOT RECOVERED" is removed from the registry docstring and a test asserts its absence: a
+    caveat that outlives its reason becomes noise, and noise is what people learn to skip.

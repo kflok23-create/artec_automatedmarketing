@@ -31,6 +31,37 @@ JOBS = (
 )
 
 
+def next_runs(now: datetime | None = None) -> list[dict]:
+    """What this scheduler will fire, and WHEN, with an explicit offset on every timestamp.
+
+    `hermes cron create` has been observed rejecting `SUN` while exiting 0, which is why
+    registration is only ever proven by LISTING. The artec side has no external registry to
+    list, so it lists itself — and every next-run carries `+08:00` so a timezone regression
+    is visible rather than inferred.
+    """
+    from app.jobs import ARTEC
+    from app.jobs import JOBS as REGISTRY
+
+    now = now or datetime.now(SGT)
+    out = []
+    for job in REGISTRY:
+        if job.owner != ARTEC or not job.at:
+            continue
+        parts = job.at.split()
+        dow, hhmm = (int(parts[0]), parts[1]) if len(parts) == 2 else (None, parts[0])
+        hour, minute = (int(x) for x in hhmm.split(":"))
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        if dow is not None:
+            # 0 = Sunday, matching the numeric day-of-week cron requires.
+            while (candidate.weekday() + 1) % 7 != dow:
+                candidate += timedelta(days=1)
+        out.append({"number": job.number, "name": job.name, "at": job.at,
+                    "next_run": candidate.isoformat()})
+    return sorted(out, key=lambda r: r["number"])
+
+
 def select_due_posts(session, slot: str) -> list:
     """RENDERED or APPROVED_TO_SEND posts for this slot that have NEVER been published.
 

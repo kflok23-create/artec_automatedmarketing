@@ -41,6 +41,21 @@ CAPABILITIES = (
 
 S1 = ("video-pipeline", "publish-by-slot")
 
+# For each proof: WHAT WOULD MAKE IT REPORT SUCCESS WITHOUT DEMONSTRATING THE THING? The
+# answers below are enforced as preconditions in the provers, not left as comments — because
+# `publish-by-slot` reported PROVEN over an empty board and nothing in the code showed it.
+FALSE_PASS = {
+    "agent-session": "a readable store belonging to a DIFFERENT hermes install",
+    "sunday-cron": "a cron listing from any hermes install, not artec's",
+    "video-pipeline": "a synthetic fixture that is not real bank footage",
+    "publish-by-slot": "zero posts to select — the pass runs and selects nothing",
+    "brevo-send": "a template that carries no variables, so nothing can fail to substitute",
+    "stripe-attribution": "an order row written directly, bypassing the webhook join",
+    "budget-refusal": "zero calls estimated — nothing was ever offered to refuse",
+    "audit-memory": "a memory directory that is empty, or somebody else's",
+    "restore": "a dump that restores structure with no rows",
+}
+
 
 @dataclass
 class Proof:
@@ -86,6 +101,11 @@ def prove_budget_refusal(session: Session, **_) -> Proof:
 
     one = estimate_micros(session, "fal-ai/clarity-upscaler", width=1080, height=1920,
                           max_megapixels=max_mp)
+    if one <= 0:
+        # FALSE PASS: nothing was ever offered, so nothing was refused.
+        return Proof("budget-refusal", False,
+                     "a legal call estimated 0 micros — the refusal was never exercised "
+                     "against anything")
     return Proof("budget-refusal", True,
                  f"oversize output refused before the call; one 1080x1920 upscale = "
                  f"{one} micros, run cap {cap}c, per-call ceiling {ceiling}c",
@@ -145,9 +165,16 @@ def prove_stripe_attribution(session: Session, **_) -> Proof:
              "data": {"object": {"id": f"cs_prove_{int(datetime.now(UTC).timestamp())}",
                                  "client_reference_id": probe_id,
                                  "amount_total": 14900, "currency": "sgd"}}}
+    before = session.query(Order).filter(Order.post_id == probe_id).count()
+    if before:
+        raise NotProvable("a probe order already exists — a previous proof did not clean up")
     handle_event(session, event)
     order = session.query(Order).filter(Order.post_id == probe_id).first()
-    ok = order is not None
+    # FALSE PASS: an order row written directly would satisfy "an order exists". The join is
+    # the thing under test, so the SOURCE must be the webhook and the amount must be the one
+    # the event carried.
+    ok = (order is not None and order.source == "stripe"
+          and order.amount_minor == 14900 and order.currency == "SGD")
     if order is not None:
         session.delete(order)
     session.delete(session.get(Post, probe_id))
@@ -170,6 +197,22 @@ def prove_video_pipeline(session: Session, **_) -> Proof:
     fixture = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "real_raw_video.mp4"
     if not fixture.is_file():
         raise NotProvable(f"no real encode at {fixture}")
+    # FALSE PASS: a synthetic clip would pass the structural checks while proving nothing
+    # about real bank footage. Assert the bitrate is in the band real footage occupies.
+    import json as _json
+    import subprocess as _sub
+
+    probe = _json.loads(_sub.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams",
+         str(fixture)], capture_output=True, text=True, timeout=120).stdout or "{}")
+    stream = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
+    duration = float(probe.get("format", {}).get("duration") or 0)
+    pixels = int(stream.get("width", 0)) * int(stream.get("height", 0))
+    bps = (fixture.stat().st_size * 8) / (pixels * duration) if pixels and duration else 0
+    if bps < 0.5:
+        return Proof("video-pipeline", False,
+                     f"the fixture is {bps:.3f} bits/pixel-second — that is a synthetic "
+                     "clip, not real bank footage, and would prove the fixture")
     result = preflight_video(str(fixture), aspect_ratio="16:9", duration_bounds=(1.0, 10.0))
     return Proof("video-pipeline", result.ok,
                  "real encode passed publish pre-flight" if result.ok
@@ -222,6 +265,12 @@ def prove_brevo_send(session: Session, settings=None, live: bool = False, **_) -
     variables = {"hero_image_url": "https://example.invalid/hero.jpg",
                  "headline": "H", "body_copy": "B", "cta_text": "C",
                  "tracked_url": "https://artec.my/?code=EMAIL50", "story_block": "S"}
+    if html.count("{{") < len(variables):
+        # FALSE PASS: a template carrying no variables substitutes perfectly and proves
+        # nothing about the contract.
+        return Proof("brevo-send", False,
+                     f"template 3 carries only {html.count('{{')} placeholder(s) — fewer "
+                     f"than the {len(variables)} in-body variables the contract requires")
     missing = [v for v in variables if "{{" + v + "}}" not in html.replace(" ", "")]
     if missing:
         return Proof("brevo-send", False,
@@ -266,6 +315,11 @@ def prove_agent_session(session: Session, **_) -> Proof:
     status = transcript.store_status()
     if not status.get("available"):
         raise NotProvable(f"{status.get('reason')} — run this proof on artec-brain")
+    # FALSE PASS: a readable store belonging to a different hermes install.
+    if not status.get("sessions"):
+        return Proof("agent-session", False,
+                     "the message store is readable but holds NO sessions — nothing to "
+                     "verify a figure against")
     return Proof("agent-session", True,
                  f"message store readable: {status.get('sessions')} session(s), "
                  f"{status.get('operator_turns')} operator turn(s)", status)

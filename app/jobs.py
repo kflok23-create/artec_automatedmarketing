@@ -13,11 +13,12 @@ now they agreed only by attention.
 A test asserts the registry and the live route table agree in BOTH directions: a job whose
 mirror does not exist, and a `/commands` route that belongs to no job, are both findings.
 
-RECONSTRUCTED, NOT RECOVERED — read this before trusting the numbering. The canonical
-twelve-job table from the v4 prompt was not available when this file was written; the rows
-below are reconstructed from the bodies that exist and the times already in config. The
-NUMBERS in particular are the least trustworthy part. Confirm the mapping at 2c-iv, where
-registration makes the numbers load-bearing; nothing before then depends on them.
+NUMBERING CONFIRMED at 2c-iv. Job 1 is the weekly report snapshot (operator-confirmed,
+SUN 06:00) and price reconciliation is its first action. The tenth artec-owned job is the
+BESPOKE half of learn-ideate: `plan_source` is `shadow`, so both planners must fire on a
+clock — otherwise `plan-diff` compares one plan against nothing and reports agreement with
+itself, which is gap A8 arriving from the other direction and the same missing-side shape as
+every other defect this build has found.
 """
 
 from __future__ import annotations
@@ -38,57 +39,53 @@ class Job:
     mirror: str = ""                 # authenticated HTTPS path, "" for brain-owned jobs
     cli: str = ""
     notes: str = ""
-    registered: bool = False         # cron registration lands in 2c-iv, verified by listing
+    at: str = ""                     # "HH:MM" or "DOW HH:MM" (0=Sunday), SGT; "" = per-slot
     tags: tuple[str, ...] = field(default_factory=tuple)
 
 
 JOBS: tuple[Job, ...] = (
-    Job(1, "report", "Sunday 06:00", ARTEC,
-        "app.stages.report.build_report", "/commands/report", "artec report",
-        "OPERATOR-CONFIRMED (2c-iii): job 1 is the weekly report snapshot at SUN 06:00, "
-        "which CONTRADICTS the first reconstruction (report was 7, publish-by-slot was 1). "
-        "Price reconciliation is this job's FIRST action, before the snapshot, so the "
-        "report, the gate and every later render see reconciled rates. One anchor is not a "
-        "table: everything else here is still reconstructed."),
-    Job(2, "assets-sync", "daily 05:00", ARTEC,
-        "app.stages.assets_sync.sync", "/commands/assets-sync", "artec assets sync"),
-    Job(3, "render", "daily 06:00", ARTEC,
-        "app.stages.render.render", "/commands/render", "artec render"),
-    Job(4, "measure-reminder", "daily 06:30", ARTEC,
-        "app.scheduler.run_measure_job", "/commands/measure-reminder", "artec measure",
-        "RETIRED AT MERGE (D1): the brain becomes the sole Telegram owner and the digest "
-        "carries the unmeasured list"),
-    Job(5, "learn-ideate", "Sunday 07:00", ARTEC,
-        "app.stages.ideate.ideate", "/commands/ideate", "artec learn && artec ideate",
-        "THE BESPOKE HALF. `plan_source` is `shadow`, which means BOTH planners run every "
-        "Sunday: bespoke learn→ideate writes the DRAFT rows, and the agent's own "
-        "learn-ideate cron (deploy/hermes-brain/cron-learn-ideate.txt) writes to "
-        "plans_shadow for the plan-diff. One logical job, two halves — and the bespoke "
-        "half is the reason ten mirrors exist rather than nine"),
+    Job(1, "report", "Sunday 06:00", ARTEC, "app.stages.report.build_report",
+        mirror="/commands/report", cli="artec report", at="0 06:00",
+        notes="OPERATOR-CONFIRMED: the weekly report snapshot. PRICE RECONCILIATION IS "
+              "THIS JOB'S FIRST ACTION, before the snapshot, so the report, the gate and "
+              "every later render see reconciled rates."),
+    Job(2, "assets-sync", "daily 05:00", ARTEC, "app.stages.assets_sync.sync",
+        mirror="/commands/assets-sync", cli="artec assets sync", at="05:00"),
+    Job(3, "render", "daily 06:00", ARTEC, "app.stages.render.render",
+        mirror="/commands/render", cli="artec render", at="06:00"),
+    Job(4, "measure-reminder", "daily 06:30", ARTEC, "app.scheduler.run_measure_job",
+        mirror="/commands/measure-reminder", cli="artec measure", at="06:30",
+        notes="RETIRED AT MERGE (D1): the brain becomes the sole Telegram owner and the "
+              "digest carries the unmeasured list."),
+    Job(5, "learn-ideate", "Sunday 07:00", ARTEC, "app.stages.ideate.ideate",
+        mirror="/commands/ideate", cli="artec learn && artec ideate", at="0 07:00",
+        notes="THE BESPOKE HALF. plan_source is `shadow`, so BOTH planners fire on a clock "
+              "— otherwise plan-diff compares one plan against nothing and reports "
+              "agreement with itself (gap A8 from the other direction). This is the tenth "
+              "artec-owned job."),
     Job(6, "weekly-gate", "Sunday 09:00", BRAIN,
-        "deploy/hermes-brain/cron-weekly-gate.txt", "", "",
-        "Touch 1 of the 7-touch contract — the one thing that never degrades"),
+        "deploy/hermes-brain/cron-weekly-gate.txt",
+        notes="Touch 1 of the 7-touch contract — the one thing that never degrades."),
     Job(7, "publish-by-slot", "daily at each config slot_times entry", ARTEC,
-        "app.scheduler.run_publish_job", "/commands/publish-slot", "artec publish",
-        "APPROVED_TO_SEND enters here and nowhere earlier — an approval waits for the next "
-        "occurrence of its slot. NUMBER RECONSTRUCTED: it moved off 1 when the operator "
-        "confirmed job 1 is the report."),
-    Job(8, "pg-dump", "daily 03:00", ARTEC,
-        "app.stages.backup.run_backup", "/commands/backup", "artec backup",
-        "restore-check rides this job on day_of_month == 1 — still twelve jobs"),
+        "app.scheduler.run_publish_job", mirror="/commands/publish-slot",
+        cli="artec publish",
+        notes="Slot-driven, so it has no fixed time: APPROVED_TO_SEND enters here and "
+              "nowhere earlier, and waits for the next occurrence of its slot."),
+    Job(8, "pg-dump", "daily 03:00", ARTEC, "app.stages.backup.run_backup",
+        mirror="/commands/backup", cli="artec backup", at="03:00",
+        notes="restore-check rides this job on day_of_month == 1 — still twelve jobs."),
     Job(9, "review-expiry-sweep", "daily 20:00", ARTEC,
-        "app.scheduler.sweep_expired_reviews", "/commands/sweep-reviews",
-        "artec sweep-reviews",
-        "no auto-approve and no expire-to-send exists to be requested"),
-    Job(10, "doctor-sweep", "weekly Sunday 06:00", ARTEC,
-        "app.stages.doctor.run_doctor", "/commands/doctor", "artec doctor",
-        "the memory audit rides this job weekly"),
-    Job(11, "digest-prepare", "daily 21:00", ARTEC,
-        "app.stages.digest.prepare_digest", "/commands/digest-prepare",
-        "artec digest-prepare"),
+        "app.scheduler.sweep_expired_reviews", mirror="/commands/sweep-reviews",
+        cli="artec sweep-reviews", at="20:00",
+        notes="No auto-approve and no expire-to-send exists to be requested."),
+    Job(10, "doctor-sweep", "Sunday 06:30", ARTEC, "app.stages.doctor.run_doctor",
+        mirror="/commands/doctor", cli="artec doctor", at="0 06:30",
+        notes="The memory audit rides this job weekly."),
+    Job(11, "digest-prepare", "daily 21:00", ARTEC, "app.stages.digest.prepare_digest",
+        mirror="/commands/digest-prepare", cli="artec digest-prepare", at="21:00"),
     Job(12, "digest-delivery", "21:05 Monday–Saturday", BRAIN,
-        "deploy/hermes-brain/cron-nightly-digest.txt", "", "",
-        "does NOT run on Sunday — asserted in the body, not only in the cron expression"),
+        "deploy/hermes-brain/cron-nightly-digest.txt",
+        notes="Does NOT run on Sunday — asserted in the body, not only in the cron."),
 )
 
 

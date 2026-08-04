@@ -9,6 +9,12 @@ on:
 
 jobs:
   test:
+    # THE CHECK NAME IS THE JOB NAME, not the workflow name. Branch protection on `main`
+    # requires the context `ci`; this job published `test`, so the required check never
+    # arrived and a red Postgres suite blocked nothing. Named explicitly, and probed after
+    # the fact rather than inferred — the workflow's own `name: ci` is NOT what GitHub
+    # publishes.
+    name: ci
     runs-on: ubuntu-latest
     services:
       postgres:

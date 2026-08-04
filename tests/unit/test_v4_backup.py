@@ -353,3 +353,82 @@ def test_every_timed_job_has_a_dispatch():
             continue          # job 7 is slot-driven and handled by the slot pass
         assert f'job.name == "{job.name}"' in source, \
             f"job {job.number} {job.name} fires at {job.at} and has no dispatch"
+
+
+# ---- job 7 · the one job that appears in NO listing ---------------------------------------
+
+def test_job_7_SELECTS_correctly_over_a_non_empty_board(session):
+    """Publish-by-slot has no fixed time, so it produces no next-run and appears in no
+    listing — the guard that covers the other eleven does not reach it. Its earlier proof
+    reported PROVEN over an EMPTY board, which established only that the pass ran.
+
+    The board is built by DIRECT INSERT, not through the publish path: if the thing under
+    test supplies the board, the test proves nothing.
+
+    Asserted on the SET, not a count — a count can be right while the membership is wrong.
+    """
+    from datetime import date
+
+    from app.models import Post
+    from app.scheduler import select_due_posts, sweep_orphaned_slots
+    from app.stages.publish import skip_reason
+
+    week = date(2026, 8, 24)
+
+    def insert(pid, **kw):
+        session.add(Post(post_id=pid, week_start=week, **kw))
+
+    # 1 · RENDERED, slot has arrived, no external id -> SELECTED
+    insert("post_due", channel="instagram", status="RENDERED", slot="evening",
+           media_drive_file_id="gen_a.jpg")
+    # 2 · RENDERED but a DIFFERENT slot -> not selected by the evening pass
+    insert("post_other_slot", channel="instagram", status="RENDERED", slot="morning",
+           media_drive_file_id="gen_b.jpg")
+    # 3 · already published -> never again (the never-republish guard at selection)
+    insert("post_published", channel="instagram", status="RENDERED", slot="evening",
+           media_drive_file_id="gen_c.jpg", external_post_id="up_777")
+    # 4 · slot outside the vocabulary -> selected by nothing, swept into the digest
+    insert("post_orphan", channel="instagram", status="RENDERED", slot="afternoon",
+           media_drive_file_id="gen_d.jpg")
+    # 5 · carries video, not APPROVED_TO_SEND -> selected but HELD by the review gate
+    insert("post_video", channel="tiktok", status="RENDERED", slot="evening",
+           media_drive_file_id="gen_e.mp4")
+    # 6 · email, not APPROVED_TO_SEND -> HELD regardless of slot
+    insert("post_email", channel="email", status="RENDERED", slot="evening",
+           media_drive_file_id="gen_f.jpg")
+    session.flush()
+
+    evening = {p.post_id for p in select_due_posts(session, "evening")}
+    assert evening == {"post_due", "post_video", "post_email"}, \
+        "selection is by slot and never-published only; the review gates run after"
+    assert "post_published" not in evening, "an external_post_id must never be re-selected"
+    assert "post_other_slot" not in evening, "a slot that has not arrived is not due"
+    assert "post_orphan" not in evening, "an off-vocabulary slot matches no pass"
+
+    # the review gates decide what of the selected set actually goes out
+    publishable = {p.post_id for p in select_due_posts(session, "evening")
+                   if skip_reason(session, p) is None}
+    assert publishable == {"post_due"}, \
+        "video and email are held; only the photo post would publish"
+
+    # and the orphan is not lost — it is swept into the digest rather than sitting silent
+    assert {o["post_id"] for o in sweep_orphaned_slots(session)} == {"post_orphan"}
+
+
+def test_job_7_selects_an_APPROVED_TO_SEND_post_at_its_slot(session):
+    """The other half: an approved video waits for the next occurrence of its slot and is
+    then selected AND publishable."""
+    from datetime import date
+
+    from app.models import Post
+    from app.scheduler import select_due_posts
+    from app.stages.publish import skip_reason
+
+    session.add(Post(post_id="post_approved", week_start=date(2026, 8, 24), channel="tiktok",
+                     status="APPROVED_TO_SEND", slot="evening",
+                     media_drive_file_id="gen_g.mp4",
+                     video_review={"decision": "approve", "telegram_message_id": 8801}))
+    session.flush()
+    due = select_due_posts(session, "evening")
+    assert {p.post_id for p in due} == {"post_approved"}
+    assert skip_reason(session, due[0]) is None

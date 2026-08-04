@@ -66,11 +66,30 @@ def learn(session: Session, llm, week_start: date | None = None, log=print) -> d
     cfg = all_config(session)
     weights = cfg.get("kpi_weights", {"engagement": 0.3, "traffic": 0.3, "sales": 0.4})
 
-    posts = list(
+    # WITHDRAWN POSTS ARE EXCLUDED FROM SCORING AND REPORTED AS WITHDRAWN — never as zero.
+    #
+    # post_1488 (facebook) and post_1489 (linkedin) published to a PERSONAL profile before
+    # page targeting existed, and the operator removed them at source. Their rows still say
+    # PUBLISHED, correctly: they were. But scoring them would tell `learn` that facebook and
+    # linkedin published and earned nothing, marking down two channels for a targeting
+    # defect that has nothing to do with the creative.
+    #
+    # That is the `email_min_recipients` trap arriving on two other channels, and it is
+    # invariant 2 in a new costume: stale is not zero, and "removed at source" is not zero
+    # either. A withdrawn post is neither a success nor a failure — it is an absence of
+    # evidence, and the only honest thing to do with it is say so and leave it out.
+    all_published = list(
         session.execute(
             select(Post).where(Post.week_start == week, Post.status == "PUBLISHED")
         ).scalars()
     )
+    withdrawn = [p for p in all_published if getattr(p, "withdrawn_at", None) is not None]
+    posts = [p for p in all_published if getattr(p, "withdrawn_at", None) is None]
+    if withdrawn:
+        log(f"learn {week}: EXCLUDING {len(withdrawn)} withdrawn post(s) from scoring — "
+            f"{[p.post_id for p in withdrawn]}. Withdrawn is not zero; scoring these would "
+            f"mark down {sorted({p.channel for p in withdrawn})} for a defect in targeting, "
+            f"not in the creative.")
 
     # Idempotent: re-running a week replaces that week's verdicts.
     session.execute(delete(Learning).where(Learning.week_start == week))

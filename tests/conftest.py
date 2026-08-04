@@ -100,8 +100,11 @@ def engine(request):
                 os.environ.pop("DATABASE_URL", None)
             else:
                 os.environ["DATABASE_URL"] = prior
-        with eng.begin() as conn:
-            conn.execute(text(V_BRIEF_SQL))
+        # NO V_BRIEF_SQL HERE. The migrations already created the view — the next run
+        # failed with `relation "v_brief" already exists`, which is the fixture and
+        # production disagreeing about who owns the object. Migrations own it. The SQLite
+        # branch below still needs the explicit CREATE because create_all() builds tables
+        # from metadata and knows nothing about views.
         yield eng
         eng.dispose()
         return

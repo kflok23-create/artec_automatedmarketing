@@ -254,25 +254,28 @@ DEFAULT_REPO = "kflok23-create/artec_automatedmarketing"
 def _runs_for_commit(fetch, repo: str, sha: str, ref: str) -> list[dict]:
     """Every CI run that actually covers this commit.
 
-    THE BUG THIS FIXES: a run triggered by `pull_request` does NOT carry the branch commit
-    as `head_sha` — GitHub records the merge commit. So `actions/runs?head_sha=<branch sha>`
-    returned `total_count: 0` while three green runs sat in the Actions tab, and the gate
-    reported NOT CHECKED on exactly the branch it exists to guard. That is "a check aimed at
-    the wrong thing" for the fourth time in this build; the pattern is now explicit enough
-    to look for.
+    CORRECTED, AND THE CORRECTION MATTERS MORE THAN THE FIX. The diagnosis was that a
+    `pull_request` run records the merge commit as `head_sha`, so the direct query missed
+    it. Checked against the real API, that is FALSE for this repo: PR-triggered runs carry
+    the BRANCH commit as `head_sha`, and `?head_sha=<branch sha>` returning nothing meant
+    what it said — CI had not run for that commit yet.
 
-    `main` worked only because `main` receives push events, whose head_sha IS the commit.
+    The tempting fallback was `pull_requests[].head.sha`. It is a trap: that field reports
+    the PR's CURRENT head, not the commit the run covered, so every historical run on the
+    PR claims the newest commit. Matching on it would have reported a green run for a commit
+    CI never saw — a gate that passes because one side of the comparison is missing, which
+    is the exact pattern this build has now hit five times.
+
+    So the branch query stays, but ONLY as a way to enumerate candidates: a run counts if
+    and only if its own `head_sha` is the commit.
     """
     direct = (fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?head_sha={sha}") or {})
     runs = list(direct.get("workflow_runs") or [])
     if runs:
         return runs
-    # PR-triggered: match on the run's pull_requests[].head.sha, which is the branch commit.
     by_branch = (fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?branch={ref}") or {})
     return [run for run in (by_branch.get("workflow_runs") or [])
-            if run.get("head_sha") == sha
-            or any((pr.get("head") or {}).get("sha") == sha
-                   for pr in (run.get("pull_requests") or []))]
+            if run.get("head_sha") == sha]
 
 
 def main_ci_gate_check(fetch=None, repo: str | None = None, ref: str = "main",

@@ -406,9 +406,8 @@ def test_an_api_failure_is_not_checked_rather_than_green():
 
 
 def test_a_pr_triggered_run_is_FOUND(monkeypatch):
-    """THE 0.1 BUG. A `pull_request` run records the MERGE commit as head_sha, so
-    `?head_sha=<branch sha>` returns nothing while green runs sit in the Actions tab — and
-    the gate reported NOT CHECKED on exactly the branch it exists to guard."""
+    """A PR-triggered run is found through the branch listing when the direct head_sha
+    query misses it — but ONLY when the run's own head_sha is this commit."""
     branch_sha = "594d2dac45bfb9074019e5591a715600457967f9"
     calls = []
 
@@ -419,8 +418,7 @@ def test_a_pr_triggered_run_is_FOUND(monkeypatch):
         if "head_sha=" in url:
             return {"workflow_runs": []}          # exactly what GitHub returned
         return {"workflow_runs": [{
-            "id": 30872122722, "conclusion": "success",
-            "head_sha": "deadbeef" * 5,            # the MERGE commit, not the branch commit
+            "id": 30872122722, "conclusion": "success", "head_sha": branch_sha,
             "pull_requests": [{"head": {"sha": branch_sha}}]}]}
 
     result = main_ci_gate_check(fetch=fetch, ref="v4-stage-2b", log=lambda *_: None)
@@ -431,14 +429,21 @@ def test_a_pr_triggered_run_is_FOUND(monkeypatch):
 
 
 def test_a_branch_run_for_a_different_commit_does_not_count():
-    """Widening the query must not widen what counts as covered."""
+    """Widening the query must not widen what COUNTS as covered.
+
+    THE TRAP, checked against the real API: `pull_requests[].head.sha` reports the PR's
+    CURRENT head, not the commit the run covered — so every historical run on an open PR
+    claims the newest commit. Matching on it would report a green run for a commit CI never
+    saw: a gate that passes because one side of the comparison is missing.
+    """
     def fetch(url):
         if url.endswith("/commits/v4-stage-2b"):
             return {"sha": "aaa"}
         if "head_sha=" in url:
             return {"workflow_runs": []}
+        # head_sha is an OLD commit; pull_requests claims the current head, as GitHub does
         return {"workflow_runs": [{"id": 1, "conclusion": "success", "head_sha": "bbb",
-                                   "pull_requests": [{"head": {"sha": "ccc"}}]}]}
+                                   "pull_requests": [{"head": {"sha": "aaa"}}]}]}
 
     result = main_ci_gate_check(fetch=fetch, ref="v4-stage-2b", log=lambda *_: None)
     assert result["checked"] is True and result["green"] is False

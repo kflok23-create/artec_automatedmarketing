@@ -551,7 +551,7 @@ unless marked.
     reports whether the rule held. None of that PREVENTS a bad merge. Nothing on this plan
     can. It makes one visible, which is the difference between a rule and a hope.
 
-67. **v4 · CI was never silent — the QUERY was the bug.** `actions/runs?head_sha=<branch
+67. **v4 · the CI-query diagnosis was WRONG, and the correction is the finding.** `actions/runs?head_sha=<branch
     sha>` returned `total_count: 0` while three green runs sat in the Actions tab, because
     a run triggered by `pull_request` records the MERGE commit as `head_sha`, not the branch
     commit. `main` worked only because `main` receives push events. Fixed by falling back to

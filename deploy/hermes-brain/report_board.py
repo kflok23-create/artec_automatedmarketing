@@ -68,7 +68,59 @@ def main() -> int:
     section("C.2(c) D-11 — agent_runs (did the 21:00 job record a row?)", _agent_runs)
     section("C.10 THE ORPHANED DIGEST — the first this system ever produced", _digests)
     section("C.2(a) v_brief PARKED omission — LIVE, against the running view", _v_brief)
+    section("1.1 endpoint_prices — the RED that blocks Sunday's render", _prices)
+    section("3.1 confirm_first_publish — THE ROW, not an inference", _gate)
+    section("3.2 facebook DRAFTs available for the controlled publish", _fb_drafts)
     return 0
+
+
+def _prices(conn, text):
+    """The RED said `unpriced: ['fal-ai/clarity-upscaler', 'fal-ai/qwen-image-2512/lora']`.
+    Three possibilities and they need different fixes: rows absent, rows present but
+    unreadable, or rows present with a shape doctor rejects. Print the table and let the
+    answer be read rather than guessed."""
+    rows = conn.execute(text(
+        "SELECT endpoint, rate_micros, unit, source, as_of, active "
+        "FROM endpoint_prices ORDER BY endpoint")).all()
+    if not rows:
+        print("  TABLE IS EMPTY — the seed never reached production. Same class as v_brief")
+        print("  and post_id_seq: data that exists in the source and never arrived.")
+        return
+    for endpoint, micros, unit, source, as_of, active in rows:
+        print(f"  {endpoint:<38} {micros:>7} micros  {unit:<16} "
+              f"source={source} active={active} as_of={as_of}")
+    print(f"  {len(rows)} row(s). The RED is resolved if the two named endpoints appear")
+    print("  above; seed_prices runs inside seed_config, which now runs at boot.")
+
+
+def _gate(conn, text):
+    """READ THE ROW. Last pass inferred the gate was cleared from the existence of published
+    posts — but post_1483/1484 published in the v3 era and may predate the gate being wired
+    into job 7. An inference from a side effect is not a reading."""
+    row = conn.execute(text(
+        "SELECT key, value, updated_at, set_by FROM config "
+        "WHERE key = 'confirm_first_publish'")).first()
+    if row is None:
+        print("  NO ROW. get_config falls back to its default of True, so the gate is ON")
+        print("  and job 7 skips every slot — but nothing in the database says so.")
+        return
+    print(f"  {row}")
+    print("  value True  => gate CLOSED, job 7 skips every slot, nothing publishes")
+    print("  value False => gate OPEN, job 7 publishes due posts unattended")
+
+
+def _fb_drafts(conn, text):
+    rows = conn.execute(text(
+        "SELECT post_id, channel, slot, week_start, status, media_drive_file_id, "
+        "asset_wishlist FROM posts WHERE status = 'DRAFT' ORDER BY post_id")).all()
+    if not rows:
+        print("  (no DRAFTs)")
+        return
+    for pid, channel, slot, week, status, media, wishlist in rows:
+        marker = "  <== FACEBOOK" if channel == "facebook" else ""
+        print(f"  {pid} {channel:<10} slot={slot:<8} week={week} media={media or '-'}{marker}")
+        if channel == "facebook" and wishlist:
+            print(f"      wishlist: {str(wishlist)[:160]}")
 
 
 def _board(conn, text):

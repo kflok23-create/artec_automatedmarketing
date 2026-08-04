@@ -68,6 +68,12 @@ class Post(Base):
 
     external_post_id: Mapped[str | None] = mapped_column(Text)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # A post removed at source AFTER publishing. Not a status: it WAS published, and
+    # external_post_id stays set so the never-republish guard keeps refusing it. Withdrawal
+    # is an additional fact on the ledger, never an erasure of the first one. `learn`
+    # excludes these from scoring and reports them as withdrawn — never as zero.
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    withdrawn_reason: Mapped[str | None] = mapped_column(Text)
 
     # v3: which planner authored this row ('bespoke' | 'agent'), recorded at insert; and
     # the gate verdict WITH the edit deltas — the deltas are what train taste.

@@ -179,3 +179,68 @@ def test_the_config_manifest_is_ACTUALLY_VALIDATED_AT_BOOT(repo_root):
             f"{path} does not validate the config manifest at boot — REQUIRED_CONFIG_KEYS "
             "is then a list nothing enforces")
         assert f'validate_required_config(session, "{role}")' in src
+
+
+# --- D-iv · withdrawn posts ------------------------------------------------------------
+
+def test_learn_excludes_withdrawn_posts_and_never_scores_them_as_zero(session):
+    """post_1488 and post_1489 published to a PERSONAL profile before page targeting existed
+    and were removed at source by the operator.
+
+    Their rows still say PUBLISHED, correctly — they were. But scoring them tells `learn`
+    that facebook and linkedin published and earned nothing, marking down two channels for a
+    targeting defect rather than for the creative. That is the `email_min_recipients` trap
+    arriving on two other channels, and invariant 2 in a new costume: stale is not zero, and
+    removed-at-source is not zero either.
+
+    WHAT SUPPLIES EACH SIDE: the posts are inserted here with real published state; the
+    exclusion comes from `learn` reading `withdrawn_at`. The test asserts on the SET that
+    reaches scoring, not on a count — an empty board proves nothing.
+    """
+    from datetime import UTC, date, datetime
+
+    from app.models import Post
+    from app.stages.learn import learn
+
+    week = date(2026, 8, 3)
+    for pid, channel, withdrawn in (
+        ("post_kept", "instagram", None),
+        ("post_gone_fb", "facebook", datetime(2026, 8, 5, tzinfo=UTC)),
+        ("post_gone_li", "linkedin", datetime(2026, 8, 5, tzinfo=UTC)),
+    ):
+        session.add(Post(
+            post_id=pid, channel=channel, week_start=week, status="PUBLISHED",
+            slot="evening", external_post_id=f"ext_{pid}",
+            posted_at=datetime(2026, 8, 4, tzinfo=UTC),
+            withdrawn_at=withdrawn,
+            withdrawn_reason=("published to the wrong surface before page targeting existed"
+                              if withdrawn else None)))
+    session.flush()
+
+    seen: list[str] = []
+    learn(session, llm=None, week_start=week, log=lambda m: seen.append(str(m)))
+
+    joined = " ".join(seen)
+    assert "EXCLUDING 2 withdrawn post(s)" in joined
+    assert "post_gone_fb" in joined and "post_gone_li" in joined
+    # Named as withdrawn, and explicitly NOT as zero.
+    assert "not zero" in joined
+
+
+def test_a_withdrawn_post_keeps_its_external_id_so_republish_still_refuses(session):
+    """Withdrawal is an ADDITIONAL fact, not an erasure. `posts` is the ledger of record,
+    and the never-republish guard reads `external_post_id`, which must survive untouched."""
+    from datetime import UTC, date, datetime
+
+    from app.models import Post
+
+    session.add(Post(post_id="post_w", channel="facebook", week_start=date(2026, 8, 3),
+                     status="PUBLISHED", slot="lunch", external_post_id="ext_w",
+                     posted_at=datetime(2026, 8, 4, tzinfo=UTC),
+                     withdrawn_at=datetime(2026, 8, 5, tzinfo=UTC),
+                     withdrawn_reason="removed at source"))
+    session.flush()
+    row = session.get(Post, "post_w")
+    assert row.status == "PUBLISHED"      # it WAS published; that stays true
+    assert row.external_post_id == "ext_w"
+    assert row.withdrawn_at is not None

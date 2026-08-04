@@ -338,12 +338,38 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                          "restore the six {{variables}} in the Brevo template / check BREVO_* env vars"))
 
     # --- Telegram ----------------------------------------------------------------------
-    def _telegram():
-        from app.integrations.telegram_client import Telegram
-        me = Telegram(settings).get_me()
-        return f"@{me.get('username', '?')}"
-    checks.append(_check("telegram bot", _telegram,
-                         "check TELEGRAM_BOT_TOKEN (no spaces!) and TELEGRAM_CHAT_ID (numeric, via getUpdates)"))
+    # TWO CHECKS ABOUT ONE TOKEN, AND THEY CONTRADICTED EACH OTHER.
+    #
+    # `telegram ownership` above encodes D1: on a bespoke service the token must NOT exist,
+    # because the brain is the sole Telegram owner and two pollers on one token is a 409
+    # that breaks the live gate. This check called `get_me()` unconditionally. So after the
+    # D1 post-deploy step deleted the token from artec api and artec-scheduler — doing
+    # exactly what the other check demands — this one began failing forever:
+    #
+    #     DOCTOR RED — telegram bot: TelegramError: telegram getMe failed: Not Found
+    #
+    # On the same service, one of the two had to be RED whatever the operator did. A pair of
+    # checks that cannot both pass is not two guards, it is one guard and one false alarm,
+    # and a permanent false RED is how a real RED stops being read.
+    #
+    # The RED dated 2026-08-03 PREDATES the deletion, so at that time it meant something
+    # else — the token on that service was genuinely wrong. Both readings are real; they
+    # just are not the same finding, which is why this now says which service it is on.
+    if settings.HERMES_HOME:
+        def _telegram():
+            from app.integrations.telegram_client import Telegram
+            me = Telegram(settings).get_me()
+            return f"@{me.get('username', '?')}"
+        checks.append(_check("telegram bot", _telegram,
+                             "check TELEGRAM_BOT_TOKEN (no spaces!) and TELEGRAM_CHAT_ID "
+                             "(numeric, via getUpdates)"))
+    else:
+        checks.append(Check(
+            "telegram bot", True,
+            "not checked here — this is a bespoke service and D1 requires it to hold NO "
+            "Telegram token. `telegram ownership` above is the check that applies; probing "
+            "getMe from here could only ever fail, and would fail for the wrong reason.",
+            warn=False))
 
     # --- Stripe ------------------------------------------------------------------------
     def _stripe():

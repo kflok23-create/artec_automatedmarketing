@@ -73,17 +73,33 @@ def engine(request):
         # that builds it another way is testing a schema that never ships.
         #
         # It also exposed a real asymmetry, recorded rather than papered over:
-        # `app/post_ids.py` has `ensure_allocator()` (create-if-missing) on the SQLite path
-        # and NOTHING equivalent on the Postgres path. Production is protected only because
-        # the pre-deploy step runs the migrations.
+        # `next_post_number()` calls `ensure_allocator()` first on the SQLite branch and
+        # goes straight to `nextval` on the Postgres branch. `ensure_allocator` itself is
+        # dialect-aware and would create the sequence — the Postgres CALLER just never
+        # invokes it. Production is protected only because pre-deploy runs the migrations.
+        #
+        # THE URL IS PASSED BY ENVIRONMENT, NOT BY CONFIG. First attempt set
+        # cfg.set_main_option("sqlalchemy.url", ...) and the upgrade silently migrated
+        # SQLite instead: `app/migrations/env.py` resolves the URL from settings and
+        # IGNORES an explicitly-passed one. 6 failures became 210 errors
+        # (`relation "posts" does not exist`). env.py is NOT changed here — production's
+        # migration path is the one P-class-proven thing in this system and it does not get
+        # touched in the same pass as a merge. Logged as gap S3 with a named follow-up.
         from alembic import command as alembic_command
         from alembic.config import Config as AlembicConfig
 
         cfg = AlembicConfig()
         cfg.set_main_option("script_location", str(
             pathlib.Path(__file__).resolve().parent.parent / "app" / "migrations"))
-        cfg.set_main_option("sqlalchemy.url", _normalize_pg(url))
-        alembic_command.upgrade(cfg, "head")
+        prior = os.environ.get("DATABASE_URL")
+        os.environ["DATABASE_URL"] = _normalize_pg(url)
+        try:
+            alembic_command.upgrade(cfg, "head")
+        finally:
+            if prior is None:
+                os.environ.pop("DATABASE_URL", None)
+            else:
+                os.environ["DATABASE_URL"] = prior
         with eng.begin() as conn:
             conn.execute(text(V_BRIEF_SQL))
         yield eng

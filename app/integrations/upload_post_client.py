@@ -89,6 +89,47 @@ class PlatformValidationError(UploadPostError):
     pass
 
 
+def title_and_description(channel: str, caption: str, tracked_url: str | None = None
+                          ) -> tuple[str, str]:
+    """Split the post into the platform's `title` and `description` fields.
+
+    THIS IS THE CAUSE OF post_1487's HTTP 400, and it is the disconnected-guard class again:
+
+        RETRY — post_1487 · youtube · publish:
+        UploadPostError: upload-post /upload failed: HTTP 400
+
+    `PLATFORM_RULES["youtube"]["max_title"] = 100` has existed since the client was written.
+    `grep -rn max_title` returns TWO DEFINITIONS — here and in config.py — AND NO READS.
+    `validate_for_platform` checks `max_caption` and duration and has never checked it. So
+    publish sent `f"{caption}\\n{tracked_url}"` as `title`, which for youtube is a 100-char
+    field receiving a caption bounded only by `max_caption: 5000`.
+
+    A 400 is a contract answer, not a transient — the platform told us the field was too
+    long and `retry_post` would have failed identically, forever.
+
+    `description` is a documented shared field (DECISIONS #1, verified against
+    openapi.json) and had NEVER been sent. Sending it is what makes bounding the title
+    lossless: the full caption and the tracked URL still travel, in the field built for
+    them, instead of being truncated away.
+
+    Platforms without a `max_title` keep their current behaviour exactly — title carries
+    caption + URL — because that is what has been publishing successfully and this change
+    must not alter a working surface to fix a broken one.
+    """
+    caption = caption or ""
+    url = tracked_url or ""
+    full = f"{caption}\n{url}".strip()
+    limit = (PLATFORM_RULES.get(channel) or {}).get("max_title")
+    if not limit:
+        return full, full
+    if len(caption) <= limit:
+        return caption, full
+    # Cut at a word boundary so a truncated title does not end mid-word; the ellipsis is
+    # inside the limit, not appended past it.
+    cut = caption[: limit - 1].rsplit(" ", 1)[0] or caption[: limit - 1]
+    return f"{cut}…", full
+
+
 def validate_for_platform(channel: str, media_kind: str, caption: str, duration_s: float | None = None) -> None:
     """Raise PlatformValidationError before any render spend if the post cannot publish."""
     rules = PLATFORM_RULES.get(channel)
@@ -168,16 +209,20 @@ class UploadPost:
         return {field: value}
 
     def upload_photo(self, platform: str, photo_path: str, title: str,
-                     page_targets: dict | None = None) -> dict:
-        data = {"user": self._user, "platform[]": [platform], "title": title}
+                     page_targets: dict | None = None,
+                     description: str | None = None) -> dict:
+        data = {"user": self._user, "platform[]": [platform], "title": title,
+                "description": description if description is not None else title}
         data.update(self._page_fields(platform, page_targets))
         with open(photo_path, "rb") as fh:
             files = [("photos[]", (os.path.basename(photo_path), fh.read(), "image/jpeg"))]
         return self._post("/upload_photos", data, files)
 
     def upload_video(self, platform: str, video_path: str, title: str,
-                     page_targets: dict | None = None) -> dict:
-        data = {"user": self._user, "platform[]": [platform], "title": title}
+                     page_targets: dict | None = None,
+                     description: str | None = None) -> dict:
+        data = {"user": self._user, "platform[]": [platform], "title": title,
+                "description": description if description is not None else title}
         data.update(self._page_fields(platform, page_targets))
         with open(video_path, "rb") as fh:
             files = [("video", (os.path.basename(video_path), fh.read(), "video/mp4"))]

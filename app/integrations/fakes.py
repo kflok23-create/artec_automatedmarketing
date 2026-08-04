@@ -186,15 +186,19 @@ class FakeUploadPost:
         return UploadPost.__dict__["_page_fields"](self, platform, page_targets)
 
     def upload_photo(self, platform: str, photo_path: str, title: str,
-                     page_targets: dict | None = None) -> dict:
+                     page_targets: dict | None = None,
+                     description: str | None = None) -> dict:
         fields = self._fields(platform, page_targets)
-        self.calls.append({"kind": "photo", "platform": platform, "title": title, **fields})
+        self.calls.append({"kind": "photo", "platform": platform, "title": title,
+                           "description": description, **fields})
         return {"success": True, "request_id": f"up_{len(self.calls)}", **fields}
 
     def upload_video(self, platform: str, video_path: str, title: str,
-                     page_targets: dict | None = None) -> dict:
+                     page_targets: dict | None = None,
+                     description: str | None = None) -> dict:
         fields = self._fields(platform, page_targets)
-        self.calls.append({"kind": "video", "platform": platform, "title": title, **fields})
+        self.calls.append({"kind": "video", "platform": platform, "title": title,
+                           "description": description, **fields})
         return {"success": True, "request_id": f"up_{len(self.calls)}", **fields}
 
     def list_profiles(self) -> dict:

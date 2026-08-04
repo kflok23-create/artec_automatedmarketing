@@ -26,6 +26,7 @@ from app.integrations.upload_post_client import (  # noqa: F401
     _target_owner_reported,
     extract_external_id,
     page_targets,
+    title_and_description,
     verify_publish_target,
 )
 from app.models import Post
@@ -235,7 +236,12 @@ def publish(session: Session, drive, fal, uploader, brevo,
                 media_spec = get_config(session, "channel_media").get(post.channel, {})
                 kind = media_spec.get("media", "photo")
                 local = publish_media_path(session, drive, post)
-                title = f"{post.caption}\n{post.tracked_url}"
+                # youtube's `title` is a 100-char field; the caption belongs in
+                # `description`. PLATFORM_RULES has carried `max_title: 100` since the
+                # client was written and NOTHING READ IT — post_1487 died on that with an
+                # HTTP 400. See title_and_description.
+                title, description = title_and_description(
+                    post.channel, post.caption or "", post.tracked_url)
                 # PAGE TARGETING. facebook and linkedin publish AS A PAGE; the ids come
                 # from config and `_page_fields` REFUSES if one is missing rather than
                 # letting the post fall through to the personal profile of the account
@@ -247,10 +253,12 @@ def publish(session: Session, drive, fal, uploader, brevo,
                         f"{targets.get(post.channel)!r}")
                 if kind == "video":
                     resp = uploader.upload_video(post.channel, local, title,
-                                                 page_targets=targets)
+                                                 page_targets=targets,
+                                                 description=description)
                 else:
                     resp = uploader.upload_photo(post.channel, local, title,
-                                                 page_targets=targets)
+                                                 page_targets=targets,
+                                                 description=description)
                 external_id = extract_external_id(resp)
                 # ITEM 6 — post-publish verification, two sides from two sources: the id we
                 # ASKED for (config) and the owner the response REPORTS. A wrong target is

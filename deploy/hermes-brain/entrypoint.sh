@@ -118,6 +118,9 @@ python /bootstrap/probe_scouting.py || echo "WARN: scouting probe script itself 
 # vanish. Never fatal: a memory problem must not cost the week.
 python /bootstrap/purge_memory_claims.py || echo "WARN: memory purge script itself failed"
 python /bootstrap/audit_memory_report.py || echo "WARN: memory audit script itself failed"
+# READ-ONLY production report: the board, agent_runs, and the orphaned digest payload.
+# Every statement is a SELECT. Never fatal.
+python /bootstrap/report_board.py || echo "WARN: board report script itself failed"
 
 step "8/10 plugin discovery + enable"
 HERMES_PLUGINS_DEBUG=1 hermes plugins list || true

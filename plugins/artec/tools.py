@@ -139,6 +139,46 @@ def _spend_posture_lines(conn, engine) -> list[str]:
     return out
 
 
+def _capability_lines() -> list[str]:
+    """D-2 · A.3 — THE LIVE CATALOG, DELIVERED AS DATA ON THE FIRST READ OF EVERY SESSION.
+
+    On 2026-08-04 the agent asserted six tools for an entire live session, denied
+    `record_metrics` four times, and built "the loop is broken at measurement" on top of the
+    denial. Fifteen exist. Its own account: it trusted a stale note instead of searching the
+    catalog. Memory is injected into every turn, so the note outranked reality by default.
+
+    ENFORCEMENT IS A MECHANISM HERE, NOT AN INSTRUCTION — with one honest limit, stated
+    below. `HANDLERS` is not a manifest and not a document: it is the dispatch table the
+    agent's tool calls actually resolve through, populated by `register(ctx)` at session
+    start. If a name is absent here the call cannot succeed; if it is present the tool
+    exists. So the count and the names below cannot drift from what is callable.
+    This is the same shape as `_spend_posture_lines` — the posture reaches the brain as DATA
+    on the read it makes first, rather than as a sentence in a prompt it may or may not
+    honour.
+
+    THE LIMIT, NOT BLURRED: this makes the catalog PRESENT and AUTHORITATIVE in the first
+    thing the agent reads. It cannot stop a model from believing a memory note it read in
+    the same context. Nothing inside a plugin can — memory injection is the host's. What
+    this removes is the excuse: the true list is in front of it, on the read it always
+    makes, in a session where it previously had only the stale note. Combined with A.1
+    (the claim is deleted from the store) and A.2 (a claim that returns fails the audit
+    RED), the note it would have to prefer no longer exists.
+    """
+    names = sorted(HANDLERS)
+    out = ["", "== YOUR TOOLS — THE LIVE CATALOG, AUTHORITATIVE ==",
+           f"  you have {len(names)} tools registered right now:"]
+    out += [f"    {n}" for n in names]
+    out += [
+        "  THIS LIST IS THE DISPATCH TABLE ITSELF, not a description of it. If a memory "
+        "note, a habit, or an earlier turn disagrees with it, THIS WINS and the note is "
+        "wrong — say so plainly rather than acting on the note.",
+        "  A stale note claiming six tools once caused an entire session of wrong answers "
+        "to the operator, including denying a measurement tool that exists.",
+        "  Never answer 'there is no tool for that' without checking this list first.",
+    ]
+    return out
+
+
 def _read_brief_impl(engine: Engine | None = None) -> str:
     eng = _get_engine(engine)
     with eng.begin() as conn:
@@ -146,6 +186,7 @@ def _read_brief_impl(engine: Engine | None = None) -> str:
         lines = [f"[{s}] {line}" for s, line in
                  conn.execute(text("SELECT section, line FROM v_brief")).all()]
 
+        lines += _capability_lines()
         lines += _spend_posture_lines(conn, engine)
 
         lines.append("")

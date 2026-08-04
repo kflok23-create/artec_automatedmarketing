@@ -34,10 +34,25 @@ async def lifespan(app: FastAPI):
     # no branches, and the memory audit that scanned no files: a guard present in the
     # source and absent from the running system. Wired in here, where a missing key stops
     # the service instead of surfacing as a public post to the wrong page.
-    from app.config import validate_required_config
+    from app.config import seed_config, validate_required_config
     from app.db import session_scope
 
     with session_scope() as session:
+        # TOP UP FIRST, THEN VALIDATE. Wiring the validator in took this service down, and
+        # it was right to: production was missing SIX required keys, four of them nothing
+        # to do with page targeting —
+        #   render_run_cap_cents, max_output_megapixels,
+        #   email_review_expiry_days, video_review_expiry_days
+        # The render SPEND CAP was absent from production config. Nothing failed loudly,
+        # because every read passes a default: get_config(s, "render_run_cap_cents", 250).
+        # A default is a fallback, not a setting, and from outside the two are identical.
+        #
+        # ROOT CAUSE: a key added to OPERATOR_CONSTANTS never reaches a database seeded
+        # before that key existed. `artec config seed` had to be run by hand and nothing
+        # ever said when. seed_config is NON-DESTRUCTIVE — it adds missing keys and keeps
+        # any value the operator changed — so running it here makes a new constant arrive
+        # with the deploy that introduced it, the one moment anyone knows it is needed.
+        seed_config(session)
         keys = validate_required_config(session, "api")
         logging.info("config manifest validated at boot: %d keys", len(keys))
     yield

@@ -403,10 +403,15 @@ def main() -> None:
     # wait_for_schema, because reading config from a database whose migrations have not
     # landed reports a missing key that is merely not-yet-visible — the 76-second window
     # that already produced a wall of UndefinedColumn errors on this service.
-    from app.config import validate_required_config
+    from app.config import seed_config, validate_required_config
     from app.db import session_scope
 
     with session_scope() as session:
+        # TOP UP FIRST, THEN VALIDATE. See the same block in app/main.py: production was
+        # missing SIX required keys, including render_run_cap_cents — the render SPEND CAP.
+        # A key added to OPERATOR_CONSTANTS never reaches a database seeded before it
+        # existed, and every read passes a default, so nothing ever failed loudly.
+        seed_config(session)
         keys = validate_required_config(session, "scheduler")
     print(f"scheduler: config manifest validated at boot — {len(keys)} keys")
     print(f"artec-scheduler up — {len(artec_jobs())} registry jobs, timezone Asia/Singapore")

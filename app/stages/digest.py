@@ -341,6 +341,21 @@ def _agent_posture(cfg: dict, spent_cents: int) -> dict:
             "degraded": bool(actions)}
 
 
+def _publish_gate_state(session: Session) -> dict:
+    """Open or closed, and if closed how many posts it is holding. Read from config, never
+    inferred from whether anything has published — that inference was made once and was
+    wrong for a week."""
+    from app.models import Post
+
+    closed = bool(get_config(session, "confirm_first_publish", True))
+    held = 0
+    if closed:
+        held = len(list(session.execute(
+            select(Post).where(Post.status.in_(("RENDERED", "APPROVED_TO_SEND")),
+                               Post.external_post_id.is_(None))).scalars()))
+    return {"closed": closed, "held": held}
+
+
 def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None) -> dict:
     since = datetime.now(UTC) - timedelta(days=7)
 
@@ -403,6 +418,7 @@ def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None
         "email_min_recipients": cfg.get("email_min_recipients"),
         "agent_posture": _agent_posture(cfg, agent_cents),
         "memory_audit": get_config(session, "memory_audit", None),
+        "publish_gate": _publish_gate_state(session),
         "unproven_capabilities": _unproven(session),
         "price_table": price_table(session),
         "price_status": _price_status(session),
@@ -652,16 +668,51 @@ def render_digest_text(payload: dict) -> str:
         lines.append(f"price table: reconciled against fal {ps.get('reconciled_at')}")
     else:
         lines.append(f"price table: seeded {ps.get('as_of')}, never reconciled against fal")
+    # C.5 — THE PUBLISH GATE'S STATE, STATED EITHER WAY.
+    # `confirm_first_publish` was ambiguous to everyone for a week: inferred once from the
+    # existence of published posts, contradicted once, and settled only by reading the row.
+    # A gate whose state nobody can see is a gate nobody can reason about, so the digest
+    # says it every night whether it is open or closed — an unstated OPEN is exactly as
+    # dangerous as an unstated CLOSED, in opposite directions.
+    gate = s.get("publish_gate") or {}
+    if gate.get("closed"):
+        held = gate.get("held", 0)
+        lines.append(
+            "🚦 publish gate: CLOSED — job 7 is skipping every slot"
+            + (f" and is holding {held} RENDERED post(s)" if held else "")
+            + ". Clears when an operator runs `artec publish` once by hand "
+              "(config.confirm_first_publish → false).")
+    else:
+        lines.append("🚦 publish gate: OPEN — job 7 publishes due posts unattended at each "
+                     "slot_times entry")
+
     audit = s.get("memory_audit")
     if audit is None:
         lines.append("agent memory audit: NOT YET RUN — the brain reports it at boot and "
                      "weekly with job 10")
     else:
         used = audit.get("memory_utilisation")
-        # At the cap, a NEW durable fact evicts an OLD one with no signal of any kind.
-        fill = (f" · MEMORY {int(used * 100)}% of {audit.get('memory_cap', '?')} chars"
-                + (" — at this level a new fact silently evicts an old one"
-                   if used and used >= 0.8 else "")) if used else ""
+        # C.7 — AT THE CAP, A NEW DURABLE FACT EVICTS AN OLD ONE WITH NO SIGNAL OF ANY KIND.
+        # Memory sat at 82% at last reading, so eviction is live, not theoretical. Severity
+        # is explicit rather than a single threshold, because "approaching" and "about to
+        # lose things" are different operator decisions.
+        #
+        # REPORTED, NEVER AUTO-PRUNED. An automatic deleter is a write tool nobody reviewed,
+        # operating on the one store the agent owns — and the failure mode of pruning the
+        # wrong note is silent and permanent.
+        if used:
+            pct = int(used * 100)
+            cap = audit.get("memory_cap", "?")
+            if used >= 0.95:
+                fill = (f" · 🚨 MEMORY {pct}% of {cap} chars — RED: at this level new facts "
+                        "ARE evicting old ones. Prune by hand; nothing prunes automatically")
+            elif used >= 0.80:
+                fill = (f" · ⚠️  MEMORY {pct}% of {cap} chars — YELLOW: approaching the cap, "
+                        "where a new fact silently evicts an old one")
+            else:
+                fill = f" · memory {pct}% of {cap} chars"
+        else:
+            fill = ""
         if audit.get("clean"):
             lines.append(f"agent memory audit: clean ({audit.get('scanned_files', 0)} files, "
                          f"{str(audit.get('audited_at', ''))[:10]}){fill}")

@@ -1344,3 +1344,87 @@ Redaction is the operator's call, and it is recorded here rather than silently s
      **What converts the deferral into a decision:** the gate states, in its opening summary,
      which `week_start` it is gating, how many drafts it found, and the age of the oldest. A
      wrong week must be visible on the screen, never inferred. Fix deferred to after Sunday.
+
+108. **2026-08-05 · post_1487's HTTP 400 — a constant defined twice and read nowhere.
+     Instance #5 of the disconnected guard.**
+
+         🔁 RETRY — post_1487 · youtube · publish:
+            UploadPostError: upload-post /upload failed: HTTP 400
+
+     `PLATFORM_RULES["youtube"]["max_title"] = 100` has existed since the client was written.
+     `grep -rn max_title` returned **two definitions and zero reads** —
+     `app/integrations/upload_post_client.py` and `app/config.py`. `validate_for_platform`
+     checks `max_caption` and video duration and never checked the title. So publish sent
+     `f"{caption}\n{tracked_url}"` into a 100-character field whose caption is bounded only
+     by `max_caption: 5000`.
+
+     **A 400 is a contract answer, not a transient.** The platform said the field was too
+     long; `retry_post` would have failed identically every time, which is how third-party
+     contract drift gets mistaken for flakiness. Diagnosed by reading the contract, not by
+     retrying — and `retry_post` refuses posts holding an `external_post_id` anyway, so a
+     retry would have been refused or failed the same way.
+
+     **It is systematic for the channel, not a one-off.** `post_1496` in Sunday's draft set
+     is also youtube and carried the identical defect, which is why the fix is a rule rather
+     than an edit to one row.
+
+     `description` is a documented shared field (decision 1, verified against openapi.json)
+     and had **never been sent**. Sending it is what makes bounding the title lossless: the
+     full caption and tracked URL still travel, in the field built for them, instead of being
+     truncated away. Platforms with no `max_title` are unchanged — a fix for a broken surface
+     must not alter four working ones.
+
+     Guarded twice: `test_every_declared_max_title_is_actually_enforced` (adding a limit to
+     another platform fails unless it is honoured) and
+     `test_declared_platform_limits_are_read_somewhere` in the disconnected-guard suite —
+     **a limit that is declared and never consulted is not a rule, it is a comment that looks
+     like enforcement.**
+
+109. **2026-08-05 · D-6 — fifteen tools, derived and not declared.** v4 §4 specifies
+     fourteen; the seam ships fifteen. The extra is `deliver_video`, and it is a legitimate
+     implementation of §5.1's native Telegram delivery rather than scope creep: delivering a
+     video AND recording the delivery receipt cannot both live inside a tool the spec
+     declares READ ONLY, so the operator elected a fifteenth tool rather than weakening
+     `read_digest`. Read stays read; delivery is explicit.
+
+     `EXPECTED_TOOL_COUNT = len(HANDLERS)` — the dispatch table itself, the object every tool
+     call resolves through. **A literal `15` written anywhere else is a second source that
+     can disagree with the first**, and this build has spent whole passes on exactly that: a
+     config manifest nothing validated, a view whose SQL drifted from its migration, a price
+     table seeded by a hand-run nobody scheduled. `SPEC_TOOL_COUNT = 14` sits beside it so
+     the deviation is stated rather than implied.
+
+110. **2026-08-05 · C.5 — the publish gate states its own state, either way.**
+     `confirm_first_publish` was ambiguous to everyone for a week: inferred once from the
+     existence of published posts, contradicted once, and settled only by reading the row.
+     The inference was reasonable and wrong — `post_1483`/`post_1484` published in the v3
+     era, before the gate was wired into job 7 at all.
+
+     The digest now states it nightly in SPEND & HEALTH. **An unstated OPEN is exactly as
+     dangerous as an unstated CLOSED, in opposite directions**: closed means nothing publishes
+     and the digest looks like a quiet week; open means job 7 publishes unattended the moment
+     anything is RENDERED. When closed it also names how many posts it is holding and what
+     clears it.
+
+111. **2026-08-05 · C.7 — memory utilisation is reported, never auto-pruned.** Agent memory
+     sat at 82% of its 2200-char cap. At the cap a new durable fact evicts an old one **with
+     no signal of any kind** — the store simply forgets something and nothing says which.
+
+     YELLOW above 80%, RED above 95%, in the digest every night. Severity is explicit rather
+     than one threshold because "approaching the cap" and "actively losing things" are
+     different operator decisions.
+
+     **Report, do not prune.** An automatic deleter would be a write tool nobody reviewed,
+     operating on the one store the agent owns, whose failure mode — deleting the wrong note
+     — is silent and permanent. The RED line says "prune by hand" and says that nothing
+     prunes automatically, so the operator never assumes it was handled.
+
+112. **2026-08-05 · A HIDDEN CLOCK IS AN UNNAMED SIDE OF A COMPARISON.** The gate summary's
+     first version tested `age >= 7` and read the clock internally. Week 2026-08-03 runs Mon
+     03 → Sun 09, so on Sunday it is day **6**: the warning would never have fired on the one
+     day it was written for. It was caught only because the test pinned a date instead of
+     reading `date.today()`, and fixed by taking `today` as a parameter.
+
+     A function that reads the clock supplies one side of its own comparison, and no test can
+     pin it from outside. The same reasoning as every other instance in this file — name both
+     sides, or the check is not a check.

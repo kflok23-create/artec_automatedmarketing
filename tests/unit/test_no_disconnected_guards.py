@@ -139,3 +139,26 @@ def test_the_check_can_actually_fail(repo_root):
     """
     assert _production_references(repo_root, "test_no_disconnected_guards") == []
     assert _production_references(repo_root, "a_symbol_that_does_not_exist_anywhere") == []
+
+
+def test_declared_platform_limits_are_read_somewhere(repo_root):
+    """INSTANCE #5, generalised. `PLATFORM_RULES["youtube"]["max_title"] = 100` was defined
+    in two files and read in none, and post_1487 died on an HTTP 400 because of it.
+
+    A limit that is declared and never consulted is not a rule — it is a comment that looks
+    like enforcement, which is worse than no comment at all.
+    """
+    import re
+
+    from app.integrations.upload_post_client import PLATFORM_RULES
+
+    keys = {k for rules in PLATFORM_RULES.values() for k in rules}
+    for key in sorted(keys):
+        if key == "media":
+            continue
+        readers = _production_references(repo_root, key)
+        assert readers, (
+            f"PLATFORM_RULES declares {key!r} and nothing outside tests/ reads it. "
+            "max_title was in exactly this state and cost an HTTP 400 that would have "
+            "recurred on every retry.")
+        assert re.search(r"\w", str(readers))

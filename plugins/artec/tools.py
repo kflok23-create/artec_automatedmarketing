@@ -166,7 +166,7 @@ def _capability_lines() -> list[str]:
     """
     names = sorted(HANDLERS)
     out = ["", "== YOUR TOOLS — THE LIVE CATALOG, AUTHORITATIVE ==",
-           f"  you have {len(names)} tools registered right now:"]
+           f"  you have {EXPECTED_TOOL_COUNT} tools registered right now:"]
     out += [f"    {n}" for n in names]
     out += [
         "  THIS LIST IS THE DISPATCH TABLE ITSELF, not a description of it. If a memory "
@@ -516,6 +516,32 @@ transcription_violations = _v4.transcription_violations
 figures_from_args = _v4.figures_from_args
 operator_turns = _transcript.operator_turns
 HANDLERS.update(HANDLERS_V4)
+
+# ---------------------------------------------------------------------------------------
+# D-6 — THE TOOL COUNT, WRITTEN ONCE.
+#
+# v4 §4 specifies FOURTEEN tools. The seam ships FIFTEEN. The extra is `deliver_video`, and
+# it is a legitimate implementation of §5.1's native Telegram delivery rather than scope
+# creep: delivering a video AND recording the delivery receipt cannot both live inside a
+# tool the spec declares READ ONLY, so the operator elected a fifteenth tool rather than
+# weakening `read_digest`. Read stays read; delivery is explicit. Recorded as a deviation
+# in DECISIONS.md.
+#
+# DERIVED, NOT DECLARED. `len(HANDLERS)` is the dispatch table itself — the object every
+# tool call resolves through. A literal 15 written anywhere else is a second source that
+# can disagree with the first, and this system has spent whole passes on exactly that:
+# a config manifest nothing validated, a view whose SQL drifted from its migration, a
+# price table seeded by a hand-run nobody scheduled.
+#
+# The boot check, the doctor line, Checkpoint 1(c) and the tests all read THIS.
+# ---------------------------------------------------------------------------------------
+EXPECTED_TOOL_COUNT = len(HANDLERS)
+SPEC_TOOL_COUNT = 14                     # v4 §4, for the deviation to be stated not implied
+TOOL_COUNT_DEVIATION = (
+    f"{EXPECTED_TOOL_COUNT} tools registered; v4 §4 specifies {SPEC_TOOL_COUNT}. The extra "
+    "is deliver_video — native Telegram delivery per §5.1, which cannot live in read_digest "
+    "because that tool is READ ONLY. Recorded as a deviation, not a defect."
+)
 
 # Built-in tool names blocked by the pre_tool_call hook — defense in depth on top of
 # agent.disabled_toolsets: [terminal, code_execution, file] in the profile config

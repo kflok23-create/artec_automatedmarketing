@@ -161,3 +161,21 @@ def test_both_ids_are_required_config_keys():
     common = REQUIRED_CONFIG_KEYS["common"]
     assert "facebook_page_id" in common
     assert "linkedin_organization_urn" in common
+
+
+def test_the_config_manifest_is_ACTUALLY_VALIDATED_AT_BOOT(repo_root):
+    """`validate_required_config` existed, its docstring said "Called at boot", and NOTHING
+    called it — the only references in the repo were in tests. `REQUIRED_CONFIG_KEYS` was a
+    list that guaranteed nothing, so adding the page-target keys to it would have
+    guaranteed nothing either.
+
+    Same shape as the ruleset that applied to no branches and the memory audit that scanned
+    no files: present in the source, absent from the running system. This asserts the wiring
+    rather than the function, because the function was never the problem.
+    """
+    for path, role in (("app/main.py", "api"), ("app/scheduler.py", "scheduler")):
+        src = (repo_root / path).read_text(encoding="utf-8")
+        assert "validate_required_config" in src, (
+            f"{path} does not validate the config manifest at boot — REQUIRED_CONFIG_KEYS "
+            "is then a list nothing enforces")
+        assert f'validate_required_config(session, "{role}")' in src

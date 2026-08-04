@@ -116,7 +116,7 @@ def _fb_drafts(conn, text):
     if not rows:
         print("  (no DRAFTs)")
         return
-    for pid, channel, slot, week, status, media, wishlist in rows:
+    for pid, channel, slot, week, _status, media, wishlist in rows:
         marker = "  <== FACEBOOK" if channel == "facebook" else ""
         print(f"  {pid} {channel:<10} slot={slot:<8} week={week} media={media or '-'}{marker}")
         if channel == "facebook" and wishlist:

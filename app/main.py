@@ -24,6 +24,22 @@ async def lifespan(app: FastAPI):
     settings = get_settings()  # raises MissingEnvVarError with names only
     logging.basicConfig(level=settings.LOG_LEVEL)
     install_redaction(settings)
+    # THE MANIFEST WAS NEVER CHECKED AT BOOT. `validate_required_config`'s own docstring
+    # says "Called at boot — refuse to start rather than discover it from a per-tick error
+    # log three hours later", and NOTHING called it: the only references in the repo were
+    # in tests. So `REQUIRED_CONFIG_KEYS` was a list that guaranteed nothing, and adding
+    # the page-target keys to it would have guaranteed nothing either.
+    #
+    # This is the same shape as the branch-protection ruleset that existed and applied to
+    # no branches, and the memory audit that scanned no files: a guard present in the
+    # source and absent from the running system. Wired in here, where a missing key stops
+    # the service instead of surfacing as a public post to the wrong page.
+    from app.config import validate_required_config
+    from app.db import session_scope
+
+    with session_scope() as session:
+        keys = validate_required_config(session, "api")
+        logging.info("config manifest validated at boot: %d keys", len(keys))
     yield
 
 

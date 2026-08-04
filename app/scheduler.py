@@ -399,6 +399,16 @@ def main() -> None:
     from app.jobs import artec_jobs
 
     wait_for_schema()
+    # Same omission as the api: the manifest existed and nothing validated it. Runs AFTER
+    # wait_for_schema, because reading config from a database whose migrations have not
+    # landed reports a missing key that is merely not-yet-visible — the 76-second window
+    # that already produced a wall of UndefinedColumn errors on this service.
+    from app.config import validate_required_config
+    from app.db import session_scope
+
+    with session_scope() as session:
+        keys = validate_required_config(session, "scheduler")
+    print(f"scheduler: config manifest validated at boot — {len(keys)} keys")
     print(f"artec-scheduler up — {len(artec_jobs())} registry jobs, timezone Asia/Singapore")
     for row in next_runs():
         # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the

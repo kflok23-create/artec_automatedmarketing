@@ -695,3 +695,99 @@ unless marked.
     `importlib` on `job.body`: a typo in a dotted string would fail at 20:40 on a Tuesday
     instead of in CI. One failing job is logged and the tick continues, because the rest of
     the night's chain still has to run and the digest is what reports the failure.
+
+---
+
+# CONSOLIDATED INDEX — the decisions a future reader would otherwise reconstruct wrongly
+
+Entries 1–79 above are chronological and stay. This index names the ones where a wrong
+premise is most likely to be rebuilt from scratch. Format: **decision · why · supersedes.**
+
+**Amendment 1 · metrics** — SUPERSEDES gap-doc C3 ("no agent tool may write metrics").
+The replacement rule in full: `metrics` is writable by TRANSCRIPTION ONLY. Every digit the
+agent submits must appear in a message the OPERATOR sent in this session, read from
+hermes-agent's own message store; `operator_message` must itself be one of those turns;
+nothing is written without `confirm: true`; and no tool writes `orders`, `events` or
+`config`. The agent may not compute, estimate, infer, round, average, interpolate or carry
+forward — including "same as last week" and including arithmetic the operator asked for.
+*(Entries 38, 39, 45, 58, 74.)*
+
+**Amendment 2 · video holds every time** — `video_pipeline_proven` is **DELETED**, not set
+false. The risk is per-render, not per-pipeline: a boolean would have let one good render
+vouch for every later one. No configuration value and no code path can exempt a video.
+*(Entries 42, 43.)*
+
+**`endpoint_prices` left `config`** — moved to its own TABLE specifically so reconciliation
+can write prices while no tool writes `config`. **The config rule was NOT weakened to make
+this convenient**; that is the direction security properties erode. Supersedes
+`endpoint_prices_cents` in OPERATOR_CONSTANTS. *(Entries 70, 71.)*
+
+**`KILL_LINE_CAC_SGD_MINOR` / `KILL_LINE_CAC_MYR_MINOR`** — RETAINED but **INACTIVE**, with
+`kill_lines_inactive_reason` recorded. Not deleted, so they exist if paid acquisition is ever
+introduced; not silently evaluating to "pass", because `learn` reports them as inactive with
+the reason. Organic-only means zero paid spend, which makes an absolute CAC line structurally
+incapable of firing.
+
+**Relative kill replaces absolute kill; CAC is health-only.** Levers are pruned on weighted-KPI
+underperformance versus the cohort median across `min_lever_sample` posts over two consecutive
+runs. CAC is reported as *production cost per attributed order (health only, never a kill
+rule)*. Supersedes the absolute CAC kill line. *(Entry 32.)*
+
+**Email below `email_min_recipients`** — excluded from lever scoring and reported as *below
+measurement threshold*, never as a kill and never as a zero. A one-contact list cannot be
+scored.
+
+**The `learning:` block does not exist at the pinned tag.** The real keys are
+`memory.memory_enabled`, `memory.write_approval`, `skills.write_approval`,
+`skills.guard_agent_created`. There is NO gate-taste toggle. An invented key is silence with
+extra steps — it parses, changes nothing, and reports green. Recorded rather than written.
+*(Entry 49.)*
+
+**Toolset identifiers verified at `v2026.7.30` (0.19.1).** `kanban` → `todo` drift between
+0.18.x and 0.19.x is why a tag bump requires re-verification: a `disabled_toolsets` entry that
+matches nothing disables nothing. Both names are listed for that reason, and
+`artec agent-review` goes RED if an identifier disappears.
+
+**Tool count six → fifteen.** `deliver_video` is the fifteenth. **The security property was
+never the count — it is the absence of capability.** All fifteen remain unable to write
+`orders`, `events` or `config`. *(Entry 40.)*
+
+**Four scheduled jobs → twelve**, asserted by repo scan; a thirteenth fails the suite.
+*(Entries 77, 78, 79.)*
+
+**The bespoke gate's long-poller is deleted.** The gating logic survives as a library function
+reachable over authenticated HTTPS and must never poll. Two pollers on one token is a 409 that
+breaks the live gate.
+
+**Accepted, recorded exposure.** `VERIFY.md` and `DECISIONS.md` contain the Telegram user id,
+Drive folder and Shared Drive ids, and Railway internal hostnames. None is a credential;
+together they are a map, and the repo is public. **Left in place deliberately** — the repo went
+public after those commits and history already holds them, so redaction would be theatre.
+Redaction is the operator's call, and it is recorded here rather than silently stripped.
+
+---
+
+80. **2026-08-04 · Checkpoint 1 is SPLIT into F1 (pre-deploy, static) and F2 (post-deploy,
+    live).** Six of the twelve §14 items — (b) jobs listed back by each scheduler, (c) the
+    tools as the agent itself lists them, (e) the digest with a live Brevo count and a real
+    Telegram video delivery, (f) both doctors green, (g) the proof matrix, (j) the
+    `web_search` probe — require a running deployed container. Producing any of them from a
+    branch is a simulation, and simulated live evidence is the packaging/environment class
+    that has already put defects into this production. **Supersedes** the single-halt
+    checkpoint in §14.
+
+81. **2026-08-04 · merge gate condition 2 was HELD at eleven pg tests, and the eleven were
+    not chosen by accident but the other 459 were.** The eleven carry the `pg` marker because
+    they exercise Postgres-ONLY semantics: advisory locks (4), sequence allocation including
+    `nextval` surviving rollback (4), jsonb round-trip (1), concurrent writers (1), and
+    NULL-vs-zero on a real dialect (1). None has a SQLite equivalent. **The other 459 had
+    simply never run against Postgres at all** — a coverage decision nobody made on purpose.
+    `ARTEC_TEST_SUBSTRATE=postgres` now switches the whole suite onto the real substrate, CI
+    runs it as a separate step, and it refuses to fall back to SQLite if
+    `TEST_DATABASE_URL` is unset. **Condition 2 is closed by that CI output, not by this
+    entry** — see the honest line in the F1 halt block.
+
+82. **2026-08-04 · `docs/RUNBOOK.md` rewritten whole, and every capability claim carries an
+    evidence class (P/A/T/U).** A claim without one is a defect in that document. Most of the
+    system is currently **T** or **U**: built and tested, never exercised in production. The
+    class exists so the difference stays visible instead of being smoothed into prose.

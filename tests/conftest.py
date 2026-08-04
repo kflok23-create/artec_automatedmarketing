@@ -44,13 +44,39 @@ from app.models import V_BRIEF_SQL, Base  # noqa: E402
 
 
 @pytest.fixture
-def engine():
+def engine(request):
+    """SQLite by default; REAL POSTGRES when ARTEC_TEST_SUBSTRATE=postgres.
+
+    Merge-gate condition 2 reads "every pg test executed and green". Eleven tests carried
+    the `pg` marker because they exercise Postgres-ONLY semantics — advisory locks,
+    sequences, jsonb. The other 459 had simply never run against Postgres at all, which is
+    a coverage decision nobody made on purpose. This switch makes the whole suite runnable
+    on the real substrate so the decision becomes deliberate and the evidence is CI output
+    rather than a claim.
+    """
+    if os.environ.get("ARTEC_TEST_SUBSTRATE") == "postgres":
+        url = os.environ.get("TEST_DATABASE_URL", "")
+        if not url:
+            pytest.fail("ARTEC_TEST_SUBSTRATE=postgres but TEST_DATABASE_URL is unset — "
+                        "refusing to silently fall back to SQLite, which is the substrate "
+                        "this run exists to avoid")
+        _assert_disposable(url)
+        eng = create_engine(_normalize_pg(url))
+        with eng.begin() as conn:
+            conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        Base.metadata.create_all(eng)
+        with eng.begin() as conn:
+            conn.execute(text(V_BRIEF_SQL))
+        yield eng
+        eng.dispose()
+        return
     eng = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     Base.metadata.create_all(eng)
     with eng.connect() as conn:
         conn.execute(text(V_BRIEF_SQL))
         conn.commit()
-    return eng
+    yield eng
 
 
 @pytest.fixture

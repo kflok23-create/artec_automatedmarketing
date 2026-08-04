@@ -67,10 +67,24 @@ def build_diff(session: Session, week_start: date) -> dict:
     a_index = {(r["channel"], r["slot"]): r for r in agent}
     paired_keys = sorted(set(b_index) & set(a_index))
 
-    agreement: dict[str, float] = {}
+    # A8 — A ONE-SIDED COMPARISON IS NOT A COMPARISON.
+    #
+    # `agreement[field] = 0.0` when there is nothing to compare is the same defect as
+    # `learn` scoring an unmeasured week at zero: an ABSENCE reported as a VALUE. 0.0 reads
+    # as "the planners disagreed about everything"; the truth is that one of them did not
+    # speak. None is the only honest answer, and it is what `learn` now returns for a lever
+    # it cannot score.
+    #
+    # This matters on 2026-08-09 specifically. Job 3 — the agent's LEARN→IDEATE at 07:00 —
+    # has NEVER completed a session in production, so an empty `plans_shadow` is the LIKELY
+    # case at 08:00, not the edge case. Job 2 shipped without a dispatch and plan-diff would
+    # have compared one plan against nothing and reported agreement with itself; this is the
+    # same failure arriving from the other side.
+    one_sided = (not agent) or (not bespoke)
+    agreement: dict[str, float | None] = {}
     for field in COMPARE_FIELDS:
         if not paired_keys:
-            agreement[field] = 0.0
+            agreement[field] = None
             continue
         hits = sum(1 for k in paired_keys
                    if (b_index[k][field] or "") == (a_index[k][field] or ""))
@@ -107,6 +121,10 @@ def build_diff(session: Session, week_start: date) -> dict:
         "week": str(week_start),
         "pairs": pairs,
         "agreement": agreement,
+        # Named, not inferred from an empty list by whoever reads this next.
+        "one_sided": one_sided,
+        "bespoke_count": len(bespoke),
+        "agent_count": len(agent),
         "unique_bespoke": [b_index[k] for k in sorted(set(b_index) - set(a_index))],
         "unique_agent": [a_index[k] for k in sorted(set(a_index) - set(b_index))],
     }
@@ -114,9 +132,26 @@ def build_diff(session: Session, week_start: date) -> dict:
 
 def print_diff(diff: dict, log=print) -> None:
     log(f"PLAN DIFF — week {diff['week']}")
+    log(f"  bespoke: {diff.get('bespoke_count', '?')} plan(s) · "
+        f"agent: {diff.get('agent_count', '?')} plan(s)")
     if not diff["pairs"] and not diff["unique_bespoke"] and not diff["unique_agent"]:
         log("  no plans on either side for this week")
         return
+
+    # THE LOUD FAILURE. Previously this fell through to "the planners filled disjoint
+    # slots", which is FALSE when one planner produced nothing — a one-sided comparison
+    # dressed as a two-sided result, which is exactly what A8 exists to prevent.
+    if diff.get("one_sided"):
+        missing = "agent" if not diff.get("agent_count") else "bespoke"
+        present = "bespoke" if missing == "agent" else "agent"
+        log("")
+        log(f"  *** ONE-SIDED — the {missing.upper()} planner produced NOTHING for this "
+            f"week. There is no comparison to make: every 'difference' below is just the "
+            f"{present} plan, and agreement is UNDEFINED, not zero.")
+        if missing == "agent":
+            log("  *** Job 3 (agent LEARN→IDEATE, SUN 07:00) did not write plans_shadow. "
+                "Check its agent_runs row before reading anything below as a judgement.")
+        log("  *** Do not treat this as the planners disagreeing.")
 
     if diff["pairs"]:
         log(f"\n== OVERLAP — {len(diff['pairs'])} slot(s) both planners filled (the Sunday judgement surface) ==")
@@ -135,12 +170,17 @@ def print_diff(diff: dict, log=print) -> None:
                     f"agent: {str(f['agent'])[:44]}{tag_str}")
                 if f.get("note"):
                     log(f"               ↳ {f['note']}")
-    else:
+    elif not diff.get("one_sided"):
+        # "Disjoint slots" is a claim about TWO planners that both spoke. Printing it when
+        # one produced nothing was the false line: a one-sided result dressed as a
+        # two-sided one. The ONE-SIDED banner above already said what happened.
         log("\n== OVERLAP — none: the planners filled disjoint slots ==")
 
     log("\n  agreement rate per field (paired slots only):")
     for field, rate in diff["agreement"].items():
-        log(f"    {field:<10} {rate:.0%}")
+        # None means NOTHING WAS COMPARED — it must not render as a percentage, because
+        # "0%" and "undefined" are the two readings this whole change exists to separate.
+        log(f"    {field:<10} {'—  (nothing to compare)' if rate is None else f'{rate:.0%}'}")
     if diff["unique_bespoke"]:
         log("\n  only bespoke planned:")
         for r in diff["unique_bespoke"]:

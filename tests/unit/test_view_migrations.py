@@ -80,8 +80,8 @@ def test_the_view_migration_is_at_or_after_the_head_chain(repo_root):
         if down:
             downs.add(down.group(1))
     heads = revisions - downs
-    assert heads == {"0008"}, (
-        f"expected a single head 0008; found {sorted(heads)}. A view migration that is not "
+    assert heads == {"0009"}, (
+        f"expected a single head 0009; found {sorted(heads)}. A view migration that is not "
         "on the path to head is exactly as inert as no migration at all.")
 
 

@@ -23,6 +23,7 @@ from app.config import get_config, set_config
 from app.integrations.brevo_client import BrevoCreditsError, substitute_template
 from app.integrations.upload_post_client import (  # noqa: F401
     PAGE_TARGETED_PLATFORMS,
+    _target_owner_reported,
     extract_external_id,
     page_targets,
     verify_publish_target,
@@ -256,10 +257,38 @@ def publish(session: Session, drive, fal, uploader, brevo,
                 # caught on its first occurrence rather than at the first missing metric,
                 # weeks later. Never fatal: the post is already public, and raising here
                 # would leave it PUBLISHED-but-unrecorded, which is worse.
-                mismatch = verify_publish_target(post.channel, targets, resp)
-                if mismatch:
-                    log(f"{post.post_id}: !! TARGET MISMATCH — {mismatch}")
-                    post.park_reason = f"target mismatch: {mismatch}"
+                # THREE STATES, NEVER COLLAPSED. Sunday publishes unattended by operator
+                # decision, so prevention is not available and SURFACING is the entire
+                # safety net. post_1488 and post_1489 sat on a personal timeline for days
+                # precisely because this outcome lived only in a run log.
+                #
+                #   verified   the platform named an owner and it matches config
+                #   mismatch   the platform named an owner and it is WRONG  -> NEEDS YOU
+                #   unverified the platform named no owner at all           -> NEEDS YOU
+                #
+                # `unverified` is not a pass. It means the check could not be performed,
+                # and reporting that as success is the error this build keeps finding.
+                # Both non-verified states reach the digest the same evening, so a
+                # wrong-surface post is deletable in hours rather than days.
+                if post.channel in PAGE_TARGETED_PLATFORMS:
+                    mismatch = verify_publish_target(post.channel, targets, resp)
+                    if mismatch:
+                        state, detail = "mismatch", mismatch
+                    elif _target_owner_reported(resp):
+                        state, detail = "verified", (
+                            f"platform confirmed the post belongs to "
+                            f"{targets.get(post.channel)}")
+                    else:
+                        state, detail = "unverified", (
+                            "the platform response named no owner, so the target could NOT "
+                            "be verified. This is not a pass — check the page by hand.")
+                    post.target_check = {
+                        "state": state, "detail": detail,
+                        "intended": targets.get(post.channel),
+                        "response_keys": sorted(resp) if isinstance(resp, dict) else [],
+                        "checked_at": datetime.now(UTC).isoformat(),
+                    }
+                    log(f"{post.post_id}: TARGET CHECK {state.upper()} — {detail}")
             post.external_post_id = external_id
             post.posted_at = datetime.now(UTC)
             post.status = "PUBLISHED"

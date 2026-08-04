@@ -243,6 +243,19 @@ def page_targets(session) -> dict:
     }
 
 
+OWNER_KEYS = ("page_id", "page_urn", "organization", "owner_id", "author",
+              "facebook_page_id", "target_linkedin_page_id")
+
+
+def _target_owner_reported(response: dict) -> bool:
+    """Did the platform name an owner at all? Separates "verified correct" from "could not
+    be checked" — two outcomes that `verify_publish_target` returning None merges, and that
+    must never be merged where the operator reads them."""
+    if not isinstance(response, dict):
+        return False
+    return any(response.get(k) for k in OWNER_KEYS)
+
+
 def verify_publish_target(platform: str, targets: dict, response: dict) -> str | None:
     """Did the post land on the page we aimed at? Returns a description of the mismatch, or
     None when it matches or when the response says nothing either way.

@@ -74,6 +74,9 @@ class Post(Base):
     # excludes these from scoring and reports them as withdrawn — never as zero.
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     withdrawn_reason: Mapped[str | None] = mapped_column(Text)
+    # {"state": "verified" | "mismatch" | "unverified", ...}. Written by publish for
+    # page-targeted channels; the digest raises the two non-verified states into NEEDS YOU.
+    target_check: Mapped[dict | None] = mapped_column(JSONVariant)
 
     # v3: which planner authored this row ('bespoke' | 'agent'), recorded at insert; and
     # the gate verdict WITH the edit deltas — the deltas are what train taste.
@@ -281,6 +284,9 @@ class AgentRun(Base):
     tools_called: Mapped[list | None] = mapped_column(JSONVariant)
     tokens: Mapped[int | None] = mapped_column(BigInteger)
     cost_cents: Mapped[int | None] = mapped_column(BigInteger)
+    # 'cron' (fired by hermes-agent's scheduler) | 'manual' (run-now over HTTPS). Without
+    # it, a job the operator started by hand is indistinguishable from Sunday's firing.
+    trigger: Mapped[str | None] = mapped_column(Text)
 
 
 class Run(Base):

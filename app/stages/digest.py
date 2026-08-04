@@ -170,16 +170,39 @@ def _needs_you(session: Session, brevo, target: date, cfg: dict) -> dict:
 
     orphans = sweep_orphaned_slots(session)
 
+    # §1.2 — A WRONG PUBLISH TARGET MUST REACH THE OPERATOR THE SAME EVENING.
+    # Sunday publishes unattended by operator decision, so prevention is not available and
+    # surfacing is the entire safety net. post_1488 and post_1489 sat on a personal
+    # timeline for days because this outcome existed only in a run log.
+    #
+    # BOTH non-verified states are raised. `unverified` is not a pass: it means the check
+    # could not be performed, and reporting an unperformed check as success is the error
+    # this whole build keeps re-finding.
+    target_alerts = []
+    for post in session.execute(
+        select(Post).where(Post.status == "PUBLISHED").order_by(Post.post_id)
+    ).scalars():
+        check = post.target_check or {}
+        if check.get("state") in ("mismatch", "unverified") and not post.withdrawn_at:
+            target_alerts.append({
+                "post_id": post.post_id, "channel": post.channel,
+                "state": check.get("state"), "intended": check.get("intended"),
+                "detail": check.get("detail"), "checked_at": check.get("checked_at"),
+            })
+
     section = {
         "video_review": videos, "email_review": emails, "unmeasured": unmeasured,
         "failures": failures, "parked": parked, "doctor_red": doctor_red,
-        "orphaned_slots": orphans,
+        "orphaned_slots": orphans, "target_alerts": target_alerts,
         "brevo_list_count": _live_recipient_count(brevo),
         "doctor_last_run": last_doctor.get("at"),
     }
+    # `target_alerts` MUST be in this tuple. NEEDS YOU renders one line and stops when
+    # `empty` is true, so a section omitted here is a section that can never be seen —
+    # which would reproduce the exact failure §1.2 exists to close, one layer further in.
     section["empty"] = not any(
         section[k] for k in ("video_review", "email_review", "unmeasured", "failures",
-                             "parked", "doctor_red", "orphaned_slots"))
+                             "parked", "doctor_red", "orphaned_slots", "target_alerts"))
     return section
 
 
@@ -531,6 +554,19 @@ def render_digest_text(payload: dict) -> str:
             lines.append(f"🚨 DOCTOR RED — {d.get('name')}: {d.get('detail')}")
         for o in needs["orphaned_slots"]:
             lines.append(f"⚠️  ORPHAN SLOT — {o['post_id']}: {o['reason']}")
+    for alert in needs.get("target_alerts", []):
+        if alert["state"] == "mismatch":
+            lines.append(
+                f"🚩 WRONG SURFACE — {alert['post_id']} · {alert['channel']}: "
+                f"{alert['detail']}")
+            lines.append(f"   intended {alert['intended']} · DELETE IT AT SOURCE, then "
+                         f"reply: withdraw {alert['post_id']}")
+        else:
+            lines.append(
+                f"❓ TARGET UNVERIFIED — {alert['post_id']} · {alert['channel']}: the "
+                f"platform named no owner, so this could NOT be checked (not a pass)")
+            lines.append(f"   intended {alert['intended']} · open the page and confirm; "
+                         f"if wrong, reply: withdraw {alert['post_id']}")
 
     lines += ["", "━━ 2 · WENT OUT TODAY ━━"]
     if not p["went_out_today"]:

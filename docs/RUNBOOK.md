@@ -308,9 +308,33 @@ Seven instances in this build:
 | 6 | `publish-by-slot` proof | reported PROVEN over an empty board — "the pass ran" mistaken for "the pass selects correctly" | asking what would make each proof pass without demonstrating the thing |
 | 7 | **job 2 dispatch** | job 2 had no dispatch, so plan-diff at SUN 08:00 would compare one plan against nothing and report agreement with itself | **a test asserting a structural property — *every timed job has a dispatch* — not a test of plan-diff** |
 
+| 8 | branch-protection ruleset | required the context `ci`; the job published `test`, so the required side had never existed. Also `enforcement: disabled` and `include: []` | `GET /rules/branches/main` → `[]`, the only endpoint that answers "does it APPLY" rather than "does it EXIST" |
+| 9 | CI itself | seven commits produced no run at all; **the evidence was absent and the absence was read as health** | `gh pr view --json mergeable` → `CONFLICTING`. GitHub does not run `pull_request` workflows on an unmergeable PR |
+| 10 | secret scan | sitting at **exit 127** — comments written after a backslash continuation, so the shell executed them. Not running, reporting nothing | reading the step log instead of the step's conclusion |
+| 11 | **the test fixture** | built its schema with `Base.metadata.create_all()` while production builds it with `alembic upgrade head`. **470 tests took the fixture's word for what the schema was** | running the full suite against real Postgres for the first time |
+
 **#7 is the shape of guard that works: assert the property from OUTSIDE the thing.** A test of
 plan-diff would have passed, because plan-diff was correct. What was absent was its input, and
 only a check standing outside both could see that.
+
+### THE GUARDS ARE IN SCOPE FOR THIS QUESTION — AND ARE WHERE IT PAYS BEST
+
+Instances 1–7 are application code. Instances **8–11 all landed in one pass**, the first pass
+in which the question was turned on CI, on branch protection, and on the test fixture. Four
+defects, none in application code, every one reporting green.
+
+The lesson is not "check CI too". It is that **the verification layer had never been
+verified**, so it accumulated exactly the defects it existed to catch, undisturbed, for the
+whole build. When auditing this system, start here — the guards are cheaper to check than the
+code and have a worse track record.
+
+Three probes that answer questions description cannot:
+
+```bash
+gh api repos/kflok23-create/artec_automatedmarketing/rules/branches/main   # APPLIES, not EXISTS
+gh pr view <n> --json mergeable                                            # no runs? check this first
+gh run view <id> --json jobs -q '.jobs[].steps[] | "\(.conclusion)\t\(.name)"'  # per-STEP, not per-run
+```
 
 ---
 
@@ -363,8 +387,32 @@ token is a 409 that breaks the live gate.
 > **No merge to `main` without a green CI run on the exact commit being merged — every `pg`
 > test EXECUTED, not skipped.**
 
-Enforced: `main` requires the `ci` status check and branches must be up to date before
-merging. `artec agent-review` also checks after the fact and reports RED if `main`'s HEAD
+**Enforcement status — CORRECTED 2026-08-04. Read this before trusting the sentence that
+used to be here.** This section previously read "Enforced: `main` requires the `ci` status
+check and branches must be up to date before merging." That was written, believed, and
+repeated across two passes, **and it was false.** A ruleset named `main` did exist and its
+contents matched the sentence exactly — which is why reading the ruleset confirmed it from
+every angle anyone checked. It applied to nothing, for three independent reasons:
+`enforcement: disabled`; `conditions.ref_name.include: []`, so it targeted no branches; and
+it required the context `ci` while the job published `test`.
+
+**`GET /rules/branches/main` is the probe. Everything else is a description.** A ruleset
+that EXISTS is not a ruleset that APPLIES, and only that endpoint distinguishes them. It
+returned `[]`.
+
+**Armed 2026-08-04**, in this order deliberately: publish `ci`, observe it published, THEN
+arm — arming a rule that requires a check nobody publishes locks the repository against
+every future merge. Verify by listing, never by claim:
+
+```bash
+gh api repos/kflok23-create/artec_automatedmarketing/rules/branches/main
+```
+
+Expect three rules: `deletion`, `non_fast_forward`, and `required_status_checks` carrying
+context `ci` with `strict_required_status_checks_policy: true`. **An empty array means
+`main` is unprotected regardless of what any ruleset says about itself.**
+
+`artec agent-review` also checks after the fact and reports RED if `main`'s HEAD
 carries no green run — including the case that matters most, a commit CI never ran against.
 
 **The merge commit names the CI run id that was green.** A merge without one is self-evidently

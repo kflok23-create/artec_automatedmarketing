@@ -212,6 +212,27 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                 "run `artec config seed` — prices live in the endpoint_prices TABLE in v4, "
                 "and an unpriced endpoint is uncallable by design"))
 
+    # v4 §9 — a capability that has never run is not a capability, it is an intention with
+    # code attached. Absent or >90d is YELLOW; a recorded FAILURE is RED.
+    if session is not None:
+        from app.stages.prove import proof_status
+
+        rows = proof_status(session)
+        failed = [r["capability"] for r in rows if r["state"] == "failed"]
+        pending = [r["capability"] for r in rows if r["state"] in ("never", "stale")]
+        if failed:
+            checks.append(Check("capability proofs", False,
+                                f"FAILED: {failed}" + (f"; unproven: {pending}" if pending else ""),
+                                "run `artec prove <capability>` and fix what it reports"))
+        elif pending:
+            checks.append(Check("capability proofs", True,
+                                f"{len(rows) - len(pending)}/{len(rows)} proven; "
+                                f"unproven or stale: {pending}",
+                                warn=True))
+        else:
+            checks.append(Check("capability proofs", True,
+                                f"all {len(rows)} capabilities proven within 90 days"))
+
     # v3 §5: the hermes-brain volume. Local probe when HERMES_HOME is set; otherwise
     # verified through the Postgres row the brain's entrypoint writes at every boot.
     checks.append(check_hermes_home(settings.HERMES_HOME, session))

@@ -114,6 +114,16 @@ class Brevo:
             raise BrevoError(f"create campaign failed: HTTP {resp.status_code}: {resp.text[:300]}")
         return int(resp.json()["id"])
 
+    def delete_campaign(self, campaign_id: int) -> bool:
+        """Used ONLY by `artec prove brevo-send`, which creates a campaign to prove the
+        template contract and then removes it. Deleting a campaign that was never sent
+        cannot reach a subscriber; leaving proof campaigns behind would clutter the account
+        and eventually get one sent by accident."""
+        with httpx.Client(timeout=60) as client:
+            resp = client.delete(f"{BASE}/emailCampaigns/{campaign_id}",
+                                 headers=self._headers())
+        return resp.status_code in (200, 204)
+
     def send_now(self, campaign_id: int) -> None:
         with httpx.Client(timeout=60) as client:
             resp = client.post(f"{BASE}/emailCampaigns/{campaign_id}/sendNow", headers=self._headers())

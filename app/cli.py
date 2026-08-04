@@ -401,6 +401,47 @@ def restore_check_cmd(
             raise typer.Exit(code=1)
 
 
+@cli.command("prove")
+def prove_cli(
+    capability: str = typer.Argument(..., help="one of the nine capabilities"),
+    dump: str = typer.Option(None, "--dump", help="for `restore`: the .dump to verify"),
+    live: bool = typer.Option(False, "--live", help="brevo-send only; refused in 2c-iii"),
+):
+    """Exercise a capability against production and record a dated proof."""
+    settings = _boot()
+    from app.stages import prove as prove_mod
+
+    if capability not in prove_mod.PROVERS:
+        typer.echo(f"unknown capability. one of: {', '.join(sorted(prove_mod.PROVERS))}",
+                   err=True)
+        raise typer.Exit(code=2)
+    with record_run("prove", {"capability": capability}) as (session, rec):
+        try:
+            proof = prove_mod.run(session, capability, settings=settings, log=rec.log,
+                                  dump_path=dump, live=live)
+        except prove_mod.NotProvable as e:
+            typer.echo(f"NOT PROVABLE HERE: {e}", err=True)
+            raise typer.Exit(code=3) from None
+        typer.echo(("PROVEN — " if proof.ok else "FAILED — ") + proof.detail)
+        if not proof.ok:
+            raise typer.Exit(code=1)
+
+
+@cli.command("proofs")
+def proofs_cli():
+    """The proof matrix: which capabilities are proven, stale, failed, or never run."""
+    _boot()
+    from app.db import session_scope
+    from app.stages.prove import proof_status
+
+    with session_scope() as session:
+        for row in proof_status(session):
+            mark = {"proven": "OK  ", "stale": "OLD ", "failed": "FAIL", "never": "----"}[row["state"]]
+            s1 = " [S1]" if row["s1"] else ""
+            typer.echo(f"{mark} {row['capability']:<20}{s1:<6} {row.get('at') or 'never run'}"
+                       f"  {row.get('detail', '')[:60]}")
+
+
 @cli.command("jobs")
 def jobs_cmd():
     """The twelve jobs, their owners, and how a human invokes each one by hand."""

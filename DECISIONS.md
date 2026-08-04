@@ -550,3 +550,63 @@ unless marked.
     (never a pass) without a token; the merge commit names the green run id; Checkpoint 1
     reports whether the rule held. None of that PREVENTS a bad merge. Nothing on this plan
     can. It makes one visible, which is the difference between a rule and a hope.
+
+67. **v4 · CI was never silent — the QUERY was the bug.** `actions/runs?head_sha=<branch
+    sha>` returned `total_count: 0` while three green runs sat in the Actions tab, because
+    a run triggered by `pull_request` records the MERGE commit as `head_sha`, not the branch
+    commit. `main` worked only because `main` receives push events. Fixed by falling back to
+    `?branch=<ref>` and matching `pull_requests[].head.sha`; a test drives a PR-triggered
+    run, and another asserts the widened query did not widen what COUNTS as covered.
+    **This is "a check aimed at the wrong thing" for the fourth time** (the circular guard,
+    the StaticPool lock, the memory audit's blind spot, and now the CI gate reporting a
+    false NOT CHECKED on exactly the branch it exists to guard). The pattern is now explicit
+    enough to look for by name.
+
+68. **v4 · merge condition 5 is ENFORCED, not written.** The repo is public and `main`
+    requires the `ci` status check with "require branches to be up to date before merging"
+    on — so a stale `v4-stage-2b` cannot merge and silently revert the cherry-pick that
+    landed on `main` after the branch was cut. The written rule and `main_ci_gate_check` are
+    now defence in depth rather than the only guard.
+
+69. **v4 · full-history credential audit COMPLETED 2026-08-04 — clean.** A full-history scan
+    for added credential files returned only `.env.example` and the three `railway.*.json`
+    build configs. A full-history diff scan for credential-shaped strings matched only the
+    scanner's own patterns: the CI `grep -rInE` step, the equivalent Python patterns in
+    acceptance test 2j, a `whsec_…` placeholder in docs, and the
+    `whsec_test_secret_000000000` fixture. **No real credential ever reached a commit.**
+    Consequence applied: the CI secret-scan step now excludes `ci.yml` AND
+    `test_hygiene.py`. A scanner that matches its own definition eventually flags itself and
+    gets muted, and a muted scanner is no scanner.
+
+70. **v4 · price reconciliation is job 1's FIRST action, and never writes `config`.**
+    Reconciling after the weekly snapshot would produce a report costed against rates
+    already known to be wrong, so it runs before it. A delta is MATERIAL when it changes
+    `calls_at_cap` — how many reference renders USD 2.50 affords — because that is what the
+    cap actually means; material deltas are HELD for `acknowledge_price_table` rather than
+    applied, and small ones apply and are reported. A failed pull does not fail job 1: the
+    table is flagged stale and the digest says so. fal publishes no pricing API this project
+    has confirmed, so `pull_rates` PROBES a candidate and reports exactly what came back —
+    it never fabricates a rate, and an unexpected response shape says so rather than parsing
+    to silence.
+
+71. **v4 · `prove` may write `config.proofs` because it is NOT an agent tool.** The
+    invariant is that no agent TOOL writes `config` — the capability boundary is the
+    security model, and it is about what the MODEL can reach. `prove` is CLI/HTTPS,
+    operator-driven, registered with no plugin and present in no schema; the seam grep still
+    returns zero. Stated so the apparent contradiction is not rediscovered later and
+    resolved by weakening the rule, which is the direction these things always erode.
+
+72. **v4 · three defects found by RUNNING the proofs, not by reading them.**
+    (a) `sunday-cron` crashed with `TypeError: NoneType is not iterable` — `hermes cron
+    list` prints box-drawing characters, the platform decoder raised inside `subprocess`,
+    and `stdout` came back None. (b) A prover that raised aborted the whole run and left the
+    rest of the matrix unexamined; an error is now recorded as a FAILURE, while
+    `NotProvable` stays a third state. (c) `audit-memory` and `sunday-cron` both reported
+    confidently about the WRONG HOST — on a development machine `HERMES_HOME` points at a
+    personal hermes install, and the audit dutifully found 568 metric-shaped hits in
+    somebody else's notes. Both now require the artec plugin to be present under
+    `HERMES_HOME` before they will judge anything.
+    (d) And `publish-by-slot` — an S1 — reported PROVEN over an empty board. "The pass ran"
+    is not "the pass selects correctly"; proving the first unattended action this system
+    takes against nothing is exactly the comparison-with-a-missing-side pattern. It now
+    fails with that sentence until there is something to select.

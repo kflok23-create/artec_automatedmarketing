@@ -33,7 +33,10 @@ jobs:
       - name: Secret scan
         run: |
           ! grep -rInE "(sk-ant-api[0-9A-Za-z_-]{10,}|whsec_[0-9A-Za-z]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----|[0-9]{8,10}:AA[0-9A-Za-z_-]{30,})" \
-            --exclude-dir=.git --exclude-dir=.venv --exclude=ci.yml .
+            # A scanner that matches its own definition eventually flags itself and gets
+            # muted, and a muted scanner is no scanner. ci.yml holds the patterns; the
+            # hygiene test holds the same patterns in Python.
+            --exclude-dir=.git --exclude-dir=.venv --exclude=ci.yml --exclude=test_hygiene.py .
       - name: Unit + acceptance tests (SQLite substrate)
         run: uv run pytest
       - name: Migrations against throwaway Postgres

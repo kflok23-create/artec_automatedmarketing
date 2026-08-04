@@ -86,10 +86,21 @@ def publish_cmd(body: CommandRequest):
 
 @router.post("/report")
 def report_cmd(body: CommandRequest):
+    """Job 1. Price reconciliation runs FIRST, before the snapshot — reconciling afterwards
+    would produce a report costed against rates already known to be wrong."""
+    from app.config import get_config
     from app.stages.report import build_report
+    from app.toolbox.reconcile import reconcile_prices
 
-    with record_run("report", {"week": str(body.week) if body.week else None}) as (session, _rec):
-        return build_report(session, week_start=body.week)
+    with record_run("report", {"week": str(body.week) if body.week else None}) as (session, rec):
+        cap = int(get_config(session, "render_run_cap_cents", 250))
+        recon = reconcile_prices(session, cap, log=rec.log)
+        report = build_report(session, week_start=body.week)
+        report["reconciliation"] = {
+            "pulled": recon.pulled, "source": recon.source,
+            "applied": recon.applied, "needs_acknowledgement": recon.needs_acknowledgement,
+            "stale": recon.stale}
+        return report
 
 
 @router.post("/digest-prepare")
@@ -257,6 +268,29 @@ def measure_reminder_cmd():
 
     with record_run("measure-reminder", {}) as (session, rec):
         return run_measure_job(session, log=rec.log)
+
+
+@router.post("/prove")
+def prove_cmd(body: CommandRequest):
+    """Exercise one capability and record a dated proof. CLI/HTTPS only — never an agent
+    tool, which is why it may write `config.proofs` without breaching the invariant."""
+    from app.stages import prove as prove_mod
+
+    capability = body.post_id or ""
+    if capability not in prove_mod.PROVERS:
+        raise HTTPException(status_code=422,
+                            detail=f"pass a capability (post_id field): "
+                                   f"{sorted(prove_mod.PROVERS)}")
+    with record_run("prove", {"capability": capability}) as (session, rec):
+        try:
+            proof = prove_mod.run(session, capability, settings=get_settings(), log=rec.log)
+        except prove_mod.NotProvable as e:
+            # NOT a pass and NOT a failure. Recording a skip as a proof is how a capability
+            # comes to be believed without ever having run.
+            raise HTTPException(status_code=409,
+                                detail=f"not provable here: {e}") from None
+        return {"capability": capability, "ok": proof.ok, "detail": proof.detail,
+                "at": proof.at, "evidence": proof.evidence}
 
 
 @router.post("/plan-diff")

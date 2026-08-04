@@ -403,3 +403,55 @@ def test_an_api_failure_is_not_checked_rather_than_green():
 
     result = main_ci_gate_check(fetch=boom, log=lambda *_: None)
     assert result["checked"] is False and result["green"] is False
+
+
+def test_a_pr_triggered_run_is_FOUND(monkeypatch):
+    """THE 0.1 BUG. A `pull_request` run records the MERGE commit as head_sha, so
+    `?head_sha=<branch sha>` returns nothing while green runs sit in the Actions tab — and
+    the gate reported NOT CHECKED on exactly the branch it exists to guard."""
+    branch_sha = "594d2dac45bfb9074019e5591a715600457967f9"
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if url.endswith("/commits/v4-stage-2b"):
+            return {"sha": branch_sha}
+        if "head_sha=" in url:
+            return {"workflow_runs": []}          # exactly what GitHub returned
+        return {"workflow_runs": [{
+            "id": 30872122722, "conclusion": "success",
+            "head_sha": "deadbeef" * 5,            # the MERGE commit, not the branch commit
+            "pull_requests": [{"head": {"sha": branch_sha}}]}]}
+
+    result = main_ci_gate_check(fetch=fetch, ref="v4-stage-2b", log=lambda *_: None)
+    assert result["checked"] is True and result["green"] is True
+    assert result["run_id"] == 30872122722
+    assert any("head_sha=" in u for u in calls), "the direct lookup is still tried first"
+    assert any("branch=v4-stage-2b" in u for u in calls), "and the branch lookup is the fix"
+
+
+def test_a_branch_run_for_a_different_commit_does_not_count():
+    """Widening the query must not widen what counts as covered."""
+    def fetch(url):
+        if url.endswith("/commits/v4-stage-2b"):
+            return {"sha": "aaa"}
+        if "head_sha=" in url:
+            return {"workflow_runs": []}
+        return {"workflow_runs": [{"id": 1, "conclusion": "success", "head_sha": "bbb",
+                                   "pull_requests": [{"head": {"sha": "ccc"}}]}]}
+
+    result = main_ci_gate_check(fetch=fetch, ref="v4-stage-2b", log=lambda *_: None)
+    assert result["checked"] is True and result["green"] is False
+    assert "no CI run" in result["reason"]
+
+
+def test_a_push_triggered_run_still_resolves_directly():
+    def fetch(url):
+        if url.endswith("/commits/main"):
+            return {"sha": "a1fa8fd"}
+        if "head_sha=a1fa8fd" in url:
+            return {"workflow_runs": [{"id": 30872795253, "conclusion": "success",
+                                       "head_sha": "a1fa8fd"}]}
+        raise AssertionError("the branch fallback must not be needed for a push run")
+
+    assert main_ci_gate_check(fetch=fetch, log=lambda *_: None)["green"] is True

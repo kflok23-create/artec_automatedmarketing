@@ -251,9 +251,35 @@ GITHUB_API = "https://api.github.com"
 DEFAULT_REPO = "kflok23-create/artec_automatedmarketing"
 
 
-def main_ci_gate_check(fetch=None, repo: str | None = None, log=print) -> dict:
-    """Whether main's HEAD carries a green CI run. `fetch(url) -> dict | None` is injected
-    by tests; in production it is an authenticated GitHub API GET."""
+def _runs_for_commit(fetch, repo: str, sha: str, ref: str) -> list[dict]:
+    """Every CI run that actually covers this commit.
+
+    THE BUG THIS FIXES: a run triggered by `pull_request` does NOT carry the branch commit
+    as `head_sha` — GitHub records the merge commit. So `actions/runs?head_sha=<branch sha>`
+    returned `total_count: 0` while three green runs sat in the Actions tab, and the gate
+    reported NOT CHECKED on exactly the branch it exists to guard. That is "a check aimed at
+    the wrong thing" for the fourth time in this build; the pattern is now explicit enough
+    to look for.
+
+    `main` worked only because `main` receives push events, whose head_sha IS the commit.
+    """
+    direct = (fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?head_sha={sha}") or {})
+    runs = list(direct.get("workflow_runs") or [])
+    if runs:
+        return runs
+    # PR-triggered: match on the run's pull_requests[].head.sha, which is the branch commit.
+    by_branch = (fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?branch={ref}") or {})
+    return [run for run in (by_branch.get("workflow_runs") or [])
+            if run.get("head_sha") == sha
+            or any((pr.get("head") or {}).get("sha") == sha
+                   for pr in (run.get("pull_requests") or []))]
+
+
+def main_ci_gate_check(fetch=None, repo: str | None = None, ref: str = "main",
+                       log=print) -> dict:
+    """Whether `ref`'s HEAD carries a green CI run — push-triggered OR pull_request-triggered.
+    `fetch(url) -> dict | None` is injected by tests; in production it is an authenticated
+    GitHub API GET."""
     repo = repo or os.environ.get("GITHUB_REPOSITORY") or DEFAULT_REPO
 
     if fetch is None:
@@ -273,21 +299,20 @@ def main_ci_gate_check(fetch=None, repo: str | None = None, log=print) -> dict:
             return response.json() if response.status_code == 200 else None
 
     try:
-        head = fetch(f"{GITHUB_API}/repos/{repo}/commits/main")
+        head = fetch(f"{GITHUB_API}/repos/{repo}/commits/{ref}")
         sha = (head or {}).get("sha")
         if not sha:
-            log("agent-review: merge-gate NOT CHECKED — could not resolve main's HEAD")
+            log(f"agent-review: merge-gate NOT CHECKED — could not resolve {ref}'s HEAD")
             return {"checked": False, "green": False, "reason": "HEAD unresolved"}
-        runs = fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?head_sha={sha}") or {}
+        workflow_runs = _runs_for_commit(fetch, repo, sha, ref)
     except Exception as e:                                    # noqa: BLE001
         log(f"agent-review: merge-gate NOT CHECKED — {type(e).__name__}: {e}")
         return {"checked": False, "green": False, "reason": f"{type(e).__name__}"}
 
-    workflow_runs = runs.get("workflow_runs") or []
     if not workflow_runs:
         # The dangerous case, and the one the rule exists to catch: a commit on main that
         # CI never ran against at all.
-        log(f"agent-review: RED — main HEAD {sha[:7]} has NO CI run. The written merge rule "
+        log(f"agent-review: RED — {ref} HEAD {sha[:7]} has NO CI run. The merge gate "
             "requires a green run on the exact commit being merged.")
         return {"checked": True, "green": False, "sha": sha, "run_id": None,
                 "reason": "no CI run for this commit"}
@@ -295,10 +320,10 @@ def main_ci_gate_check(fetch=None, repo: str | None = None, log=print) -> dict:
     latest = workflow_runs[0]
     green = latest.get("conclusion") == "success"
     if green:
-        log(f"agent-review: merge gate held — main HEAD {sha[:7]} has a green CI run "
+        log(f"agent-review: merge gate held — {ref} HEAD {sha[:7]} has a green CI run "
             f"({latest.get('id')})")
     else:
-        log(f"agent-review: RED — main HEAD {sha[:7]} CI run {latest.get('id')} concluded "
+        log(f"agent-review: RED — {ref} HEAD {sha[:7]} CI run {latest.get('id')} concluded "
             f"{latest.get('conclusion')!r}, not 'success'.")
     return {"checked": True, "green": green, "sha": sha, "run_id": latest.get("id"),
             "reason": latest.get("conclusion")}

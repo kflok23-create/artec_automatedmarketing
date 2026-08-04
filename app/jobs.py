@@ -43,10 +43,13 @@ class Job:
 
 
 JOBS: tuple[Job, ...] = (
-    Job(1, "publish-by-slot", "daily at each config slot_times entry", ARTEC,
-        "app.scheduler.run_publish_job", "/commands/publish-slot", "artec publish",
-        "APPROVED_TO_SEND enters here and nowhere earlier — an approval waits for the next "
-        "occurrence of its slot"),
+    Job(1, "report", "Sunday 06:00", ARTEC,
+        "app.stages.report.build_report", "/commands/report", "artec report",
+        "OPERATOR-CONFIRMED (2c-iii): job 1 is the weekly report snapshot at SUN 06:00, "
+        "which CONTRADICTS the first reconstruction (report was 7, publish-by-slot was 1). "
+        "Price reconciliation is this job's FIRST action, before the snapshot, so the "
+        "report, the gate and every later render see reconciled rates. One anchor is not a "
+        "table: everything else here is still reconstructed."),
     Job(2, "assets-sync", "daily 05:00", ARTEC,
         "app.stages.assets_sync.sync", "/commands/assets-sync", "artec assets sync"),
     Job(3, "render", "daily 06:00", ARTEC,
@@ -65,8 +68,11 @@ JOBS: tuple[Job, ...] = (
     Job(6, "weekly-gate", "Sunday 09:00", BRAIN,
         "deploy/hermes-brain/cron-weekly-gate.txt", "", "",
         "Touch 1 of the 7-touch contract — the one thing that never degrades"),
-    Job(7, "report", "Monday 08:00", ARTEC,
-        "app.stages.report.build_report", "/commands/report", "artec report"),
+    Job(7, "publish-by-slot", "daily at each config slot_times entry", ARTEC,
+        "app.scheduler.run_publish_job", "/commands/publish-slot", "artec publish",
+        "APPROVED_TO_SEND enters here and nowhere earlier — an approval waits for the next "
+        "occurrence of its slot. NUMBER RECONSTRUCTED: it moved off 1 when the operator "
+        "confirmed job 1 is the report."),
     Job(8, "pg-dump", "daily 03:00", ARTEC,
         "app.stages.backup.run_backup", "/commands/backup", "artec backup",
         "restore-check rides this job on day_of_month == 1 — still twelve jobs"),
@@ -107,6 +113,8 @@ NON_JOB_ROUTES: dict[str, str] = {
     "/commands/wishlist-match": "runs inside job 2; exposed for the monthly wishlist review",
     "/commands/media/{post_id}": "not a job — deliver_video reads the publish bytes here",
     "/commands/gate": "409 by design: the gate is an interactive Telegram session",
+    "/commands/prove": "not a job — operator-driven capability proofs (§9). CLI/HTTPS "
+                       "only, never an agent tool, which is why it may write config.proofs",
     "/commands/restore-check": "rides job 8 monthly; exposed so a restore can be proven "
                                "on demand, which is the only time anyone wants it",
 }

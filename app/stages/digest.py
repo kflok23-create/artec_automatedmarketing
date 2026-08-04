@@ -289,6 +289,16 @@ def _price_status(session: Session) -> dict:
     }
 
 
+def _unproven(session: Session) -> list[dict]:
+    """§9 — the capabilities nobody has watched run. Listed weekly until each goes green,
+    because a capability believed-but-never-exercised is the same shape as a check aimed at
+    the wrong thing: it reports nothing, and nothing reads as fine."""
+    from app.stages.prove import unproven
+
+    return [{"capability": r["capability"], "state": r["state"], "s1": r["s1"]}
+            for r in unproven(session)]
+
+
 def _agent_posture(cfg: dict, spent_cents: int) -> dict:
     """A6·2 — what the brain may still spend the week's budget on. The degradation ORDER is
     the point: scouting goes first, the gate conversation shortens second, and the gate
@@ -369,6 +379,7 @@ def _spend_and_health(session: Session, brevo, cfg: dict, list_count: int | None
         "email_min_recipients": cfg.get("email_min_recipients"),
         "agent_posture": _agent_posture(cfg, agent_cents),
         "memory_audit": get_config(session, "memory_audit", None),
+        "unproven_capabilities": _unproven(session),
         "price_table": price_table(session),
         "price_status": _price_status(session),
         "stale_prices": stale_prices(session),
@@ -622,6 +633,12 @@ def render_digest_text(payload: dict) -> str:
                 detail = hit.get("detail") or "numbers belong in Postgres, not agent memory"
                 lines.append(f"   {hit.get('file')}:{hit.get('line')} "
                              f"{hit.get('match')!r} — {detail}")
+    pending = s.get("unproven_capabilities") or []
+    if pending:
+        s1 = [r["capability"] for r in pending if r["s1"]]
+        lines.append(f"unproven capabilities ({len(pending)}): "
+                     + ", ".join(r["capability"] for r in pending)
+                     + (f"  ·  S1 UNPROVEN: {', '.join(s1)}" if s1 else ""))
     sc = s["scouting"]
     if sc is None:
         lines.append("scouting: NOT YET PROBED — the brain probes the search backend at "

@@ -5,6 +5,7 @@ Unit tests run on in-memory SQLite (DECISIONS.md #7)."""
 from __future__ import annotations
 
 import os
+import pathlib
 
 DUMMY_ENV = {
     "DATABASE_URL": "sqlite://",
@@ -65,7 +66,24 @@ def engine(request):
         with eng.begin() as conn:
             conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             conn.execute(text("CREATE SCHEMA public"))
-        Base.metadata.create_all(eng)
+        # MIGRATIONS, not create_all. THE FIRST FULL POSTGRES RUN FOUND THIS: six tests
+        # failed with `relation "post_id_seq" does not exist`, because `create_all` builds
+        # TABLES from model metadata and the post-id allocator is a SEQUENCE created by
+        # migration 0004. Production's schema comes from `alembic upgrade head`; a fixture
+        # that builds it another way is testing a schema that never ships.
+        #
+        # It also exposed a real asymmetry, recorded rather than papered over:
+        # `app/post_ids.py` has `ensure_allocator()` (create-if-missing) on the SQLite path
+        # and NOTHING equivalent on the Postgres path. Production is protected only because
+        # the pre-deploy step runs the migrations.
+        from alembic import command as alembic_command
+        from alembic.config import Config as AlembicConfig
+
+        cfg = AlembicConfig()
+        cfg.set_main_option("script_location", str(
+            pathlib.Path(__file__).resolve().parent.parent / "app" / "migrations"))
+        cfg.set_main_option("sqlalchemy.url", _normalize_pg(url))
+        alembic_command.upgrade(cfg, "head")
         with eng.begin() as conn:
             conn.execute(text(V_BRIEF_SQL))
         yield eng

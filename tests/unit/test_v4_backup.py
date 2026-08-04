@@ -64,17 +64,15 @@ def test_no_commands_route_belongs_to_nobody():
 def test_the_schedule_is_EXACTLY_the_twelve_and_nothing_else():
     """§2: the twelve in §3, and only those. Any job not on that list is a defect — so a
     thirteenth cannot appear without this failing."""
-    from app.jobs import RETIRED, UNKNOWN, brain_jobs, unknown_jobs
+    from app.jobs import RETIRED, brain_jobs
 
     assert len(JOBS) == 12
     assert [j.number for j in JOBS] == list(range(1, 13))
     assert len(brain_jobs()) == 3, "jobs 3, 5 and 12 are hermes-agent cron on the brain"
     assert {j.number for j in brain_jobs()} == {3, 5, 12}
+    assert len(artec_jobs()) == 9, "the scheduler owns the other nine"
     # Retired jobs must not reappear under any number.
     assert not [j for j in JOBS if j.name in RETIRED]
-    # An unrecovered §3 slot is DECLARED, never filled with a guess.
-    assert [j.number for j in unknown_jobs()] == [7]
-    assert unknown_jobs()[0].owner == UNKNOWN
 
 
 def test_the_nightly_chain_is_ordered_and_never_races_delivery():
@@ -85,7 +83,7 @@ def test_the_nightly_chain_is_ordered_and_never_races_delivery():
     assert by_name["assets-sync"].at == "20:30"
     assert by_name["doctor-sweep"].at == "20:40"
     assert by_name["digest-prepare"].at == "20:55"
-    assert "21:05" in by_name["digest-delivery"].schedule
+    assert "21:00" in by_name["digest-delivery"].schedule
     order = [by_name[n].at for n in ("assets-sync", "doctor-sweep", "digest-prepare")]
     assert order == sorted(order), "the chain must be in ascending time order"
 
@@ -108,13 +106,14 @@ def test_plan_diff_is_a_job_and_lands_before_the_gate():
     """Without it the Sunday gate has nothing to compare and shadow mode proves nothing."""
     by_name = {j.name: j for j in JOBS}
     assert by_name["plan-diff"].at == "0 08:00"
-    assert by_name["plan-diff"].at < by_name["weekly-gate"].schedule.replace("Sunday ", "0 ")
+    assert by_name["plan-diff"].at == "0 08:00" < "0 09:00"
+    # job 2 before job 3, or plan-diff has one side and agrees with itself
+    assert by_name["bespoke-learn-ideate"].at == "0 06:30"
 
 
 def test_there_are_twelve_jobs_and_the_artec_ones_are_mirrored():
-    # EIGHT artec-owned jobs, three brain cron, one unrecovered §3 slot.
-    assert len(artec_jobs()) == 8
-    assert {j.owner for j in JOBS} >= {ARTEC, BRAIN}
+    assert len(artec_jobs()) == 9
+    assert {j.owner for j in JOBS} == {ARTEC, BRAIN}
     assert len({j.number for j in JOBS}) == 12, "job numbers are unique"
 
 
@@ -279,22 +278,21 @@ def test_the_jobs_command_lists_all_twelve():
     assert "brain — hermes cron" in result.stdout
 
 
-def test_the_registry_says_which_numbers_are_still_unrecovered():
-    """The blanket "RECONSTRUCTED, NOT RECOVERED" caveat is gone — §3's times are now known
-    — but two slots genuinely are not, and a registry that implied otherwise would be worse
-    than one that says so."""
+def test_the_registry_is_now_verbatim_and_the_caveat_is_retired():
+    """The caveat named exactly which two slots were unrecovered; §3 supplied both, so it is
+    gone. A caveat that outlives its reason becomes noise."""
     import app.jobs as jobs_mod
 
-    assert "RECONSTRUCTED, NOT RECOVERED" not in (jobs_mod.__doc__ or "")
-    assert "TWO NUMBERS ARE STILL UNRECOVERED" in (jobs_mod.__doc__ or "")
+    assert "RECONSTRUCTED" not in (jobs_mod.__doc__ or "")
+    assert "§3, verbatim" in (jobs_mod.__doc__ or "")
     assert os.path.exists("app/jobs.py")
 
 
 def test_every_artec_job_has_a_firing_time_except_the_slot_driven_one():
-    """Job 2 is slot-driven and has no fixed time by design. Every other artec job must
+    """Job 7 is slot-driven and has no fixed time by design. Every other artec job must
     have one, or it is a job that never fires."""
     timeless = [j.number for j in artec_jobs() if not j.at]
-    assert timeless == [2], f"artec jobs with no firing time: {timeless}"
+    assert timeless == [7], f"artec jobs with no firing time: {timeless}"
 
 
 def test_the_scheduler_TICK_reads_the_registry(session, monkeypatch):
@@ -330,8 +328,8 @@ def test_the_scheduler_lists_its_own_next_runs_with_an_explicit_offset():
     from app.scheduler import next_runs
 
     rows = next_runs()
-    # seven timed artec jobs, plus job 6's Monday retry = eight firings; job 2 is slot-driven
-    assert len(rows) == 8
+    # eight timed artec jobs, plus job 6's Monday retry = nine firings; job 7 is slot-driven
+    assert len(rows) == 9
     assert all("+08:00" in r["next_run"] for r in rows)
     sunday = [r for r in rows if r["at"].startswith("0 ")]
     assert sunday, "the Sunday jobs must resolve to a Sunday"
@@ -339,3 +337,19 @@ def test_the_scheduler_lists_its_own_next_runs_with_an_explicit_offset():
         from datetime import datetime
 
         assert datetime.fromisoformat(row["next_run"]).weekday() == 6
+
+
+def test_every_timed_job_has_a_dispatch():
+    """A job with a time and no dispatch raises at its firing minute — job 2 did, and would
+    have failed at SUN 06:30 with plan-diff then agreeing with itself two hours later."""
+    import inspect
+
+    from app import scheduler
+    from app.jobs import artec_jobs
+
+    source = inspect.getsource(scheduler.run_registry_job)
+    for job in artec_jobs():
+        if not job.at:
+            continue          # job 7 is slot-driven and handled by the slot pass
+        assert f'job.name == "{job.name}"' in source, \
+            f"job {job.number} {job.name} fires at {job.at} and has no dispatch"

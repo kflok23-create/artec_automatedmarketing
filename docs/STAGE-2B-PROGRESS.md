@@ -504,3 +504,54 @@ enough; I cannot mint it.
 
 **Open question for 2c-iv:** the job NUMBERING is reconstructed. The count is right and the
 bodies are real, but confirm the numbers before cron registration makes them load-bearing.
+
+
+---
+
+## FINAL PASS — stopped at the seam between C and D
+
+**Seam reached: A → B → C complete. D (documentation), E (merge) and F (Checkpoint 1) are
+NOT done.** Part H's rule applied: stopping before E is always safe; stopping inside it is
+not.
+
+### A · the schedule is §3 verbatim
+Twelve jobs, nine scheduler + three brain. Job 2 is the bespoke learn+ideate at SUN 06:30
+(the tenth artec job deduced from function before the table existed); job 7 is
+publish-by-slot, the only job with no fixed time, which is why it resisted a time-ordered
+registry. The UNKNOWN placeholder and its test are gone. Ordering constraints are asserted:
+job 2 before job 3, job 4 before the gate, and the 20:30 → 20:40 → 20:55 → 21:00 chain in
+ascending order. A repo test fails on a thirteenth.
+
+```
+   1. report                at=0 06:00   next=2026-08-09T06:00:00+08:00
+   2. bespoke-learn-ideate  at=0 06:30   next=2026-08-09T06:30:00+08:00
+   4. plan-diff             at=0 08:00   next=2026-08-09T08:00:00+08:00
+   6. render                at=0 10:00   next=2026-08-09T10:00:00+08:00
+   6. render                at=1 10:00   next=2026-08-10T10:00:00+08:00
+   8. pg-dump               at=03:00     next=2026-08-05T03:00:00+08:00
+   9. assets-sync           at=20:30     next=2026-08-04T20:30:00+08:00
+  10. doctor-sweep          at=20:40     next=2026-08-04T20:40:00+08:00
+  11. digest-prepare        at=20:55     next=2026-08-04T20:55:00+08:00
+```
+
+### B · registration
+`tick()` fires from the registry. The brain's entrypoint now registers THREE cron jobs and
+fails the boot if any is absent from `hermes cron list`, including a check that
+`nightly-digest` does not list a SUNDAY next-run. The scheduler lists its own nine at boot.
+A new test asserts every timed job HAS a dispatch — job 2 did not, and would have raised at
+SUN 06:30 with plan-diff agreeing with itself two hours later.
+
+### C · D1 code side
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` are optional in Settings so the bespoke services
+boot without them, and the doctor assertion is INVERTED: on a service with no `HERMES_HOME`
+a present token is RED. **The variable deletion is a POST-DEPLOY step** — deleting while the
+manifest still required them would stop `artec api` booting.
+
+### NOT DONE
+D (RUNBOOK: manual cycle, post-merge proof runbook, merge rule, review question, D1
+sequencing, post-deploy checklist; DECISIONS consolidation) · E (the merge) · F (Checkpoint 1).
+
+### What the next pass must read
+`app/jobs.py` (the registry IS the schedule), `app/scheduler.py` (`run_registry_job`,
+`next_runs`), `deploy/hermes-brain/entrypoint.sh` step 9, this file, and DECISIONS #77–79.
+Then D → E → F in order.

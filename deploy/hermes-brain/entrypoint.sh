@@ -143,13 +143,24 @@ if ! hermes cron list 2>/dev/null | grep -qi "weekly-gate"; then
     hermes cron create "0 9 * * 0" "$(cat /bootstrap/cron-weekly-gate.txt)" \
         --name weekly-gate --deliver telegram
 fi
+# Job 12 - MON-SAT 21:00. Numeric day-of-week ONLY: `cron create` has been observed
+# REJECTING `SUN` while exiting 0, which is why nothing here trusts an exit code.
+if ! hermes cron list 2>/dev/null | grep -qi "nightly-digest"; then
+    hermes cron create "0 21 * * 1-6" "$(cat /bootstrap/cron-nightly-digest.txt)" \
+        --name nightly-digest --deliver telegram
+fi
 echo "--- proof: hermes cron list ---"
 CRON_LIST=$(hermes cron list 2>&1)
 printf '%s\n' "$CRON_LIST"
 printf '%s' "$CRON_LIST" | grep -qi "learn-ideate" || fail "cron job learn-ideate did not register — create exits 0 even on failure; read its output above"
 printf '%s' "$CRON_LIST" | grep -qi "weekly-gate" || fail "cron job weekly-gate did not register — create exits 0 even on failure; read its output above"
+printf '%s' "$CRON_LIST" | grep -qi "nightly-digest" || fail "cron job nightly-digest (job 12) did not register — create exits 0 even on failure; read its output above"
+# Job 12 is MON-SAT. A listing whose next run lands on a Sunday means the expression was
+# taken as daily, and the operator would be interrupted on the one evening the gate owns.
+printf '%s' "$CRON_LIST" | grep -i "nightly-digest" | grep -qi "sun" \
+    && fail "nightly-digest lists a SUNDAY next-run — job 12 must be MON-SAT (0 21 * * 1-6)"
 printf '%s' "$CRON_LIST" | grep -q "+08:00" || fail "cron next-run times are not Asia/Singapore (+08:00) — check the image TZ"
-echo "both Sunday jobs registered, times resolve to +08:00 (Asia/Singapore)"
+echo "all THREE brain cron jobs registered (3 learn-ideate, 5 weekly-gate, 12 nightly-digest); times resolve to +08:00 (Asia/Singapore)"
 
 step "10/10 gateway (foreground)"
 exec hermes gateway run

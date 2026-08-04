@@ -233,6 +233,26 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
             checks.append(Check("capability proofs", True,
                                 f"all {len(rows)} capabilities proven within 90 days"))
 
+    # D1 — the assertion FLIPS. On a bespoke service a Telegram token must NOT exist: the
+    # brain becomes the sole Telegram owner STRUCTURALLY rather than by policy, and two
+    # pollers on one token is a 409 that breaks the live gate. On the brain it must exist.
+    on_brain = bool(settings.HERMES_HOME)
+    has_token = bool(settings.TELEGRAM_BOT_TOKEN or settings.TELEGRAM_CHAT_ID)
+    if on_brain:
+        checks.append(Check("telegram ownership", has_token,
+                            "brain holds the token, as it must" if has_token
+                            else "the brain has NO Telegram token — the gateway cannot connect",
+                            "set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID on artec-brain"))
+    else:
+        checks.append(Check(
+            "telegram ownership", not has_token,
+            "no Telegram credentials on this service, as required (D1)" if not has_token
+            else "TELEGRAM_BOT_TOKEN/CHAT_ID are STILL SET on this bespoke service — the "
+                 "brain is meant to be the only Telegram owner, and a second poller on one "
+                 "token is a 409 that breaks the live gate",
+            "delete TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from artec api and "
+            "artec-scheduler (post-deploy step of D1)"))
+
     # v3 §5: the hermes-brain volume. Local probe when HERMES_HOME is set; otherwise
     # verified through the Postgres row the brain's entrypoint writes at every boot.
     checks.append(check_hermes_home(settings.HERMES_HOME, session))

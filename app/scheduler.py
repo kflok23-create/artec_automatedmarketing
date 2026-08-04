@@ -25,9 +25,10 @@ from app.settings import get_settings, install_redaction
 
 SGT = ZoneInfo("Asia/Singapore")
 
+# LEGACY BANNER ONLY — app/jobs.py:JOBS is the single source of truth for the twelve.
+# Kept so the boot line still names something; the count comes from the registry.
 JOBS = (
-    {"name": "daily-publish-by-slot", "owner": "artec", "schedule": "daily at each config slot_times entry"},
-    {"name": "daily-measure-0630", "owner": "artec", "schedule": "daily 06:30 Asia/Singapore"},
+    {"name": "registry", "owner": "artec", "schedule": "see app/jobs.py"},
 )
 
 
@@ -171,6 +172,15 @@ def run_registry_job(session, job, log=print):
         reconcile_prices(session, int(get_config(session, "render_run_cap_cents", 250)),
                          log=log)
         return build_report(session)
+    if job.name == "bespoke-learn-ideate":
+        from app.integrations.anthropic_client import LLM
+        from app.stages.ideate import ideate
+        from app.stages.learn import learn
+
+        # learn THEN ideate, in that order, and both before job 3 at 07:00 — plan-diff at
+        # 08:00 needs both sides or it agrees with itself.
+        learn(session, LLM(settings), log=log)
+        return ideate(session, LLM(settings), log=log)
     if job.name == "plan-diff":
         from app.stages.plan_diff import build_diff
 
@@ -329,7 +339,13 @@ def tick(now: datetime, fired: set[str], log=print) -> set[str]:
 def main() -> None:
     settings = get_settings()
     install_redaction(settings)
-    print(f"artec-scheduler up — {len(JOBS)} jobs, timezone Asia/Singapore")
+    from app.jobs import artec_jobs
+
+    print(f"artec-scheduler up — {len(artec_jobs())} registry jobs, timezone Asia/Singapore")
+    for row in next_runs():
+        # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the
+        # scheduler has no external registry, so it lists itself at every boot.
+        print(f"  job {row['number']:>2} {row['name']:<22} next {row['next_run']}")
     fired: set[str] = set()
     current_day = datetime.now(SGT).strftime("%Y-%m-%d")
     while True:

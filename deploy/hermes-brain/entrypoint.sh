@@ -124,14 +124,31 @@ else
     fail "artec plugin did not load — see the discovery log above"
 fi
 
-# `hermes tools --summary` lists TOOLSETS, not tools: seeing "Artec" proves the toolset is
-# present, not that fifteen handlers registered. register(ctx) failing halfway would leave a
-# partial set and nothing would say so. Count by listing, and name the shortfall.
-echo "--- proof: artec tool registration ---"
-ARTEC_TOOLS=$(hermes tools 2>&1 | grep -ciE "read_brief|read_learnings|read_asset_inventory|read_parked_posts|read_draft_posts|read_digest|write_plan|record_gate_decision|deliver_video|review_video|review_email|record_metrics|retry_post|fulfil_wishlist|acknowledge_price_table" || true)
-echo "artec tools registered: $ARTEC_TOOLS / 15"
-if [ "$ARTEC_TOOLS" -lt 15 ]; then
-    echo "WARN: only $ARTEC_TOOLS of 15 artec tools are registered — a partial register(ctx) leaves the gate or the digest without its tools. Check the discovery log above."
+# S2, CLOSED 2026-08-05 — this used to print "artec tools registered: N / 15" and WARN when
+# N < 15. It printed 0 / 15 on every boot, including boots where the tools then worked
+# perfectly in the live session. The count was structurally premature: `hermes plugins
+# enable` says so itself, two lines above —
+#
+#     ✓ Plugin artec enabled. Takes effect on next session.
+#
+# Tools register at SESSION START. A boot-time count runs before any session exists, so it
+# can only ever report zero. The warning was not detecting a fault; it was measuring the
+# wrong moment, and it was wrong every single time.
+#
+# A WARNING THAT IS ALWAYS WRONG TRAINS EVERYONE TO IGNORE IT — including the boot output
+# that carries the checks which are real. That is why this is a defect worth fixing rather
+# than noise worth tolerating: it degrades every other line printed beside it.
+#
+# What is checked instead is what CAN be known at boot: that the plugin is enabled and that
+# the toolset is discoverable. The count belongs to the session, and the live catalog is
+# authoritative there.
+echo "--- proof: artec toolset present (COUNT DEFERRED — tools register at session start) ---"
+if hermes tools 2>&1 | grep -qi "artec"; then
+    echo "artec toolset discoverable at boot; the 15 handlers register at session start"
+else
+    fail "the artec toolset is not discoverable at all — register(ctx) did not run. This is
+the real fault the old 0/15 warning was pretending to detect, and unlike a count it CAN be
+known at boot: the toolset either appears in the catalog or it does not."
 fi
 
 step "9/10 cron jobs (numeric day-of-week; create exits 0 on failure, so VERIFY by listing)"
@@ -160,6 +177,21 @@ printf '%s' "$CRON_LIST" | grep -qi "nightly-digest" || fail "cron job nightly-d
 printf '%s' "$CRON_LIST" | grep -i "nightly-digest" | grep -qi "sun" \
     && fail "nightly-digest lists a SUNDAY next-run — job 12 must be MON-SAT (0 21 * * 1-6)"
 printf '%s' "$CRON_LIST" | grep -q "+08:00" || fail "cron next-run times are not Asia/Singapore (+08:00) — check the image TZ"
+# EXACT SET, NOT A SUBSET. Every check above asks "is this job present?" — none asks "is
+# anything ELSE present?". A thirteenth job would pass all of them. The schedule is twelve
+# jobs; three of them are the brain's, and a fourth brain cron is a defect however it got
+# there. Cron mutation is now blocked at the pre_tool_call hook, so this is the check that
+# catches anything that arrived before the block, or around it.
+CRON_NAMES=$(printf '%s\n' "$CRON_LIST" | sed -n 's/^ *Name: *//p' | sort)
+EXPECTED_NAMES=$(printf '%s\n' "learn-ideate" "nightly-digest" "weekly-gate" | sort)
+if [ "$CRON_NAMES" != "$EXPECTED_NAMES" ]; then
+    fail "the brain's cron set is not EXACTLY the three expected jobs.
+  expected: $(printf '%s' "$EXPECTED_NAMES" | tr '\n' ' ')
+  actual:   $(printf '%s' "$CRON_NAMES" | tr '\n' ' ')
+An EXTRA job is a defect, not a curiosity: the twelve jobs are a deployment artefact and
+the only supported way to change them is app/jobs.py plus a deploy. A MISSING job means a
+touch does not happen. Both are fatal here."
+fi
 echo "all THREE brain cron jobs registered (3 learn-ideate, 5 weekly-gate, 12 nightly-digest); times resolve to +08:00 (Asia/Singapore)"
 
 step "10/10 gateway (foreground)"

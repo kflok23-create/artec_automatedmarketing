@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import all_config, get_config, net_cm_minor
+from app.digest_dates import digest_date_for
 from app.models import AgentRun, Digest, Metric, Order, Post, Run
 from app.stages.publish import carries_video
 from app.toolbox.pricing import micros_to_cents, price_table, stale_prices
@@ -437,7 +438,13 @@ def assert_complete(session: Session, payload: dict, since_hours: int = 24) -> l
 def prepare_digest(session: Session, brevo=None, target: date | None = None,
                    log=print) -> dict:
     """Job 11 body. Idempotent on digest_date."""
-    target = target or (datetime.now(UTC).date() - timedelta(days=1))
+    # `digest_date` is the DELIVERY date, from the one shared function — see
+    # app/digest_dates.py. This line used to read `datetime.now(UTC).date() - 1 day`,
+    # keying the row by the data window it covers. On 2026-08-04 job 11 wrote a row keyed
+    # 2026-08-03 and job 12 looked for 2026-08-04; the first digest this system ever
+    # produced carried ACTION REQUIRED content and was never delivered. The payload still
+    # covers yesterday's numbers — the window and the key are different things.
+    target = target or digest_date_for()
     payload = build_payload(session, brevo=brevo, target=target)
 
     missing = assert_complete(session, payload)

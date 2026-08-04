@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -99,7 +99,13 @@ def _read_digest_impl(digest_date: str | None = None, now: datetime | None = Non
     the refusal lives here, in the body, where nothing can route around it.
     """
     eng = _get_engine(engine)
-    target = str(digest_date or date.today())
+    # THE ONE SHARED FUNCTION. This read `date.today()` — the container's local date, which
+    # is UTC — while job 11 wrote `now(UTC).date() - 1 day`. Two correct implementations,
+    # two conventions, and on 2026-08-04 the first digest this system ever produced was
+    # written under 2026-08-03 and looked for under 2026-08-04.
+    from app.digest_dates import digest_date_for
+
+    target = str(digest_date or digest_date_for(now))
     if is_sunday(now):
         return {"date": target, "deliver": False,
                 "skip_reason": "Sunday — job 12 does not run; the 09:00 gate is today's "
@@ -110,8 +116,32 @@ def _read_digest_impl(digest_date: str | None = None, now: datetime | None = Non
             "SELECT payload, delivered_at FROM digests WHERE digest_date = :d"),
             {"d": target}).first()
         if row is None:
+            # THREE STATES, NEVER COLLAPSED INTO ONE. On 2026-08-04 this returned "job 11
+            # has not run" while a digest carrying ACTION REQUIRED content sat in the table
+            # under the previous day's key. Job 11 HAD run, on time, unattended, for the
+            # first time — and the message told the operator it had not. A mismatch and an
+            # absence are different faults and only one of them is the scheduler's.
+            recent = conn.execute(text(
+                "SELECT digest_date, delivered_at FROM digests "
+                "ORDER BY digest_date DESC LIMIT 1")).first()
+            if recent is not None:
+                other, other_delivered = recent
+                return {
+                    "date": target, "prepared": False, "deliver": False,
+                    "fault": "digest_date_mismatch",
+                    "note": (
+                        f"FAULT: no digest for {target}, but the most recent digest is "
+                        f"dated {other} (delivered_at={other_delivered}). Job 11 ran and "
+                        f"wrote a row under a DIFFERENT key — this is a date-convention "
+                        f"fault, not a missing run. Both dates are named deliberately: "
+                        f"reporting this as an absent run sends the operator to debug the "
+                        f"scheduler when the scheduler is working."
+                    ),
+                    "expected_date": target, "found_date": str(other),
+                }
             return {"date": target, "prepared": False, "deliver": False,
-                    "note": "no digest prepared for this date — job 11 has not run"}
+                    "note": "no digest prepared for this date, and no digest exists at all "
+                            "— job 11 has not run"}
         payload, delivered_at = row
         if isinstance(payload, str):
             payload = json.loads(payload)

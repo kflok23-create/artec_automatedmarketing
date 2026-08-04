@@ -276,6 +276,53 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
     checks.append(_check("upload-post key + 5 platforms", _upload_post,
                          "connect the missing platforms in the Upload-Post dashboard (OAuth cannot be automated)"))
 
+    # --- WHERE A POST WILL ACTUALLY LAND -------------------------------------------------
+    # The check above proves CONNECTION. Connection is presence, not validity: both
+    # platforms are connected through a PERSONAL account, so "connected" is equally true
+    # whether posts land on the Artec page or on someone's personal timeline.
+    #
+    # WHAT SUPPLIES EACH SIDE: the configured id comes from `config`; the set of reachable
+    # pages comes from Upload-Post's LIVE listing. The publisher supplies neither, so this
+    # cannot pass by agreeing with itself.
+    def _page_targets():
+        from app.integrations.upload_post_client import (
+            FOREIGN_ORGANISATIONS,
+            PAGE_TARGETED_PLATFORMS,
+            UploadPost,
+            page_targets,
+        )
+
+        client = UploadPost(settings)
+        configured = page_targets(session)
+        lines, problems = [], []
+        for platform in PAGE_TARGETED_PLATFORMS:
+            want = str(configured.get(platform) or "").strip()
+            pages = client.list_pages(platform)
+            catalogue = {str(p.get("id") or p.get("urn") or ""): str(p.get("name") or "")
+                         for p in pages}
+            if not want:
+                problems.append(f"{platform}: NO TARGET CONFIGURED — publish will refuse")
+                continue
+            if want not in catalogue:
+                problems.append(
+                    f"{platform}: configured target {want!r} is NOT in the live listing "
+                    f"{sorted(catalogue)} — refuse and report; never fall back to personal")
+                continue
+            lines.append(f"{platform} → {catalogue[want]!r} ({want})")
+            # Name what is being chosen BETWEEN, not merely what was chosen. The operator
+            # cannot audit a decision whose alternatives are invisible.
+            others = {k: v for k, v in catalogue.items() if k != want}
+            for other_id, other_name in others.items():
+                flag = " ** DIFFERENT BUSINESS **" if other_id in FOREIGN_ORGANISATIONS else ""
+                lines.append(f"    also administered, NOT used: {other_name!r} "
+                             f"({other_id}){flag}")
+        if problems:
+            raise RuntimeError("; ".join(problems))
+        return " | ".join(lines)
+    checks.append(_check("page targeting — where posts ACTUALLY land", _page_targets,
+                         "seed config.facebook_page_id / config.linkedin_organization_urn "
+                         "with ids from the live listing; publish REFUSES without them"))
+
     # --- Brevo -------------------------------------------------------------------------
     def _brevo():
         from app.integrations.brevo_client import _PLACEHOLDER, SIX_VARIABLES, Brevo

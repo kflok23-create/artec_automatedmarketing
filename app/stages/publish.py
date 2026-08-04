@@ -21,7 +21,12 @@ from sqlalchemy.orm import Session
 
 from app.config import get_config, set_config
 from app.integrations.brevo_client import BrevoCreditsError, substitute_template
-from app.integrations.upload_post_client import extract_external_id
+from app.integrations.upload_post_client import (  # noqa: F401
+    PAGE_TARGETED_PLATFORMS,
+    extract_external_id,
+    page_targets,
+    verify_publish_target,
+)
 from app.models import Post
 
 
@@ -230,11 +235,31 @@ def publish(session: Session, drive, fal, uploader, brevo,
                 kind = media_spec.get("media", "photo")
                 local = publish_media_path(session, drive, post)
                 title = f"{post.caption}\n{post.tracked_url}"
+                # PAGE TARGETING. facebook and linkedin publish AS A PAGE; the ids come
+                # from config and `_page_fields` REFUSES if one is missing rather than
+                # letting the post fall through to the personal profile of the account
+                # that OAuth'd. Omitting the parameter returns SUCCESS from Upload-Post,
+                # so nothing downstream would have noticed.
+                targets = page_targets(session)
+                if post.channel in PAGE_TARGETED_PLATFORMS:
+                    log(f"{post.post_id}: TARGETING {post.channel} page "
+                        f"{targets.get(post.channel)!r}")
                 if kind == "video":
-                    resp = uploader.upload_video(post.channel, local, title)
+                    resp = uploader.upload_video(post.channel, local, title,
+                                                 page_targets=targets)
                 else:
-                    resp = uploader.upload_photo(post.channel, local, title)
+                    resp = uploader.upload_photo(post.channel, local, title,
+                                                 page_targets=targets)
                 external_id = extract_external_id(resp)
+                # ITEM 6 — post-publish verification, two sides from two sources: the id we
+                # ASKED for (config) and the owner the response REPORTS. A wrong target is
+                # caught on its first occurrence rather than at the first missing metric,
+                # weeks later. Never fatal: the post is already public, and raising here
+                # would leave it PUBLISHED-but-unrecorded, which is worse.
+                mismatch = verify_publish_target(post.channel, targets, resp)
+                if mismatch:
+                    log(f"{post.post_id}: !! TARGET MISMATCH — {mismatch}")
+                    post.park_reason = f"target mismatch: {mismatch}"
             post.external_post_id = external_id
             post.posted_at = datetime.now(UTC)
             post.status = "PUBLISHED"

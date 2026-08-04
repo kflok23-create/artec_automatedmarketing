@@ -171,13 +171,31 @@ class FakeUploadPost:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def upload_photo(self, platform: str, photo_path: str, title: str) -> dict:
-        self.calls.append({"kind": "photo", "platform": platform, "title": title})
-        return {"success": True, "request_id": f"up_{len(self.calls)}"}
+    def _fields(self, platform: str, page_targets: dict | None) -> dict:
+        """THE FAKE RUNS THE REAL REFUSAL.
 
-    def upload_video(self, platform: str, video_path: str, title: str) -> dict:
-        self.calls.append({"kind": "video", "platform": platform, "title": title})
-        return {"success": True, "request_id": f"up_{len(self.calls)}"}
+        A fake that accepts `page_targets` and ignores it would let the dry run publish to
+        facebook with no page configured and report success — which is precisely the
+        production failure this part exists to prevent, reproduced inside the harness that
+        is supposed to catch it. So the fake delegates to the real `_page_fields`: the
+        refusal is exercised on every dry run, and the recorded call carries the parameter
+        that would have gone over the wire.
+        """
+        from app.integrations.upload_post_client import UploadPost
+
+        return UploadPost.__dict__["_page_fields"](self, platform, page_targets)
+
+    def upload_photo(self, platform: str, photo_path: str, title: str,
+                     page_targets: dict | None = None) -> dict:
+        fields = self._fields(platform, page_targets)
+        self.calls.append({"kind": "photo", "platform": platform, "title": title, **fields})
+        return {"success": True, "request_id": f"up_{len(self.calls)}", **fields}
+
+    def upload_video(self, platform: str, video_path: str, title: str,
+                     page_targets: dict | None = None) -> dict:
+        fields = self._fields(platform, page_targets)
+        self.calls.append({"kind": "video", "platform": platform, "title": title, **fields})
+        return {"success": True, "request_id": f"up_{len(self.calls)}", **fields}
 
     def list_profiles(self) -> dict:
         return {"profiles": [{"username": "ArtecMy", "social_accounts": {}}]}

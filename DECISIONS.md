@@ -562,11 +562,39 @@ unless marked.
     false NOT CHECKED on exactly the branch it exists to guard). The pattern is now explicit
     enough to look for by name.
 
-68. **v4 · merge condition 5 is ENFORCED, not written.** The repo is public and `main`
-    requires the `ci` status check with "require branches to be up to date before merging"
-    on — so a stale `v4-stage-2b` cannot merge and silently revert the cherry-pick that
-    landed on `main` after the branch was cut. The written rule and `main_ci_gate_check` are
-    now defence in depth rather than the only guard.
+68. **v4 · merge condition 5 was reported ENFORCED for two passes AND WAS NOT. CORRECTED
+    2026-08-04.** The claim below is left standing verbatim because the fact that it was
+    written, believed, and repeated is the finding — deleting it would erase the evidence.
+
+    > ~~The repo is public and `main` requires the `ci` status check with "require branches
+    > to be up to date before merging" on — so a stale `v4-stage-2b` cannot merge and
+    > silently revert the cherry-pick that landed on `main` after the branch was cut.~~
+
+    **What was actually true.** A ruleset named `main` existed, and its *contents* matched
+    the claim almost exactly — `required_status_checks` with context `ci`, and
+    `strict_required_status_checks_policy: true`. Reading the ruleset therefore CONFIRMED
+    the claim from every angle anyone had checked. It was inert for three independent
+    reasons, any one of which alone would have been enough:
+
+    | Probe | Result |
+    |---|---|
+    | `GET /branches/main/protection` | `404 Branch not protected` |
+    | `GET /rulesets` → the `main` ruleset | `"enforcement": "disabled"` |
+    | its `conditions.ref_name.include` | `[]` — targeted NO branches |
+    | required context vs check actually published | required `ci`; the job published `test` |
+    | **`GET /rules/branches/main`** | **`[]` — zero rules applied to `main`** |
+
+    The last row is the only probe that answers the question that was actually being asked.
+    A ruleset that EXISTS is not a ruleset that APPLIES, and every other probe conflates the
+    two. **`GET /rules/branches/main` is the probe; everything else is a description.**
+
+    **Armed 2026-08-04**, in this order and deliberately not the other: publish `ci` first,
+    observe it published, THEN arm. Enabling a rule that requires a check nobody publishes
+    would have locked the repository against every future merge — the failure mode of
+    fixing this in the obvious order is worse than the defect. Verified after arming by
+    listing, not by claim: `GET /rules/branches/main` returns three rules — `deletion`,
+    `non_fast_forward`, and `required_status_checks` carrying context `ci` and
+    `strict_required_status_checks_policy: true`.
 
 69. **v4 · full-history credential audit COMPLETED 2026-08-04 — clean.** A full-history scan
     for added credential files returned only `.env.example` and the three `railway.*.json`
@@ -791,3 +819,113 @@ Redaction is the operator's call, and it is recorded here rather than silently s
     evidence class (P/A/T/U).** A claim without one is a defect in that document. Most of the
     system is currently **T** or **U**: built and tested, never exercised in production. The
     class exists so the difference stays visible instead of being smoothed into prose.
+
+83. **2026-08-04 · STANDING RULE — a blocking note about state OUTSIDE the code is settled
+    by a probe, never by an argument.** When Claude Code raises a blocking note about CI,
+    GitHub state, Railway, or a third-party contract, counter-reasoning from the navigation
+    chat is *also* reasoning from inside a picture that may be wrong. Neither side holds the
+    mechanism; both are inferring. **The resolution is a probe. If a blocking note cannot be
+    settled by a probe in that pass, it stays blocking.**
+
+    **Why:** a blocking note that CI was not running was raised, argued down on plausible
+    reasoning, and withdrawn. It was correct. Seven commits then produced no CI run at all,
+    and the absence was read as health. The actual mechanism was held by neither party:
+    **GitHub does not run `pull_request` workflows on a PR whose `mergeable` is
+    `CONFLICTING`.** No amount of reasoning from either side would have produced that; one
+    `gh pr view --json mergeable` did, immediately.
+
+    This is the standing review question in its purest form — one side of the comparison was
+    absent, and the check still passed. It generalises: *the argument that a probe is
+    unnecessary is never evidence about the thing the probe would measure.*
+
+84. **2026-08-04 · The GUARDS are in scope for the standing review question, and they are
+    where it pays best.** For most of this build the question — *for every guard, name what
+    supplies each side of the comparison; if the thing under test supplies either side, or
+    one side can be absent while the check still passes, it is not a guard* — was applied to
+    application code. It had never been applied to CI, to branch protection, or to the test
+    fixture. One pass of applying it there produced four defects, all in the verification
+    layer and none in application code:
+
+    | # | Defect | Which side was missing |
+    |---|---|---|
+    | 8 | ruleset required check `ci`; the job published `test` | the required side never existed |
+    | 9 | no CI runs at all — PR was `CONFLICTING` | the *evidence* was absent; absence read as health |
+    | 10 | secret scan exiting 127, scanning nothing | the scanner side was not running |
+    | 11 | fixture built its schema with `create_all`, production uses migrations | the thing under test supplied its own schema |
+
+    Defect 11 is the sharpest: **470 tests took the fixture's word for what the schema was.**
+    Nothing asserted its provenance. Recorded as decision 85.
+
+85. **2026-08-04 · The test fixture must take production's schema, not build its own —
+    and a test now asserts that.** The first full run of the suite against real Postgres
+    produced six failures, every one `relation "post_id_seq" does not exist`. No application
+    code was wrong. `Base.metadata.create_all()` creates TABLES from model metadata;
+    `post_id_seq` is a SEQUENCE created by migration 0004. Production's schema comes from
+    `alembic upgrade head`, so **the fixture was testing a schema that never ships** — the
+    packaging/environment failure class, arriving inside the test substrate itself.
+
+    Fixed by running the migrations on the Postgres branch of the `engine` fixture. Guarded
+    by `tests/unit/test_schema_provenance.py`, which asserts on Postgres that `post_id_seq`
+    exists with `relkind='S'` and that `alembic_version` is non-empty — neither is in
+    `Base.metadata`, so their presence is proof of WHICH path built the schema.
+
+    **The asymmetry is stated, not faked.** On SQLite the schema deliberately does not come
+    from migrations (decision 7), so that file asserts only that the allocator is reachable.
+    A symmetric-looking assert meaning something weaker on one substrate would be the same
+    failure the file exists to prevent.
+
+    Two further defects fell out of the repair, both invisible until the fixture stopped
+    supplying its own schema:
+    - **`v_brief` was created twice** — the migrations create it, and the fixture created it
+      again: `DuplicateTable`. Under `create_all` the explicit CREATE was *necessary*
+      (create_all knows nothing about views), so the line was right for the old mechanism
+      and wrong for the new one. Migrations own it.
+    - **`test_advisory_lock_refuses_on_non_postgres` named a substrate it never pinned.** It
+      took the generic `engine` fixture, which had been SQLite in every run that ever
+      existed. The instant `engine` could be Postgres the test inverted, asserting that
+      Postgres raises `NotPostgres`. Repaired by building its own SQLite engine — **not** by
+      skipping it on Postgres, which would drop the non-Postgres refusal path from the exact
+      run just made canonical.
+
+86. **2026-08-04 · GAP S3 — `app/migrations/env.py` silently ignores an explicitly-passed
+    `sqlalchemy.url`. Logged, deliberately NOT fixed this pass.** `env.py:18` reads
+    `os.environ["DATABASE_URL"]` directly and never consults
+    `config.get_main_option("sqlalchemy.url")`. A programmatic caller that sets the URL the
+    documented Alembic way is silently migrated against a different database.
+
+    **This cost real time and is worth the record:** the first repair attempt passed the
+    Postgres URL via `cfg.set_main_option`, and `alembic upgrade head` migrated the
+    `sqlite://` dummy instead. Six failures became **213 errors** (`relation "posts" does not
+    exist`). The fixture now passes the URL by environment variable, which is what `env.py`
+    actually reads.
+
+    **Why not fixed now:** production's migration path is the single P-class-proven thing in
+    this system — `migrations_current: true`, read from the running container. It does not
+    get changed in the same pass as a merge, to repair a test. **Severity S3. Follow-up:
+    make `env.py` prefer an explicitly-configured `sqlalchemy.url` and fall back to
+    `DATABASE_URL`, with a test that a programmatic caller's URL is honoured. Post-merge,
+    on its own branch, with the Postgres suite as the check.**
+
+87. **2026-08-04 · The secret scan must cover HISTORY, not the tip — and "history audited
+    clean" was a stale claim resting on a broken scanner.** Decision 69 recorded a clean
+    full-history audit. That audit predated the scanner breaking at **exit 127** (comment
+    lines written after a backslash continuation, so the shell executed them). The scan had
+    not run since, on a **public** repo, across a window in which `HERMES_API_TOKEN` was
+    rotated twice after shell exposure.
+
+    A tip scan only ever sees the current tree: a secret committed and later removed stays
+    in a public repo's history forever and the tip scan reports clean. CI now runs
+    `git grep` over `$(git rev-list --all)` with `fetch-depth: 0`, so the claim is
+    re-established on every run instead of once. **Result 2026-08-04: clean, 53 commits, on
+    a scanner confirmed to be executing.**
+
+88. **2026-08-04 · The claim "`main` at `a1fa8fd` — CI green" was CHECKED and is TRUE;
+    the claim it was entangled with is not.** It was flagged as suspect on the reasoning that
+    the workflow might trigger only on `pull_request`. Probed rather than assumed: the
+    workflow has carried `on: push: branches: [main]` throughout, and run **30872795253**
+    exists on `a1fa8fd`, `event=push`, `conclusion=success`. **The claim stands; no
+    correction needed, and it is recorded here as verified rather than left inferred.**
+
+    What was NOT true is the adjacent claim: that run **gated** nothing. The ruleset was
+    disabled, so `main` was green *and* unprotected. Green and gated are different facts and
+    had been read as one. See decision 68.

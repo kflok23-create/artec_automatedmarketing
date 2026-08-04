@@ -31,6 +31,10 @@ def ideate(session: Session, llm, week_start: date | None = None, log=print) -> 
             "SEO_SEEDS is empty or too short — seed 5–15 keywords before the first ideate: "
             "artec config set seo_seeds '[\"keyword one\", …]'"
         )
+    # v4 §7·A7 — a slot that is not a key of slot_times would never publish and never
+    # error: the scheduler only looks for slots it knows about. Reject at write time, in
+    # BOTH planners. The seam already does this; bespoke ideate did not.
+    slot_times: dict[str, str] = get_config(session, "slot_times")
     cadence: dict[str, int] = get_config(session, "channel_cadence")
     site = get_config(session, "site_base_url")
     social_code = get_config(session, "social_code")
@@ -66,6 +70,13 @@ def ideate(session: Session, llm, week_start: date | None = None, log=print) -> 
         channel = item.get("channel")
         if channel not in remaining or remaining[channel] <= 0:
             continue  # over-cadence or unknown channel — trimmed, never published extra
+        slot = item.get("slot")
+        if slot not in slot_times:
+            raise OperatorError(
+                f"ideate produced slot {slot!r} for {channel}, which is not a key of "
+                f"slot_times {sorted(slot_times)}. A post with an unknown slot would never "
+                "publish and never error, so it is rejected at write time."
+            )
         medium = "email" if channel == "email" else "organic"
         post_id = next_post_id(session)
         session.add(
@@ -79,7 +90,7 @@ def ideate(session: Session, llm, week_start: date | None = None, log=print) -> 
                 cta_type=item.get("cta_type"),
                 cta_placement=item.get("cta_placement"),
                 keywords=item.get("keywords") or [],
-                slot=item.get("slot"),  # a stored attribute / learning lever, never a timer
+                slot=slot,  # a real firing time in v4 AND still a learned lever
                 code=email_code if medium == "email" else social_code,
                 utm=utm_dict(post_id, channel, medium),
                 tracked_url=build_tracked_url(

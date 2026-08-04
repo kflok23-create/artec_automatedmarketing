@@ -30,6 +30,27 @@ def _hermes_home() -> Path | None:
     return Path(home) if home else None
 
 
+# F2 — the same two detectors the brain-side audit runs. Duplicated because the brain image
+# carries no app package; a test asserts the pattern lists stay identical, because
+# duplicated is fine and silently divergent is not.
+MEMORY_CAP_CHARS = 2200
+
+WORD_NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+                "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16}
+
+CAPABILITY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("stale capability claim",
+     r"(?i)\b(?:exactly\s+)?(\d{1,2}|" + "|".join(WORD_NUMBERS) + r")\s+tools?\b"),
+    ("stale capability claim",
+     r"(?i)\b(?:there\s+is\s+no|there\s+are\s+no|has\s+no|no)\s+"
+     r"([a-z_0-9,\s]{2,120}?)\s+tools?\b"),
+    ("imperative in memory",
+     r"(?im)(?:^|[.;]\s+)(don't|do not|never|always|refuse|say so|tell the|ask the|"
+     r"promise|make sure|be sure|remember to|you must|you should)\b"),
+)
+
+
 def audit_memory(paths: list[Path] | None = None, log=print) -> list[dict]:
     """Scan MEMORY.md + all skill files for metric-shaped content. Returns every hit."""
     if paths is None:
@@ -88,3 +109,224 @@ def agent_review(log=print) -> dict:
         log(memory)
     log("\nreminder: run `hermes curator` for the monthly skill hygiene pass")
     return {"skills": skills, "memory": memory}
+
+
+# ---------------------------------------------------------------------------------------
+# C6 — toolset IDENTIFIER drift.
+#
+# `agent.disabled_toolsets` disables by NAME. If an identifier is renamed between agent
+# versions, the entry silently stops matching and the toolset comes back on — the config
+# still parses, still looks right, and reports nothing. `kanban` → `todo` between 0.18.x
+# and 0.19.x is the real instance; the profile lists BOTH for that reason.
+#
+# So the check is not "is it disabled" (the config says so) but "is the name we disabled
+# still a name this build recognises". A name that has vanished is the alarm.
+# ---------------------------------------------------------------------------------------
+
+EXPECTED_DISABLED = (
+    "terminal", "code_execution", "file", "delegation", "video", "project",
+    "todo", "kanban", "tts", "bfl", "browser", "browser-cdp", "computer_use",
+    "image_gen", "video_gen",
+)
+
+# Listed in pairs that have been the same board/capability under different ids across
+# versions: if EITHER member is still recognised, the capability is still covered.
+ALIASES = (("todo", "kanban"), ("browser", "browser-cdp"))
+
+
+def _hermes_toolset_names(runner=None) -> list[str] | None:
+    """Every toolset identifier this hermes build knows. None if hermes is not installed
+    here — which is a SKIP, never a pass."""
+    import shutil
+    import subprocess
+
+    if runner is None:
+        if shutil.which("hermes") is None:
+            return None
+
+        def runner(args):
+            return subprocess.run(args, capture_output=True, text=True, timeout=120).stdout
+
+    try:
+        out = runner(["hermes", "tools", "--summary"])
+    except Exception:
+        return None
+    names = []
+    for line in (out or "").splitlines():
+        token = line.strip().split()[0] if line.strip() else ""
+        token = token.strip("-•*:").lower()
+        if token and re.fullmatch(r"[a-z0-9_\-]+", token):
+            names.append(token)
+    return names or None
+
+
+def toolset_drift_check(runner=None, log=print) -> dict:
+    """RED if an identifier we rely on has disappeared from this build."""
+    names = _hermes_toolset_names(runner)
+    if names is None:
+        log("agent-review: hermes not installed here — toolset drift NOT CHECKED "
+            "(run on artec-brain, or wherever hermes-agent is installed)")
+        return {"checked": False, "missing": [], "known": []}
+
+    known = set(names)
+    missing = []
+    for expected in EXPECTED_DISABLED:
+        if expected in known:
+            continue
+        # An alias still present means the capability is still covered by the profile.
+        covered = any(expected in pair and any(other in known for other in pair)
+                      for pair in ALIASES)
+        if not covered:
+            missing.append(expected)
+
+    if missing:
+        log(f"agent-review: RED — {len(missing)} disabled toolset identifier(s) are not "
+            f"recognised by this hermes build: {', '.join(missing)}. A disabled_toolsets "
+            "entry that matches nothing disables nothing — check whether it was renamed.")
+    else:
+        log(f"agent-review: toolset identifiers OK — all {len(EXPECTED_DISABLED)} "
+            f"expected-disabled names recognised ({len(known)} toolsets in this build)")
+    return {"checked": True, "missing": missing, "known": sorted(known)}
+
+
+# ---------------------------------------------------------------------------------------
+# B″ — the toolset lockdown must not live only on a Railway volume.
+#
+# The brain's entrypoint already copies `deploy/hermes-brain/config.yaml` from the image
+# onto the volume on EVERY boot, so the canonical file is version-controlled and a volume
+# loss cannot quietly take the security posture with it. But hermes-agent also rewrites
+# that file in place (four `config.yaml.bak.*` in one day on the live volume), and between
+# boots the live file can differ from the committed one with nothing saying so.
+# ---------------------------------------------------------------------------------------
+
+def config_drift_check(repo_config: Path | None = None, log=print) -> dict:
+    """Compare the live profile config against the repo-committed canonical one."""
+    home = _hermes_home()
+    if home is None:
+        log("agent-review: HERMES_HOME not set — config drift NOT CHECKED")
+        return {"checked": False, "drifted": False}
+    if repo_config is None:
+        repo_config = Path(__file__).resolve().parents[2] / "deploy" / "hermes-brain" / "config.yaml"
+    profile = ""
+    marker = home / "active_profile"
+    if marker.is_file():
+        profile = marker.read_text(encoding="utf-8", errors="replace").strip()
+    live = (home / "profiles" / profile / "config.yaml") if profile else (home / "config.yaml")
+    if not live.is_file() or not repo_config.is_file():
+        log(f"agent-review: config drift NOT CHECKED — {live} or {repo_config} missing")
+        return {"checked": False, "drifted": False, "live": str(live)}
+
+    live_text = live.read_text(encoding="utf-8", errors="replace")
+    repo_text = repo_config.read_text(encoding="utf-8", errors="replace")
+    drifted = live_text.strip() != repo_text.strip()
+    if drifted:
+        log(f"agent-review: RED — the live profile config at {live} differs from the "
+            f"repo-committed {repo_config.name}. The toolset lockdown is a security "
+            "posture; it must not live only on a volume. Redeploy to restore it from the "
+            "image, or commit the intended change.")
+    else:
+        log("agent-review: profile config matches the repo-committed canonical file")
+    return {"checked": True, "drifted": drifted, "live": str(live)}
+
+
+# ---------------------------------------------------------------------------------------
+# D2 — the merge gate is a WRITTEN RULE, so it needs somewhere to be visible.
+#
+# Branch protection is unavailable on this plan (HTTP 403: "Upgrade to GitHub Pro or make
+# this repository public") and the repo stays private, so condition 5 cannot be enforced by
+# GitHub. The rule stands anyway:
+#
+#   NO MERGE TO `main` WITHOUT A GREEN CI RUN ON THE EXACT COMMIT BEING MERGED — every
+#   `pg` test EXECUTED, not skipped.
+#
+# A rule nobody can see is a rule nobody keeps, so this checks it after the fact: does
+# main's current HEAD have a successful CI run? It cannot PREVENT a bad merge — nothing
+# available on this plan can — but it makes one visible the next time anybody looks.
+#
+# "Cannot check" is reported as NOT CHECKED and never as a pass, matching the toolset
+# drift check: an unverifiable rule is not a kept one.
+# ---------------------------------------------------------------------------------------
+
+GITHUB_API = "https://api.github.com"
+DEFAULT_REPO = "kflok23-create/artec_automatedmarketing"
+
+
+def _runs_for_commit(fetch, repo: str, sha: str, ref: str) -> list[dict]:
+    """Every CI run that actually covers this commit.
+
+    CORRECTED, AND THE CORRECTION MATTERS MORE THAN THE FIX. The diagnosis was that a
+    `pull_request` run records the merge commit as `head_sha`, so the direct query missed
+    it. Checked against the real API, that is FALSE for this repo: PR-triggered runs carry
+    the BRANCH commit as `head_sha`, and `?head_sha=<branch sha>` returning nothing meant
+    what it said — CI had not run for that commit yet.
+
+    The tempting fallback was `pull_requests[].head.sha`. It is a trap: that field reports
+    the PR's CURRENT head, not the commit the run covered, so every historical run on the
+    PR claims the newest commit. Matching on it would have reported a green run for a commit
+    CI never saw — a gate that passes because one side of the comparison is missing, which
+    is the exact pattern this build has now hit five times.
+
+    So the branch query stays, but ONLY as a way to enumerate candidates: a run counts if
+    and only if its own `head_sha` is the commit.
+    """
+    direct = (fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?head_sha={sha}") or {})
+    runs = list(direct.get("workflow_runs") or [])
+    if runs:
+        return runs
+    by_branch = (fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?branch={ref}") or {})
+    return [run for run in (by_branch.get("workflow_runs") or [])
+            if run.get("head_sha") == sha]
+
+
+def main_ci_gate_check(fetch=None, repo: str | None = None, ref: str = "main",
+                       log=print) -> dict:
+    """Whether `ref`'s HEAD carries a green CI run — push-triggered OR pull_request-triggered.
+    `fetch(url) -> dict | None` is injected by tests; in production it is an authenticated
+    GitHub API GET."""
+    repo = repo or os.environ.get("GITHUB_REPOSITORY") or DEFAULT_REPO
+
+    if fetch is None:
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+        if not token:
+            log("agent-review: merge-gate NOT CHECKED — no GITHUB_TOKEN, and this repo is "
+                "private. The written rule still stands: no merge to main without a green "
+                "CI run on the exact commit being merged.")
+            return {"checked": False, "green": False, "reason": "no GITHUB_TOKEN"}
+
+        def fetch(url: str):
+            import httpx
+
+            response = httpx.get(url, timeout=30, headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json"})
+            return response.json() if response.status_code == 200 else None
+
+    try:
+        head = fetch(f"{GITHUB_API}/repos/{repo}/commits/{ref}")
+        sha = (head or {}).get("sha")
+        if not sha:
+            log(f"agent-review: merge-gate NOT CHECKED — could not resolve {ref}'s HEAD")
+            return {"checked": False, "green": False, "reason": "HEAD unresolved"}
+        workflow_runs = _runs_for_commit(fetch, repo, sha, ref)
+    except Exception as e:                                    # noqa: BLE001
+        log(f"agent-review: merge-gate NOT CHECKED — {type(e).__name__}: {e}")
+        return {"checked": False, "green": False, "reason": f"{type(e).__name__}"}
+
+    if not workflow_runs:
+        # The dangerous case, and the one the rule exists to catch: a commit on main that
+        # CI never ran against at all.
+        log(f"agent-review: RED — {ref} HEAD {sha[:7]} has NO CI run. The merge gate "
+            "requires a green run on the exact commit being merged.")
+        return {"checked": True, "green": False, "sha": sha, "run_id": None,
+                "reason": "no CI run for this commit"}
+
+    latest = workflow_runs[0]
+    green = latest.get("conclusion") == "success"
+    if green:
+        log(f"agent-review: merge gate held — {ref} HEAD {sha[:7]} has a green CI run "
+            f"({latest.get('id')})")
+    else:
+        log(f"agent-review: RED — {ref} HEAD {sha[:7]} CI run {latest.get('id')} concluded "
+            f"{latest.get('conclusion')!r}, not 'success'.")
+    return {"checked": True, "green": green, "sha": sha, "run_id": latest.get("id"),
+            "reason": latest.get("conclusion")}

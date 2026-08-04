@@ -58,9 +58,15 @@ class Settings(BaseSettings):
     BREVO_SENDER_EMAIL: str
     BREVO_TEMPLATE_ID: int
 
-    # Telegram
-    TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_CHAT_ID: str
+    # Telegram — BRAIN ONLY (D1). Optional here so the bespoke services can boot without
+    # them; the brain's own entrypoint asserts them present and probes them.
+    #
+    # SEQUENCING, and it is not optional: the code side lands at merge, the VARIABLES are
+    # deleted AFTER deploy. Delete them while this manifest still requires them and
+    # `artec api` will not boot — pydantic fails fast on a missing required variable, which
+    # is the behaviour we want and the reason the order matters.
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
 
     # v3: hermes-brain volume root. Set ONLY on the hermes-brain service (/data/hermes);
     # empty elsewhere. When set, `artec doctor` hard-fails unless it is a writable mounted

@@ -9,6 +9,12 @@ on:
 
 jobs:
   test:
+    # THE CHECK NAME IS THE JOB NAME, not the workflow name. Branch protection on `main`
+    # requires the context `ci`; this job published `test`, so the required check never
+    # arrived and a red Postgres suite blocked nothing. Named explicitly, and probed after
+    # the fact rather than inferred — the workflow's own `name: ci` is NOT what GitHub
+    # publishes.
+    name: ci
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -23,6 +29,11 @@ jobs:
           --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        # fetch-depth: 0 — the full-history secret scan below needs every commit, not the
+        # tip. A shallow clone would scan one commit and report clean, which is the muted-
+        # scanner outcome in a different costume.
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v4
       - name: Install ffmpeg (v3 video pipeline end-to-end test)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -31,11 +42,52 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Secret scan
+        # A scanner that matches its own definition eventually flags itself and gets muted,
+        # and a muted scanner is no scanner. ci.yml holds the patterns; the hygiene test
+        # holds the same patterns in Python. Both are excluded from their own scan.
+        #
+        # The comment placement matters: these lines were previously written AFTER the
+        # backslash continuation, so the shell tried to execute them and the step exited
+        # 127 — the scan had not run since.
         run: |
-          ! grep -rInE "(sk-ant-api[0-9A-Za-z_-]{10,}|whsec_[0-9A-Za-z]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----|[0-9]{8,10}:AA[0-9A-Za-z_-]{30,})" \
-            --exclude-dir=.git --exclude-dir=.venv --exclude=ci.yml .
-      - name: Unit + acceptance tests
+          ! grep -rInE "(sk-ant-api[0-9A-Za-z_-]{10,}|whsec_[0-9A-Za-z]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----|[0-9]{8,10}:AA[0-9A-Za-z_-]{30,})" --exclude-dir=.git --exclude-dir=.venv --exclude=ci.yml --exclude=test_hygiene.py .
+      - name: Secret scan (FULL HISTORY, every commit)
+        # The tip scan above only ever sees the current tree. A secret committed and then
+        # removed stays in the history of a PUBLIC repo forever and the tip scan reports
+        # clean. "History audited clean" was established BEFORE the scanner broke at exit
+        # 127, so it was a stale claim resting on a scanner that had stopped running.
+        # This re-establishes it, and keeps re-establishing it on every run.
+        #
+        # `git grep <pat> $(git rev-list --all)` searches every blob in every commit.
+        # git grep exits 1 when nothing matches, which is the outcome we want, hence `!`.
+        run: |
+          ! git grep -InE "(sk-ant-api[0-9A-Za-z_-]{10,}|whsec_[0-9A-Za-z]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----|[0-9]{8,10}:AA[0-9A-Za-z_-]{30,})" $(git rev-list --all) -- ':!.github/workflows/ci.yml' ':!tests/unit/test_hygiene.py'
+      - name: Unit + acceptance tests (SQLite substrate)
         run: uv run pytest
+      - name: Migrations against throwaway Postgres
+        # MUST run before the pg-substrate tests: their fixture drops and recreates the
+        # public schema via metadata.create_all, leaving tables with no alembic_version,
+        # which makes a later `upgrade head` collide with existing tables.
+        run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql://hermes:hermes@localhost:5432/hermes_ci
+      - name: Postgres-substrate tests (advisory locks, sequences, jsonb)
+        # These have no SQLite equivalent. Running them against the same throwaway Postgres
+        # the migration step uses is what stops a Postgres-only feature from shipping with
+        # only a SQLite test behind it. This step is the MERGE GATE for v4-stage-2b.
+        run: uv run pytest -m pg -v
+        env:
+          TEST_DATABASE_URL: postgresql://hermes:hermes@localhost:5432/hermes_ci
+      - name: FULL SUITE against real Postgres (merge gate condition 2)
+        # The eleven `pg`-marked tests cover Postgres-ONLY semantics. Everything else had
+        # never touched Postgres at all — a coverage decision nobody made on purpose. This
+        # step runs the WHOLE suite on the real substrate so "every pg test executed and
+        # green" is closed by output rather than by a count. -p no:randomly keeps the
+        # schema drop/recreate deterministic.
+        run: uv run pytest -v -rs
+        env:
+          ARTEC_TEST_SUBSTRATE: postgres
+          TEST_DATABASE_URL: postgresql://hermes:hermes@localhost:5432/hermes_ci
       - name: Wheel packaging check (installed-artifact runtime resources)
         run: |
           uv build --wheel
@@ -64,7 +116,3 @@ jobs:
           BILLPLZ_API_KEY: ci
           BILLPLZ_COLLECTION_ID: ci
           BILLPLZ_XSIGNATURE_KEY: ci
-      - name: Migrations against throwaway Postgres
-        run: uv run alembic upgrade head
-        env:
-          DATABASE_URL: postgresql://hermes:hermes@localhost:5432/hermes_ci

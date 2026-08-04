@@ -233,6 +233,26 @@ class DriveClient:
         )
         return resp["id"]
 
+    def upload_backup(self, local_path: str, filename: str) -> str:
+        """`_backups/` is the SECOND folder HERMES may write to, added in v4 for job 8.
+        The v2 rule was `_generated/` only; a nightly dump has to land somewhere an
+        incident can reach, and the bank is the one storage this system already trusts.
+        Stated here rather than left as an exception someone discovers later."""
+        from googleapiclient.http import MediaFileUpload
+
+        root = self.settings.GOOGLE_DRIVE_ROOT_FOLDER_ID
+        folder = self._find_child_folder(root, "_backups")
+        if not folder:
+            folder = (self.service.files().create(
+                body={"name": "_backups", "mimeType": "application/vnd.google-apps.folder",
+                      "parents": [root]},
+                fields="id", supportsAllDrives=True).execute())["id"]
+        media = MediaFileUpload(local_path, resumable=True)
+        created = (self.service.files().create(
+            body={"name": filename, "parents": [folder]},
+            media_body=media, fields="id", supportsAllDrives=True).execute())
+        return created["id"]
+
     def upload_generated(self, local_path: str, week_start: str, filename: str) -> str:
         """Upload a render to _generated/{week_start}/{filename}; return drive_file_id.
         This is the ONLY Drive write path in HERMES."""

@@ -221,3 +221,169 @@ which is a good monthly review companion to `artec agent-review`.
 | price reconciliation | config/credential silence | fal API pull with `as_of`; stale >30d warns in digest |
 | digest resources (fonts, prompts) | packaging/environment | already covered by wheel-content CI + `/healthz resources_packaged` |
 | required config keys | config/credential silence | REQUIRED_CONFIG_KEYS validated at boot on every service; refuse to start naming the key |
+
+---
+
+## PROBED · the hermes-agent message store (v4 Stage 2c-i)
+
+**Probe:** a real hermes-agent install (`$HERMES_HOME=C:\Users\KahFa\AppData\Local\hermes`,
+the same install whose presence makes `test_hermes_discovers_artec_with_all_tools` run
+rather than skip). Read-only SQLite inspection — not documentation, not inference.
+
+```
+$HERMES_HOME/state.db                       SQLite, WAL (state.db-wal / state.db-shm)
+  sessions(id, source, user_id, session_key, chat_id, started_at, …)
+      id      e.g. '20260802_212025_9f03c9'  (cli), 'cron_dacb65fa6fae_20260801_001534'
+      source  'cli' | 'cron' | …
+  messages(id, session_id, role, content, tool_call_id, tool_calls, tool_name,
+           timestamp, token_count, …, active, compacted)
+      role    'user' | 'assistant' | 'tool'      (observed counts: 71 / 448 / 540)
+      content TEXT — a plain string for operator turns
+```
+
+**An operator turn is `role='user'`.** Tool results are `role='tool'` with `tool_name` set;
+they are NOT user turns. That is the property that makes this store usable as an authority
+for the transcription guard: a tool result carrying digits cannot authorise those digits.
+
+### The heuristic did NOT match, and it was wrong permissively
+
+The first implementation looked for `$HERMES_HOME/sessions/{task_id}.jsonl`. That directory
+**exists**, which is exactly why the guess was dangerous — but it holds:
+
+```
+sessions/request_dump_20260708_172444_99d5de_20260708_172709_462377.json
+```
+
+**`request_dump_*.json` are debug artefacts**, written only on a non-retryable API error
+(`"reason": "non_retryable_client_error"`), containing the full provider request body — a
+constructed message list including `{"role": "user", …}` entries. The module's glob
+fallback (`sessions/*{task_id}*`) would have matched one whenever the dump filename carried
+the session id, and parsed provider-format `user` entries out of it.
+
+So the heuristic was fixed rather than widened: **one source, `state.db`, no fallback**, and
+a `task_id` that names no row in `sessions` returns "cannot verify" instead of a loose
+match. `tests/unit/test_v4_transcription_guard.py` asserts the request-dump case directly.
+
+**Not yet verified:** that the `task_id` hermes passes to `pre_tool_call` equals
+`sessions.id` for a TELEGRAM session (the probed sessions are `cli` and `cron`). If it does
+not, the guard fails closed — refuses and names `artec measure` — which is the safe
+direction, but it means metrics entry does not work until confirmed. One real digest
+session settles it.
+
+---
+
+## PROBED · deployed environment (operator probes A–E, 2026-08-04)
+
+| Fact | Value |
+|---|---|
+| hermes-agent on artec-brain | v0.19.1 (tag 2026.7.30), git install, `/opt/hermes-agent`, Python 3.12.13 |
+| `HERMES_HOME` | `/data/hermes` (Railway volume `hermes-brain-volume`) |
+| artec api interpreter | **`/opt/venv/bin/python`** — NOT the system Python. `python` at an SSH prompt has no pydantic; every in-container diagnostic must use the venv path |
+| artec api start command | `/opt/venv/bin/python /opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080` |
+| `RAILWAY_PRIVATE_DOMAIN` (artec api) | `artecautomatedmarketing.railway.internal` |
+
+### Internal networking WORKS — the IPv6 concern was wrong
+
+```
+$ getent hosts artecautomatedmarketing.railway.internal
+fd12:223a:dbc4:1:d000:164:71b2:a7f2
+
+$ urlopen('http://artecautomatedmarketing.railway.internal:8080/healthz')
+b'{"status":"ok","db":true,"migrations_current":true,"resources_packaged":true}'
+```
+
+The name resolves to IPv6 and the request succeeds against a service bound to
+`--host 0.0.0.0`. **No start-command change is needed.** Recorded so nobody revisits it.
+
+`ARTEC_API_BASE` pins `:8080` while Railway injects `PORT`, so `_publish_bytes` now fails
+with `cannot reach artec api at <url>` naming the attempted URL — a port change must not
+present as a mute `deliver_video` refusal that looks like a bad file.
+
+### CORRECTED · the message store is PROFILE-SCOPED
+
+```
+/data/hermes/active_profile                          ->  artec-brain
+/data/hermes/profiles/artec-brain/state.db           <- THE STORE
+/data/hermes/state.db                                <- DECOY, exactly 1048576 bytes
+```
+
+The earlier entry in this file named `$HERMES_HOME/state.db`. That file exists, **opens
+cleanly, and answers `no such table: sessions`** — a plausible error rather than an
+absence, which is why the first probe concluded the schema was wrong. Both earlier
+investigations ran against a development machine whose layout differs.
+
+Resolution is now `active_profile` → `profiles/<profile>/state.db`, with the `sessions` and
+`messages` tables asserted before the file is trusted, and **no fallback, no glob, no
+search**. Anything else is `cannot verify` → refuse → `artec measure`.
+
+### Tool posture, verified BY LISTING on the deployed brain
+
+```
+⚕ Tool Summary
+  🖥️  CLI  (8/28)      Artec · Clarifying Questions · Cron Jobs · Memory ·
+                       Session Search · Skills · Vision · Web Search & Scraping
+  📱 Telegram  (6/28)  Artec · Clarifying Questions · Memory · Session Search ·
+                       Skills · Web Search & Scraping
+```
+
+Absent from both surfaces: Browser Automation, Code Execution, Computer Use, File
+Operations, Terminal & Processes, Task Delegation, Task Planning, Image Generation,
+Text-to-Speech, **and both `kanban` and `todo`**. A default install shows all of them, so
+the lockdown is doing real work rather than describing a default. **C6 is satisfied by
+observation**, and `artec agent-review` keeps it satisfied by asserting the identifiers
+still exist.
+
+`hermes tools --summary` lists TOOLSETS, not tools — "Artec" present does not prove fifteen
+handlers registered. The entrypoint now counts them by listing and names the shortfall.
+
+**`Web Search & Scraping` is already live** on the deployed brain, which runs `main`. So
+scouting is CALLABLE whether or not a backend was ever probed — which is why the brief now
+carries the search-backend state, and why an absent probe renders as NOT YET PROBED.
+
+### Tavily is LIVE
+
+```
+scouting: AVAILABLE via tavily — HTTP 200, 1 result(s) for the probe query
+```
+
+The credential is valid. A5's remaining work is enablement and the boot probe, not the key.
+The same run failed to write `config.scouting_status` (`postgres.railway.internal` does not
+resolve outside Railway — expected for `railway run`), which leaves the key **absent**
+rather than wrong. Hence the three-state rendering.
+
+### The profile `config.yaml` lives only on the volume — mitigated
+
+Four in-place versions in one day (`config.yaml.bak.20260803_*`), plus a `kanban.db` fossil.
+The entrypoint already copies the repo-committed `deploy/hermes-brain/config.yaml` onto the
+volume at **every boot** (step 5/10), so the canonical file IS version-controlled and a
+volume loss cannot take the posture with it. `artec agent-review` now also diffs the live
+file against the committed one and goes RED on drift, for the window between boots.
+
+---
+
+## PROBED · the Telegram session row (operator probe F1)
+
+```
+sessions: ('20260803_134659_591d8efc', 'telegram', '2111270140',
+           'agent:main:telegram:dm:2111270140', '2111270140', 'dm', …)
+by source: [('cli', 1), ('telegram', 1)]
+```
+
+**A Telegram interaction DOES create a `sessions` row**, so metrics-by-reply is
+implementable and merge condition 4 is resolvable. The earlier "cli and cron only" reading
+was of the laptop store, not this one.
+
+`sessions` columns: id, source, user_id, session_key, chat_id, chat_type, thread_id,
+display_name, origin_json, started_at, **ended_at (NULL while the gateway runs)**,
+end_reason, message_count, tool_call_count, …
+
+`messages` columns: id, session_id, role, content, tool_call_id, tool_calls, **tool_name**,
+effect_disposition, timestamp, token_count, …, platform_message_id, observed, active
+
+`role` and `content` are present as assumed, and `tool_name` confirms tool results are
+distinguishable from operator turns.
+
+**Not yet recorded:** which of `id` / `session_key` the runtime passes as `task_id`. The
+guard accepts either, exactly, and logs which one matched on first resolution —
+`artec transcript: task_id matched sessions.<column>` in the brain log. Record it here
+after the first digest session and the other can be dropped.

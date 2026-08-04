@@ -10,13 +10,19 @@ Delivering a video natively AND recording the delivery receipt cannot both live 
 read-only tool, so the operator elected the fifteenth tool — `deliver_video` — rather than
 weakening read_digest. That is the cleaner shape: read stays read, delivery is explicit.
 
-Video delivery design: the brain has no Google Drive client and Telegram cannot fetch a
-Drive share link (they are HTML viewer pages, not media). Job 11 therefore publishes a
-temporary public URL for each pending video into the digest payload — the same
-fal-storage pattern already used in production for Brevo hero images — and `deliver_video`
-hands that URL to Telegram `sendVideo`. No new dependency in the brain image, no Drive
-credentials needed here, and the delivery receipt (`message_id`) is what `review_video`
-refuses to proceed without.
+Video delivery design (CORRECTED): `deliver_video` uploads THE PUBLISH BYTES multipart.
+
+The first build handed Telegram the fal URL. That defeated both halves of the design: the
+operator approved fal's copy while publish streams the Drive copy (§7.9 stores every render
+in `_generated/{week}/{post_id}.{ext}`, and §4 makes the fal URL a fallback only), and
+Telegram's rejection of a malformed file — the independent validity check the whole gate
+rests on — was validating somebody else's bytes.
+
+The brain has no Drive credentials and must not grow any, so it reads the bytes from the
+app's authenticated `GET /commands/media/{post_id}`, which resolves them through
+`publish_media_path` — the same function publish calls. Byte-identity is proven by sha256,
+not assumed. A missing Drive file PARKS; there is no fal fallback, because a silent
+fallback is precisely the divergence being closed.
 """
 
 from __future__ import annotations
@@ -35,6 +41,13 @@ from .tools import _config, _get_engine, _jtext, _log_run
 EDITABLE_EMAIL_VARS = ("subject", "headline", "body_copy", "cta_text", "story_block",
                        "hero_image_url", "tracked_url")
 METRIC_FIELDS = ("impressions", "completion_rate", "watch_time_s", "saves", "shares", "clicks")
+
+try:                                            # stdlib since 3.9; guarded for odd images
+    from zoneinfo import ZoneInfo
+
+    SGT = ZoneInfo("Asia/Singapore")
+except Exception:                               # pragma: no cover
+    SGT = UTC
 
 
 # ---------------------------------------------------------------------------------------
@@ -70,17 +83,34 @@ def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
     return out
 
 
-def _read_digest_impl(digest_date: str | None = None, engine=None) -> dict:
-    """The digest payload prepared by job 11. READ ONLY — delivery is deliver_video's job."""
+def is_sunday(now: datetime | None = None) -> bool:
+    """Asia/Singapore, because the whole schedule is in SGT."""
+    return (now or datetime.now(SGT)).weekday() == 6
+
+
+def _read_digest_impl(digest_date: str | None = None, now: datetime | None = None,
+                      engine=None) -> dict:
+    """The digest payload prepared by job 11, plus the pre-split Telegram messages to send
+    verbatim in order. READ ONLY — delivery of video is deliver_video's job.
+
+    JOB 12 DOES NOT RUN ON SUNDAY: the 09:00 gate is that day's touch, and a second
+    Telegram session the same evening spends the operator's attention twice. The cron
+    expression says so too, but a cron expression is one edit away from being wrong — so
+    the refusal lives here, in the body, where nothing can route around it.
+    """
     eng = _get_engine(engine)
     target = str(digest_date or date.today())
+    if is_sunday(now):
+        return {"date": target, "deliver": False,
+                "skip_reason": "Sunday — job 12 does not run; the 09:00 gate is today's "
+                               "human touch and the digest resumes Monday 21:00"}
     with eng.begin() as conn:
         _log_run(conn, "read_digest", {"date": target})
         row = conn.execute(text(
             "SELECT payload, delivered_at FROM digests WHERE digest_date = :d"),
             {"d": target}).first()
         if row is None:
-            return {"date": target, "prepared": False,
+            return {"date": target, "prepared": False, "deliver": False,
                     "note": "no digest prepared for this date — job 11 has not run"}
         payload, delivered_at = row
         if isinstance(payload, str):
@@ -90,20 +120,80 @@ def _read_digest_impl(digest_date: str | None = None, engine=None) -> dict:
             conn.execute(text(
                 "UPDATE digests SET delivered_at = :t WHERE digest_date = :d"),
                 {"t": datetime.now(UTC), "d": target})
-    return {"date": target, "prepared": True, **(payload or {})}
+    return {"date": target, "prepared": True, "deliver": True, **(payload or {})}
 
 
 # ---------------------------------------------------------------------------------------
 # video review — deliver, then decide. Never the reverse.
 # ---------------------------------------------------------------------------------------
 
+class MediaUnavailable(RuntimeError):
+    """The publish bytes could not be fetched. Distinguishes 'the file is not in Drive'
+    (park) from 'the API is unreachable' (retry)."""
+
+    def __init__(self, message: str, park: bool):
+        super().__init__(message)
+        self.park = park
+
+
+def _publish_bytes(post_id: str) -> tuple[bytes, str, str]:
+    """THE bytes publish() will stream, read through the app's authenticated media
+    endpoint — which resolves them with `publish_media_path`, the same function publish
+    uses. Returns (data, filename, sha256).
+
+    The brain holds no Drive credentials and must not grow any; this is the whole reason
+    the endpoint exists. There is NO fal-URL fallback: handing Telegram a remote URL makes
+    Telegram validate fal's copy of the file, which says nothing about the bytes that reach
+    Upload-Post, and lets the operator approve one artefact while another goes live.
+    """
+    import hashlib
+
+    base = (os.environ.get("ARTEC_API_BASE") or "").rstrip("/")
+    token = os.environ.get("HERMES_API_TOKEN", "")
+    if not base or not token:
+        raise MediaUnavailable(
+            "ARTEC_API_BASE / HERMES_API_TOKEN are not set on this service — the video "
+            "cannot be read from Drive, and a fal URL is not an acceptable substitute",
+            park=False)
+    url = f"{base}/commands/media/{post_id}"
+    try:
+        resp = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=120)
+    except Exception as e:
+        # NAME THE URL. ARTEC_API_BASE carries a hardcoded :8080 while Railway injects
+        # PORT, so a port change must surface as "cannot reach artec api at <url>" rather
+        # than as a mute deliver_video refusal that looks like a bad file.
+        raise MediaUnavailable(
+            f"cannot reach artec api at {url} — {type(e).__name__}: {e}. Check "
+            "ARTEC_API_BASE (the port is pinned there; Railway injects PORT).",
+            park=False) from None
+    if resp.status_code == 404:
+        raise MediaUnavailable(
+            f"the rendered file is not in Drive _generated/ ({resp.text[:200]})", park=True)
+    if resp.status_code >= 400:
+        raise MediaUnavailable(
+            f"artec api at {url} returned HTTP {resp.status_code}"
+            + (" — the bearer was rejected; HERMES_API_TOKEN differs between services"
+               if resp.status_code == 401 else ""), park=False)
+    data = resp.content
+    claimed = resp.headers.get("X-Artec-Media-SHA256", "")
+    actual = hashlib.sha256(data).hexdigest()
+    if claimed and claimed != actual:
+        raise MediaUnavailable(
+            f"media digest mismatch: endpoint said {claimed[:12]}…, bytes hash "
+            f"{actual[:12]}… — refusing to show the operator a file we cannot identify",
+            park=False)
+    return data, resp.headers.get("X-Artec-Media-Filename", f"{post_id}.mp4"), actual
+
+
 def _deliver_video_impl(post_id: str, engine=None) -> dict:
-    """Send the rendered video into the chat as a NATIVE Telegram video message and record
-    the delivery message_id. `review_video` refuses without that receipt, so nobody can
-    approve a video they were never shown.
+    """Send the rendered video into the chat as a NATIVE Telegram video message — the
+    ACTUAL BYTES, uploaded multipart — and record the delivery message_id. `review_video`
+    refuses without that receipt, so nobody can approve a video they were never shown.
 
     Telegram refusing the upload PARKs the post — that refusal is independent evidence the
-    file is malformed and is more trustworthy than our own ffprobe pass.
+    file is malformed and is more trustworthy than our own ffprobe pass. That evidence is
+    only worth having because the bytes are ours: a URL would have Telegram validating
+    somebody else's copy.
     """
     eng = _get_engine(engine)
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -119,21 +209,35 @@ def _deliver_video_impl(post_id: str, engine=None) -> dict:
         if row is None:
             return {"post_id": post_id, "error": "not found"}
         status, caption, slot, channel, review = row
-        review = json.loads(review) if isinstance(review, str) else (review or {})
+        # SQLite round-trips a NULL json column as the string "null", which json.loads turns
+        # back into None — so the `or {}` must apply AFTER parsing, not instead of it.
+        review = (json.loads(review) if isinstance(review, str) else review) or {}
         if review.get("telegram_message_id"):
             return {"post_id": post_id, "already_delivered": True,
                     "telegram_message_id": review["telegram_message_id"]}
-        public_url = review.get("public_url")
-        if not public_url:
-            return {"post_id": post_id,
-                    "error": "no public_url on the post — job 11 prepares it for pending videos"}
+
+    now = datetime.now(UTC)
+    try:
+        data, filename, digest = _publish_bytes(post_id)
+    except MediaUnavailable as e:
+        if not e.park:
+            return {"post_id": post_id, "error": str(e), "parked": False}
+        with eng.begin() as conn:
+            review.update({"decision": None, "reason": str(e), "parked_at": now.isoformat()})
+            conn.execute(_jtext(
+                "UPDATE posts SET status = 'PARKED', park_reason = :r, video_review = :v "
+                "WHERE post_id = :p", "v"),
+                {"r": str(e)[:500], "v": review, "p": post_id})
+        return {"post_id": post_id, "parked": True, "error": str(e)}
 
     cap = f"{post_id} · {channel} · slot {slot}\n{(caption or '')[:900]}"
     try:
         resp = httpx.post(
             f"https://api.telegram.org/bot{token}/sendVideo",
-            data={"chat_id": chat_id, "video": public_url, "caption": cap,
-                  "supports_streaming": True},
+            # httpx requires the form fields as a DICT alongside files=; a list of tuples
+            # mis-encodes (the Upload-Post multipart bug, in production, once).
+            data={"chat_id": chat_id, "caption": cap, "supports_streaming": "true"},
+            files={"video": (filename, data, "video/mp4")},
             timeout=180,
         )
         body = resp.json()
@@ -141,7 +245,6 @@ def _deliver_video_impl(post_id: str, engine=None) -> dict:
         return {"post_id": post_id, "error": f"telegram send failed: {type(e).__name__}: {e}",
                 "parked": False}
 
-    now = datetime.now(UTC)
     if not body.get("ok"):
         # Telegram rejected the media itself → park. Independent evidence of a bad file.
         reason = f"telegram refused the video: {body.get('description', 'unknown')}"
@@ -163,7 +266,7 @@ def _deliver_video_impl(post_id: str, engine=None) -> dict:
         conn.execute(_jtext("UPDATE posts SET video_review = :v WHERE post_id = :p", "v"),
                      {"v": review, "p": post_id})
     return {"post_id": post_id, "telegram_message_id": message_id,
-            "expires_in_days": expiry_days}
+            "expires_in_days": expiry_days, "sha256": digest, "bytes": len(data)}
 
 
 def _review_video_impl(post_id: str, decision: str, reason: str | None = None,
@@ -185,7 +288,9 @@ def _review_video_impl(post_id: str, decision: str, reason: str | None = None,
         if row is None:
             return {"post_id": post_id, "error": "not found"}
         status, review = row
-        review = json.loads(review) if isinstance(review, str) else (review or {})
+        # SQLite round-trips a NULL json column as the string "null", which json.loads turns
+        # back into None — so the `or {}` must apply AFTER parsing, not instead of it.
+        review = (json.loads(review) if isinstance(review, str) else review) or {}
         if not review.get("telegram_message_id"):
             # Hard refusal, not an informational result: this is the guard that makes
             # "nobody approves a video they were never shown" true. It must reach the agent
@@ -244,7 +349,9 @@ def _review_email_impl(post_id: str, decision: str, edits: dict | None = None,
         status, channel, caption, review = row
         if channel != "email":
             return {"post_id": post_id, "error": f"not an email post (channel={channel})"}
-        review = json.loads(review) if isinstance(review, str) else (review or {})
+        # SQLite round-trips a NULL json column as the string "null", which json.loads turns
+        # back into None — so the `or {}` must apply AFTER parsing, not instead of it.
+        review = (json.loads(review) if isinstance(review, str) else review) or {}
         if review.get("decision") and decision != "test_only":
             return {"post_id": post_id, "already": review["decision"]}
 
@@ -319,12 +426,95 @@ def transcription_violations(figures: dict, operator_message: str) -> list[str]:
     return bad
 
 
-def _record_metrics_impl(post_id: str, channel: str, metric_date: str, figures: dict,
-                         operator_message: str, engine=None) -> dict:
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+class MetricsLineError(ValueError):
+    """The ordered line does not parse. Refusing is correct: a mis-aligned line writes the
+    right digits into the wrong columns, which is worse than no reading at all."""
+
+
+def parse_metrics_line(line: str) -> dict:
+    """One ordered reply — '4200, 0.62, 12, 45, 8, 118' — in the fixed field order.
+
+    An EMPTY position is NULL, never zero: '4200, , , 45, , 118' records impressions,
+    saves and clicks and leaves completion_rate, watch_time_s and shares unmeasured. A
+    literal 0 is a measured zero and is kept.
+
+    Thousands separators are refused rather than guessed at: '4,200' would silently become
+    two positions and shift every later figure into the wrong field.
+    """
+    tokens = [t.strip() for t in str(line).split(",")]
+    if len(tokens) > len(METRIC_FIELDS):
+        raise MetricsLineError(
+            f"{len(tokens)} positions for {len(METRIC_FIELDS)} fields "
+            f"({', '.join(METRIC_FIELDS)}) — if you used a thousands separator, drop it "
+            "(4200, not 4,200) and send the line again"
+        )
+    figures: dict = {}
+    for index, (field, token) in enumerate(zip(METRIC_FIELDS, tokens, strict=False), start=1):
+        if token == "":
+            figures[field] = None            # unmeasured, never zero
+            continue
+        if not _NUMBER.fullmatch(token):
+            raise MetricsLineError(
+                f"position {index} ({field}) is not a number: {token!r} — send the figure "
+                "or leave the position empty to record it as unmeasured"
+            )
+        figures[field] = float(token) if "." in token else int(token)
+    return figures
+
+
+def figures_from_args(args: dict) -> dict:
+    """The figures a record_metrics call would write, from either input form. Used by the
+    transcription hook so an ordered line is policed exactly like an explicit dict."""
+    figures = {k: v for k, v in (args.get("figures") or {}).items() if k in METRIC_FIELDS}
+    line = args.get("figures_line")
+    if line:
+        try:
+            parsed = parse_metrics_line(line)
+        except MetricsLineError:
+            return figures                   # the tool refuses with the reason
+        parsed.update(figures)
+        return parsed
+    return figures
+
+
+def _echo(post_id: str, channel: str, metric_date: str, recorded: dict,
+          null_fields: list[str]) -> str:
+    body = ", ".join(f"{k}={v}" for k, v in recorded.items()) or "nothing"
+    tail = (f"; {', '.join(null_fields)} stay UNMEASURED (NULL, not zero)"
+            if null_fields else "")
+    return f"{post_id} · {channel} · {metric_date} → {body}{tail}"
+
+
+def _record_metrics_impl(post_id: str, channel: str, metric_date: str,
+                         figures: dict | None = None, operator_message: str = "",
+                         figures_line: str | None = None, confirm: bool = False,
+                         engine=None) -> dict:
     """Upsert on (post_id, channel, metric_date). Omitted fields stay NULL — never zero.
-    `operator_message` is stored VERBATIM as the audit trail."""
+    `operator_message` is stored VERBATIM as the audit trail.
+
+    NOTHING IS WRITTEN WITHOUT confirm=true. The default call returns an echo of exactly
+    what would be recorded, so a mistyped figure is caught by the operator at 21:00 rather
+    than by `learn` three weeks later. Making the echo a return value rather than an
+    instruction is what makes it happen every time.
+    """
     eng = _get_engine(engine)
-    clean = {k: v for k, v in (figures or {}).items() if k in METRIC_FIELDS}
+    clean = figures_from_args({"figures": figures, "figures_line": figures_line})
+    if figures_line:
+        parse_metrics_line(figures_line)     # surface a bad line as an error, not silence
+
+    recorded = {k: v for k, v in clean.items() if v is not None}
+    null_fields = [f for f in METRIC_FIELDS if f not in recorded]
+    echo = _echo(post_id, channel, metric_date, recorded, null_fields)
+    if not confirm:
+        return {"preview": True, "written": False, "post_id": post_id, "channel": channel,
+                "metric_date": metric_date, "will_record": recorded,
+                "will_stay_unmeasured": null_fields, "echo": echo,
+                "next": "read this back to the operator verbatim; call again with "
+                        "confirm=true only after they agree"}
+    clean = recorded
     with eng.begin() as conn:
         _log_run(conn, "record_metrics", {"post_id": post_id, "channel": channel,
                                           "metric_date": metric_date,
@@ -359,7 +549,9 @@ def _record_metrics_impl(post_id: str, channel: str, metric_date: str, figures: 
             conn.execute(text(f"UPDATE metrics SET {', '.join(sets)} WHERE post_id = :p "
                               "AND channel = :c AND metric_date = :d"), params)
     return {"post_id": post_id, "channel": channel, "metric_date": metric_date,
-            "recorded": sorted(clean), "source": "operator_via_agent"}
+            "written": True, "recorded": sorted(clean),
+            "left_unmeasured": null_fields, "echo": echo,
+            "source": "operator_via_agent"}
 
 
 # ---------------------------------------------------------------------------------------
@@ -463,7 +655,8 @@ def read_draft_posts(args: dict, **kwargs) -> str:
 
 def read_digest(args: dict, **kwargs) -> str:
     return _envelope(lambda a, **kw: _read_digest_impl(
-        a.get("date"), engine=kw.get("engine")), args, **kwargs)
+        a.get("date"), now=a.get("now") or kw.get("now"), engine=kw.get("engine")),
+        args, **kwargs)
 
 
 def deliver_video(args: dict, **kwargs) -> str:
@@ -487,6 +680,7 @@ def record_metrics(args: dict, **kwargs) -> str:
     return _envelope(lambda a, **kw: _record_metrics_impl(
         str(a["post_id"]), str(a["channel"]), str(a["metric_date"]),
         a.get("figures") or {}, str(a.get("operator_message", "")),
+        figures_line=a.get("figures_line"), confirm=bool(a.get("confirm")),
         engine=kw.get("engine")), args, **kwargs)
 
 

@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from app.models import PlanShadow, Post
-from app.scheduler import JOBS, select_due_posts
+from app.scheduler import select_due_posts
 from app.stages.agent_review import audit_memory
 from app.stages.doctor import check_hermes_home
 from app.stages.plan_diff import build_diff
@@ -68,21 +68,30 @@ def test_volume_check_red_without_session_when_unset():
 
 # ---- acceptance 3: exactly four scheduled jobs across both codebases -------------------
 
-def test_exactly_four_scheduled_jobs(repo_root):
-    assert len(JOBS) == 2, "artec-scheduler owns exactly two jobs (publish, measure)"
+def test_exactly_the_twelve_scheduled_jobs(repo_root):
+    """v3 counted four. §3 defines TWELVE and §2 says "the twelve in §3, and only those.
+    Any job not on that list is a defect"."""
+    from app.jobs import JOBS as REGISTRY
+    from app.jobs import artec_jobs, brain_jobs
+
+    assert len(REGISTRY) == 12
+    assert len(artec_jobs()) == 9 and len(brain_jobs()) == 3
     # hermes-agent cron jobs are registered by the entrypoint via `hermes cron create`
     # (jobs live in $HERMES_HOME/cron/jobs.json, not config.yaml — per the CLI docs).
     entrypoint = (repo_root / "deploy" / "hermes-brain" / "entrypoint.sh").read_text(encoding="utf-8")
     cron_creates = re.findall(r"hermes cron create\s+\"([^\"]+)\"", entrypoint)
-    assert len(cron_creates) == 2, "hermes-agent owns exactly two cron jobs"
+    assert len(cron_creates) == 3, "the brain owns THREE cron jobs: 3, 5 and 12"
     # NUMERIC day-of-week only: the agent's parser rejects 'SUN' — and exits 0 doing so
     # (verified against a real install; that combination silently shipped zero jobs once).
-    assert set(cron_creates) == {"0 7 * * 0", "0 9 * * 0"}
+    # Job 12 is MON-SAT: a daily expression would interrupt the operator on the one
+    # evening the gate owns.
+    assert set(cron_creates) == {"0 7 * * 0", "0 9 * * 0", "0 21 * * 1-6"}
     for sched in cron_creates:
         assert not re.search(r"[A-Za-z]", sched), f"day names are rejected by the parser: {sched!r}"
     config = (repo_root / "deploy" / "hermes-brain" / "config.yaml").read_text(encoding="utf-8")
     assert "cron:" not in config, "cron jobs are CLI-registered, never declared in config.yaml"
-    assert len(JOBS) + len(cron_creates) == 4
+    # The registry is the single source; scheduler.JOBS is the legacy two-entry banner.
+    assert len(artec_jobs()) + len(cron_creates) == 12
 
 
 def test_no_other_timed_execution_in_app(repo_root):

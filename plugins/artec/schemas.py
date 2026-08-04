@@ -128,11 +128,13 @@ SCHEMAS: dict[str, dict] = {
     "read_digest": {
         "name": "read_digest",
         "description": (
-            "The prepared 21:00 digest for a date. Deliver it top-down and STOP when nothing "
-            "needs the operator: NEEDS YOU first (video review, email review, unmeasured "
-            "posts, failures, parked posts, doctor RED), then what went out, tonight's asset "
-            "drop, yesterday's numbers (revenue and engagement kept separate), then spend and "
-            "health. If NEEDS YOU is empty, say so in one line. Read-only."
+            "The prepared 21:00 digest for a date. It carries a `messages` list already "
+            "split to fit Telegram's message limit on section boundaries — SEND THOSE "
+            "VERBATIM, IN ORDER, and do not re-summarise, reorder, merge or shorten them; "
+            "NEEDS YOU is first by construction. If `deliver` is false, say the "
+            "skip_reason and stop (on Sunday there is no evening digest — the 09:00 gate "
+            "is that day's touch). If NEEDS YOU is empty the digest is one line: say it "
+            "and stop. Read-only."
         ),
         "parameters": {
             "type": "object",
@@ -208,7 +210,10 @@ SCHEMAS: dict[str, dict] = {
             "you must pass verbatim as operator_message. Never compute, estimate, infer, "
             "round, sum, or carry a figure forward from another day — if a number is missing "
             "or ambiguous, ask for it. Omitted fields stay unmeasured (NULL); never send zero "
-            "to mean 'unknown'."
+            "to mean 'unknown'. Ask for ONE post at a time, naming the six fields in order, "
+            "and accept a single ordered line back. Called without confirm, this WRITES "
+            "NOTHING and returns an echo of exactly what would be recorded: read that back "
+            "and call again with confirm=true only after the operator agrees."
         ),
         "parameters": {
             "type": "object",
@@ -221,10 +226,21 @@ SCHEMAS: dict[str, dict] = {
                     "description": "any of impressions, completion_rate, watch_time_s, "
                                    "saves, shares, clicks — omit what the operator did not say",
                 },
+                "figures_line": {
+                    "type": "string",
+                    "description": "the operator's single ordered line, passed through "
+                                   "UNCHANGED: impressions, completion_rate, watch_time_s, "
+                                   "saves, shares, clicks — e.g. '4200, 0.62, 12, 45, 8, 118'. "
+                                   "An empty position stays unmeasured; never fill one in.",
+                },
                 "operator_message": {"type": "string",
                                      "description": "the operator's message, VERBATIM"},
+                "confirm": {"type": "boolean",
+                            "description": "false/absent = echo only, nothing is written; "
+                                           "true = write, and only after the operator has "
+                                           "confirmed the echo"},
             },
-            "required": ["post_id", "channel", "metric_date", "figures", "operator_message"],
+            "required": ["post_id", "channel", "metric_date", "operator_message"],
         },
     },
     "retry_post": {

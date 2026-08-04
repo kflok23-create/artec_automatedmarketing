@@ -136,6 +136,25 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
     # --- local tooling -----------------------------------------------------------------
     checks.append(_check("ffmpeg on PATH", lambda: shutil.which("ffmpeg") or (_ for _ in ()).throw(RuntimeError("not found")),
                          "nixpacks.toml installs ffmpeg on Railway; locally: install ffmpeg"))
+    # ffprobe is a SEPARATE binary. The publish pre-flight cannot verify a single video
+    # without it, and "ffmpeg is present" is an inference, not evidence. Packaging class.
+    checks.append(_check("ffprobe on PATH", lambda: shutil.which("ffprobe") or (_ for _ in ()).throw(RuntimeError("not found")),
+                         "the ffmpeg package bundles ffprobe — if ffmpeg is green and this "
+                         "is red, the container has a partial install and video pre-flight "
+                         "cannot run"))
+
+    # v4: advisory locks, sequences and jsonb are Postgres-only. A deployed service on any
+    # other dialect would silently lose those guarantees, so this is RED, never a warning.
+    def _dialect():
+        from app.db import get_engine
+
+        name = get_engine().dialect.name
+        if name != "postgresql":
+            raise RuntimeError(f"connected database is {name}, not postgresql")
+        return "postgresql"
+    checks.append(_check("database is postgres", _dialect,
+                         "advisory locks (job de-duplication), post_id_seq and jsonb all "
+                         "require PostgreSQL — a non-Postgres database silently voids them"))
     fonts = OPERATOR_CONSTANTS["fonts"]
     missing_fonts = sorted(f for f in set(fonts.values()) if not (FONTS_DIR / f).exists())
     found_fonts = sorted(p.name for p in FONTS_DIR.iterdir()) if FONTS_DIR.is_dir() else []
@@ -163,12 +182,11 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                         warn=False))
 
     # v3 Rule 4: every surviving model endpoint must be priced or it is uncallable.
-    #
-    # v4 moved prices OUT of config into the `endpoint_prices` TABLE (§7·C5), so that
-    # reconciliation can write prices without any tool writing config. This check was left
-    # reading the deleted config key and raised KeyError on EVERY call — taking `artec
-    # doctor` and `POST /commands/doctor` down with it. A doctor that cannot run is worse
-    # than a missing check: it is a green light that never lights.
+    # v4 moved prices OUT of config into the `endpoint_prices` TABLE (§7·C5) so that
+    # reconciliation can write them without any tool writing config. This check was left
+    # reading the deleted config key and raised KeyError on every call — which took
+    # `artec doctor` AND `POST /commands/doctor` down with it, on main. A doctor that
+    # cannot run is worse than a missing check: it is a green light that never lights.
     endpoints = set(OPERATOR_CONSTANTS["model_endpoints"].values())
     if session is None:
         checks.append(Check("endpoint price table", True,
@@ -179,9 +197,9 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
         try:
             priced = {row["endpoint"] for row in price_table(session)}
         except Exception as e:
-            # Report RED rather than raising: an unreadable price table must not take every
-            # OTHER check down with it, and must not answer 500 from the one endpoint whose
-            # whole job is to say what is wrong.
+            # A doctor that raises is worse than a doctor that reports RED: it takes every
+            # OTHER check down with it and answers 500 to the endpoint whose whole job is
+            # to say what is wrong.
             checks.append(Check("endpoint price table", False,
                                 f"cannot read endpoint_prices: {type(e).__name__}",
                                 "run `alembic upgrade head`, then `artec config seed`"))
@@ -193,6 +211,47 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                 else f"unpriced: {unpriced}",
                 "run `artec config seed` — prices live in the endpoint_prices TABLE in v4, "
                 "and an unpriced endpoint is uncallable by design"))
+
+    # v4 §9 — a capability that has never run is not a capability, it is an intention with
+    # code attached. Absent or >90d is YELLOW; a recorded FAILURE is RED.
+    if session is not None:
+        from app.stages.prove import proof_status
+
+        rows = proof_status(session)
+        failed = [r["capability"] for r in rows if r["state"] == "failed"]
+        pending = [r["capability"] for r in rows if r["state"] in ("never", "stale")]
+        if failed:
+            checks.append(Check("capability proofs", False,
+                                f"FAILED: {failed}" + (f"; unproven: {pending}" if pending else ""),
+                                "run `artec prove <capability>` and fix what it reports"))
+        elif pending:
+            checks.append(Check("capability proofs", True,
+                                f"{len(rows) - len(pending)}/{len(rows)} proven; "
+                                f"unproven or stale: {pending}",
+                                warn=True))
+        else:
+            checks.append(Check("capability proofs", True,
+                                f"all {len(rows)} capabilities proven within 90 days"))
+
+    # D1 — the assertion FLIPS. On a bespoke service a Telegram token must NOT exist: the
+    # brain becomes the sole Telegram owner STRUCTURALLY rather than by policy, and two
+    # pollers on one token is a 409 that breaks the live gate. On the brain it must exist.
+    on_brain = bool(settings.HERMES_HOME)
+    has_token = bool(settings.TELEGRAM_BOT_TOKEN or settings.TELEGRAM_CHAT_ID)
+    if on_brain:
+        checks.append(Check("telegram ownership", has_token,
+                            "brain holds the token, as it must" if has_token
+                            else "the brain has NO Telegram token — the gateway cannot connect",
+                            "set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID on artec-brain"))
+    else:
+        checks.append(Check(
+            "telegram ownership", not has_token,
+            "no Telegram credentials on this service, as required (D1)" if not has_token
+            else "TELEGRAM_BOT_TOKEN/CHAT_ID are STILL SET on this bespoke service — the "
+                 "brain is meant to be the only Telegram owner, and a second poller on one "
+                 "token is a 409 that breaks the live gate",
+            "delete TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from artec api and "
+            "artec-scheduler (post-deploy step of D1)"))
 
     # v3 §5: the hermes-brain volume. Local probe when HERMES_HOME is set; otherwise
     # verified through the Postgres row the brain's entrypoint writes at every boot.

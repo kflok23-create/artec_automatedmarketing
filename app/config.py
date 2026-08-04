@@ -114,7 +114,15 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
     # Hard bound on requested output size — refused BEFORE the call, so a per-megapixel
     # endpoint can never be handed a resolution that prices past the ceiling.
     "max_output_megapixels": 4.0,
-    "agent_weekly_cap_minor": 500,   # USD 5.00/week of agent LLM spend, metered from agent_runs
+    # USD 15.00/week of agent LLM spend, metered from agent_runs. Raised from 500 in v4
+    # Stage 2b: the brain's weekly load after full autonomy is one LEARN→IDEATE, one ~45
+    # minute gate conversation and six digest sessions that stay open to relay replies —
+    # materially more than the two Sunday jobs it does today, and 500 was a guess nobody
+    # had data for. The degradation order on approach is drop scouting, then SHORTEN THE
+    # GATE CONVERSATION, so a cap set too low does not fail loudly: it quietly shortens the
+    # single most valuable human touch in the system, every week, while reporting green.
+    # agent_runs now records cost, so after two real weeks this is set from evidence.
+    "agent_weekly_cap_minor": 1500,
 
     # v4 review gates — the two surfaces that never auto-publish.
     "email_review_expiry_days": 3,   # stale email is worse than no email → PARK
@@ -182,6 +190,16 @@ RUNTIME_KEYS = frozenset({
 # `proofs` manifest — a per-capability dated proof, not a boolean).
 REMOVED_KEYS = ("image_endpoints", "video_family", "endpoint_prices_cents",
                 "video_pipeline_proven", "render_budget_cents", "post_id_counter")
+
+# Keys whose SHIPPED DEFAULT was superseded. A non-destructive seed keeps whatever is
+# stored, which is right for operator choices and wrong for a corrected default: the old
+# number was never chosen by anyone, so it would be inherited forever. If the stored value
+# is still exactly a superseded default, nobody picked it — take the new one and report it.
+# An operator-set value is never touched by this.
+SUPERSEDED_DEFAULTS: dict[str, tuple[Any, ...]] = {
+    # 500 (USD 5.00/week) was a guess made before the brain ran nightly digest sessions.
+    "agent_weekly_cap_minor": (500,),
+}
 
 
 # ---------------------------------------------------------------------------------------
@@ -266,6 +284,8 @@ def seed_config(
     kept: list[str] = []
     overwritten: list[str] = []
     removed: list[str] = []
+    upgraded: list[str] = []
+    needs_decision: list[str] = []
     for key in REMOVED_KEYS:
         row = session.get(Config, key)
         if row is not None:
@@ -274,14 +294,33 @@ def seed_config(
     for key, value in data.items():
         row = session.get(Config, key)
         if row is None:
-            session.add(Config(key=key, value=value, updated_at=datetime.now(UTC)))
+            session.add(Config(key=key, value=value, updated_at=datetime.now(UTC),
+                               set_by="seed"))
             added.append(key)
             continue
         if row.value == value or key in RUNTIME_KEYS:
             continue
+        if row.value in SUPERSEDED_DEFAULTS.get(key, ()):
+            # Only a value this seeder wrote may be corrected. An operator's choice is
+            # never overwritten, and an UNKNOWN provenance is not treated as permission —
+            # it is reported, and the operator decides.
+            if row.set_by == "seed":
+                row.value = value
+                row.updated_at = datetime.now(UTC)
+                upgraded.append(key)
+                continue
+            if row.set_by is None:
+                needs_decision.append(
+                    f"{key}: stored {row.value!r} is a superseded default and the shipped "
+                    f"value is now {value!r}, but this row predates provenance tracking so "
+                    f"it cannot be told from a deliberate choice — take it with "
+                    f"`artec config set {key} {value!r}` or leave it")
+                kept.append(key)
+                continue
         if force or key in forced_keys:
             row.value = value
             row.updated_at = datetime.now(UTC)
+            row.set_by = "operator" if key in forced_keys else "seed"
             overwritten.append(key)
         else:
             kept.append(key)
@@ -293,6 +332,7 @@ def seed_config(
     session.flush()
     return {"added": sorted(added), "kept": sorted(kept),
             "overwritten": sorted(overwritten), "removed": sorted(removed),
+            "upgraded": sorted(upgraded), "needs_decision": sorted(needs_decision),
             "prices_seeded": priced}
 
 
@@ -305,13 +345,18 @@ def get_config(session: Session, key: str, default: Any = _RAISE) -> Any:
     return row.value
 
 
-def set_config(session: Session, key: str, value: Any) -> None:
+def set_config(session: Session, key: str, value: Any, set_by: str | None = None) -> None:
+    """`set_by='operator'` marks a deliberate choice, which supersession may never
+    overwrite. Runtime state (cursors, gates, last_doctor) leaves provenance alone."""
     row = session.get(Config, key)
     if row is None:
-        session.add(Config(key=key, value=value, updated_at=datetime.now(UTC)))
+        session.add(Config(key=key, value=value, updated_at=datetime.now(UTC),
+                           set_by=set_by))
     else:
         row.value = value
         row.updated_at = datetime.now(UTC)
+        if set_by:
+            row.set_by = set_by
     session.flush()
 
 

@@ -119,7 +119,11 @@ def test_failed_publish_records_reason_and_never_lost_the_media(session):
 
 def test_email_publish_uses_template_contract(session):
     post = _approved(session, pid="post_1499", channel="email")
-    post.status = "RENDERED"
+    # v4 §B: email is the only irreversible surface, so RENDERED is not publishable —
+    # it needs the recorded review approval. (The refusal itself is asserted in
+    # tests/unit/test_v4_skip_rules.py.)
+    post.status = "APPROVED_TO_SEND"
+    post.email_review = {"decision": "approve", "reviewed_at": "2026-08-27T21:10:00+00:00"}
     post.media_drive_file_id = "gen_1"
     post.caption = ('{"subject": "s", "headline": "h", "body_copy": "b", '
                     '"cta_text": "c", "story_block": "st"}')

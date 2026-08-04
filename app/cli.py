@@ -84,6 +84,11 @@ def config_seed(
         if result["kept"]:
             rec.log("kept operator values (differ from shipped defaults, NOT overwritten): "
                     + ", ".join(result["kept"]) + "  — use --force to reset them")
+        for line in result.get("needs_decision", []):
+            rec.log("NEEDS YOUR DECISION: " + line)
+        if result.get("upgraded"):
+            rec.log("upgraded superseded defaults (stored value was the old shipped default, "
+                    "so nobody had chosen it): " + ", ".join(result["upgraded"]))
         if result["overwritten"]:
             rec.log("OVERWROTE: " + ", ".join(result["overwritten"]))
 
@@ -99,7 +104,7 @@ def config_set(key: str, value: str):
     except json_lib.JSONDecodeError:
         parsed = value
     with record_run("config set", {"key": key}) as (session, rec):
-        set_config(session, key, parsed)
+        set_config(session, key, parsed, set_by="operator")
         rec.log(f"config set: {key}")
 
 
@@ -316,6 +321,139 @@ def plan_diff(week: str = typer.Option(..., "--week", help="YYYY-MM-DD (Monday)"
         print_diff(build_diff(session, _parse_week(week)), log=rec.log)
 
 
+@cli.command("digest-prepare")
+def digest_prepare(
+    date_str: str = typer.Option(None, "--date", help="YYYY-MM-DD (default: yesterday)"),
+    show: bool = typer.Option(False, "--show", help="print the operator-facing text"),
+):
+    """Job 11 body: prepare the 21:00 digest into the digests table. Idempotent per date.
+    Registers with no cron — the twelve jobs are wired in Stage 2c."""
+    settings = _boot()
+    from app.integrations.brevo_client import Brevo
+    from app.stages.digest import prepare_digest, render_digest_text
+
+    with record_run("digest-prepare", {"date": date_str}) as (session, rec):
+        try:
+            brevo = Brevo(settings)
+        except Exception:
+            brevo = None   # count reported UNAVAILABLE, never 0
+        payload = prepare_digest(session, brevo=brevo, target=_parse_week(date_str),
+                                 log=rec.log)
+        if show:
+            typer.echo("\n" + render_digest_text(payload))
+
+
+@cli.command("sweep-reviews")
+def sweep_reviews():
+    """v4 §E: park every email/video review nobody answered inside its window. There is no
+    auto-approve and no expire-to-send — stale email is worse than no email."""
+    _boot()
+    from app.scheduler import sweep_expired_reviews
+
+    with record_run("sweep reviews", {}) as (session, rec):
+        expired = sweep_expired_reviews(session, log=rec.log)
+        rec.log(f"sweep: {len(expired)} review(s) expired and PARKED")
+
+
+@cli.command("backup")
+def backup_cmd():
+    """Job 8: pg_dump the live database to Drive _backups/. On the first of the month it
+    also proves the dump restores — still ONE job."""
+    settings = _boot()
+    from app.integrations.drive_client import DriveClient
+    from app.stages.backup import BackupError, restore_check, rides_today, run_backup
+
+    with record_run("backup", {}) as (session, rec):
+        try:
+            drive = DriveClient(settings)
+        except Exception as e:
+            rec.log(f"backup: no Drive client ({type(e).__name__}) — dumping locally only")
+            drive = None
+        try:
+            result = run_backup(settings.DATABASE_URL, drive=drive, log=rec.log)
+        except BackupError as e:
+            typer.echo(f"backup FAILED: {e}", err=True)
+            raise typer.Exit(code=1) from None
+        if rides_today():
+            proof = restore_check(session, settings.DATABASE_URL, result["local_path"],
+                                  log=rec.log)
+            typer.echo(("restore-check: OK — " if proof.ok else "restore-check: RED — ")
+                       + proof.detail)
+            if not proof.ok:
+                typer.echo(proof.remedy, err=True)
+                raise typer.Exit(code=1)
+
+
+@cli.command("restore-check")
+def restore_check_cmd(
+    dump: str = typer.Option(..., "--dump", help="path to the .dump produced by `artec backup`"),
+):
+    """Prove the dump restores: scratch DATABASE, row counts, drop. RED with a reason
+    beats a green line — a backup you cannot prove is a backup you do not have."""
+    settings = _boot()
+    from app.stages.backup import restore_check
+
+    with record_run("restore-check", {"dump": dump}) as (session, rec):
+        proof = restore_check(session, settings.DATABASE_URL, dump, log=rec.log)
+        typer.echo(("OK — " if proof.ok else "RED — ") + proof.detail)
+        if not proof.ok:
+            typer.echo(proof.remedy, err=True)
+            raise typer.Exit(code=1)
+
+
+@cli.command("prove")
+def prove_cli(
+    capability: str = typer.Argument(..., help="one of the nine capabilities"),
+    dump: str = typer.Option(None, "--dump", help="for `restore`: the .dump to verify"),
+    live: bool = typer.Option(False, "--live", help="brevo-send only; refused in 2c-iii"),
+):
+    """Exercise a capability against production and record a dated proof."""
+    settings = _boot()
+    from app.stages import prove as prove_mod
+
+    if capability not in prove_mod.PROVERS:
+        typer.echo(f"unknown capability. one of: {', '.join(sorted(prove_mod.PROVERS))}",
+                   err=True)
+        raise typer.Exit(code=2)
+    with record_run("prove", {"capability": capability}) as (session, rec):
+        try:
+            proof = prove_mod.run(session, capability, settings=settings, log=rec.log,
+                                  dump_path=dump, live=live)
+        except prove_mod.NotProvable as e:
+            typer.echo(f"NOT PROVABLE HERE: {e}", err=True)
+            raise typer.Exit(code=3) from None
+        typer.echo(("PROVEN — " if proof.ok else "FAILED — ") + proof.detail)
+        if not proof.ok:
+            raise typer.Exit(code=1)
+
+
+@cli.command("proofs")
+def proofs_cli():
+    """The proof matrix: which capabilities are proven, stale, failed, or never run."""
+    _boot()
+    from app.db import session_scope
+    from app.stages.prove import proof_status
+
+    with session_scope() as session:
+        for row in proof_status(session):
+            mark = {"proven": "OK  ", "stale": "OLD ", "failed": "FAIL", "never": "----"}[row["state"]]
+            s1 = " [S1]" if row["s1"] else ""
+            typer.echo(f"{mark} {row['capability']:<20}{s1:<6} {row.get('at') or 'never run'}"
+                       f"  {row.get('detail', '')[:60]}")
+
+
+@cli.command("jobs")
+def jobs_cmd():
+    """The twelve jobs, their owners, and how a human invokes each one by hand."""
+    from app.jobs import JOBS
+
+    for job in JOBS:
+        mirror = job.mirror or "(brain — hermes cron, no HTTPS mirror)"
+        typer.echo(f"{job.number:>2}. {job.name:<22} {job.schedule:<38} {job.owner:<6} {mirror}")
+        if job.notes:
+            typer.echo(f"    {job.notes}")
+
+
 @cli.command("audit-memory")
 def audit_memory_cmd(
     path: list[str] = typer.Option(None, "--path", help="file/dir to scan (default: $HERMES_HOME)"),  # noqa: B008
@@ -336,9 +474,19 @@ def audit_memory_cmd(
 def agent_review_cmd():
     """Monthly first-Sunday session: print the agent's skill list and MEMORY.md."""
     _boot()
-    from app.stages.agent_review import agent_review
+    from app.stages.agent_review import (
+        agent_review,
+        config_drift_check,
+        main_ci_gate_check,
+        toolset_drift_check,
+    )
 
     agent_review(log=typer.echo)
+    drift = toolset_drift_check(log=typer.echo)
+    config_drift = config_drift_check(log=typer.echo)
+    gate = main_ci_gate_check(log=typer.echo)
+    if drift["missing"] or config_drift["drifted"] or (gate["checked"] and not gate["green"]):
+        raise typer.Exit(code=1)
 
 
 @cli.command()

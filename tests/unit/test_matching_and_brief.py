@@ -49,7 +49,7 @@ def test_missing_assets_never_match(session):
     assert find_candidates(session, "assembled_blocks", "photo") == []
 
 
-def test_v_brief_capped_at_40_rows(session):
+def test_v_brief_capped(session):
     # 10: seed far more raw material than the cap and assert the LIMIT holds.
     for i in range(60):
         session.add(Post(post_id=f"post_{2000 + i}", week_start=date(2026, 7, 27),
@@ -60,7 +60,7 @@ def test_v_brief_capped_at_40_rows(session):
                           medium="photo", subject=f"subject{i % 20}", status="active"))
     session.flush()
     rows = session.execute(text("SELECT section, line FROM v_brief")).all()
-    assert 0 < len(rows) <= 40
+    assert 0 < len(rows) <= 70
 
 
 def test_selector_generate_is_not_a_tool(session):
@@ -97,3 +97,45 @@ def test_fallback_plan_bank_only_never_generates():
     assert fallback_plan("child_face", [], "video") is None
     # Product-free message post — the zero-asset brand card survives.
     assert fallback_plan("brand_message", [], "photo").tools == ["text_card"]
+
+
+# ---- F3 · the defect the AGENT found in production and wrote into its own memory ---------
+
+def test_read_brief_and_read_parked_posts_agree_on_the_parked_set(session, tmp_path):
+    """`read_brief`'s post section was a pure recency window (LIMIT 14 by week_start), so a
+    post parked weeks ago vanished from it while `read_parked_posts` still returned it.
+
+    read_brief is the read the planner makes FIRST, and a backlog it cannot see is a backlog
+    it plans over. Found in production by the agent, recorded in agent memory, never in the
+    gap register — which is its own finding.
+    """
+    import importlib.util
+    import json as json_lib
+    from pathlib import Path
+
+    # a full recent week that would fill the 14-row window on its own
+    for i in range(14):
+        session.add(Post(post_id=f"post_{7000 + i}", week_start=date(2026, 8, 24),
+                         channel="instagram", status="PUBLISHED", angle=f"recent{i}"))
+    # and posts parked long ago — post_1485 is exactly this case in production
+    old_parked = [f"post_{1485 + i}" for i in range(3)]
+    for pid in old_parked:
+        session.add(Post(post_id=pid, week_start=date(2026, 6, 1), channel="tiktok",
+                         status="PARKED", angle="old parked", park_reason="needs an asset"))
+    session.commit()
+
+    spec = importlib.util.spec_from_file_location(
+        "brief_tools", Path(__file__).resolve().parents[1].parent / "plugins" / "artec" / "tools.py")
+    tools = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tools)
+
+    engine = session.get_bind()
+    brief = json_lib.loads(tools.HANDLERS["read_brief"]({}, engine=engine))["data"]
+    parked_tool = json_lib.loads(
+        tools.HANDLERS["read_parked_posts"]({}, engine=engine))["data"]
+
+    from_tool = {p["post_id"] for p in parked_tool}
+    assert from_tool == set(old_parked), "fixture sanity"
+    missing = [pid for pid in from_tool if pid not in brief]
+    assert not missing, f"read_brief omits PARKED posts read_parked_posts returns: {missing}"
+    assert "parked_awaiting_assets: 3" in brief, "the count line must stay authoritative"

@@ -127,3 +127,42 @@ artec wishlist fulfil --post-id post_1490 --drive-file-id <id>   # manual overri
 | MY orders all UNATTRIBUTED | checkout.php's `order_created` POST to `/event` is failing or missing — the paid callback found no pending row for that bill_id (see DECISIONS.md #3) |
 | SG orders all UNATTRIBUTED | artec.my is not appending `?client_reference_id=post_XXXX` to the Stripe payment link |
 | Double-publish error | Correct behaviour — that post already went live; it will never publish twice |
+
+---
+
+## THE MERGE RULE — written, not enforced (operator decision D2)
+
+> **No merge to `main` without a green CI run on the exact commit being merged — every
+> `pg` test EXECUTED, not skipped. Branch protection is unavailable on this plan; this
+> rule is enforced by discipline, and its absence is a known gap to close if the plan
+> changes.**
+
+`GET /repos/.../branches/main/protection` returns **HTTP 403 — "Upgrade to GitHub Pro or
+make this repository public"**. The repo stays private, so GitHub cannot enforce condition
+5. Three things make the rule as hard to skip by accident as a written rule can be:
+
+1. **`artec agent-review` checks it after the fact.** `main_ci_gate_check()` asks GitHub
+   whether `main`'s HEAD carries a green CI run and reports **RED** if it does not —
+   including the dangerous case, a commit CI never ran against at all. It cannot PREVENT a
+   bad merge; nothing available on this plan can. It makes one visible the next time anyone
+   looks. Without a `GITHUB_TOKEN` it reports **NOT CHECKED**, never a pass: an
+   unverifiable rule is not a kept one.
+2. **The merge commit message states the CI run id that was green.** A merge without one is
+   self-evidently outside the rule.
+3. **Checkpoint 1 reports the rule and whether it held.**
+
+### Merging `v4-stage-2b` — the checklist
+
+```bash
+# 1. CI must be green on the exact commit you are about to merge
+gh run list --branch v4-stage-2b --limit 1 --json databaseId,headSha,conclusion
+
+# 2. every pg test EXECUTED, not skipped — read the count, do not trust the tick
+gh run view <run-id> --log | grep "selected"      # expect "N selected", never "N skipped"
+
+# 3. merge, naming the run id in the message
+git merge --no-ff v4-stage-2b -m "merge v4-stage-2b (CI run <run-id> green, N pg executed)"
+
+# 4. confirm the rule held
+artec agent-review          # RED if main's HEAD has no green run
+```

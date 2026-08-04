@@ -529,3 +529,24 @@ unless marked.
     `HERMES_HOME / "profiles" / profile / "state.db"`. One `ls` on the container settles the
     rest; it is the decoy shape again — a path that looks plausible and is not the one that
     matters.
+
+61. **v4 · the `v_brief` PARKED fix is ACCEPTED-WITH-EXPIRY on `main`, deliberately.**
+    Operator decision D1: the fix may require a migration, C1 has not established whether
+    it does, and a schema change to production ahead of that answer is the wrong order. It
+    rides the merge instead of the hotfix.
+    **The consequence, stated rather than left implicit: until the merge, the Sunday gate
+    reads the defective view.** `read_brief` under-reports the parked backlog — post_1485
+    and anything else parked outside the 14-row recency window is invisible to it while
+    `read_parked_posts` still returns it. **Expiry: the merge.** Mitigation until then: the
+    gate operator cross-checks with `read_parked_posts`, which has always been correct.
+
+62. **v4 · the merge gate is a WRITTEN rule, and written rules need a place to be seen.**
+    Operator decision D2. Branch protection returns 403 on this plan and the repo stays
+    private, so condition 5 cannot be enforced by GitHub:
+    *no merge to `main` without a green CI run on the exact commit being merged, every `pg`
+    test EXECUTED not skipped.* Recorded in `docs/STAGE-2B-PROGRESS.md` and
+    `docs/RUNBOOK.md`; `artec agent-review` reports RED when main's HEAD has no green run
+    — including the case that matters most, a commit CI never ran against — and NOT CHECKED
+    (never a pass) without a token; the merge commit names the green run id; Checkpoint 1
+    reports whether the rule held. None of that PREVENTS a bad merge. Nothing on this plan
+    can. It makes one visible, which is the difference between a rule and a hope.

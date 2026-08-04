@@ -24,7 +24,8 @@ deploys, so a partially-built branch cannot strand a post.
    Telegram session DOES create a `sessions` row, and the guard now accepts either
    `id` or `session_key` exactly, so this needs one live session to confirm rather than a
    decision **or** is consciously accepted as HTTPS-only for week one
-5. the CI gate, per the operator's decision on branch protection (403 on this plan)
+5. a green CI run on the exact commit being merged — **a WRITTEN rule, decided D2; see
+   "THE MERGE RULE" below**
 
 Condition 1 is the governing one and the reason the branch runs long:
 
@@ -47,6 +48,30 @@ The CI job *Postgres-substrate tests (advisory locks, sequences, jsonb)* is the 
 Draft PR: kflok23-create/artec_automatedmarketing#1. A CI job that runs but does not gate
 is a job that will eventually be ignored — **make this a required status check on `main`
 in GitHub branch protection**.
+
+
+## THE MERGE RULE — written, not enforced (operator decision D2)
+
+> **No merge to `main` without a green CI run on the exact commit being merged — every
+> `pg` test EXECUTED, not skipped. Branch protection is unavailable on this plan; this
+> rule is enforced by discipline, and its absence is a known gap to close if the plan
+> changes.**
+
+`GET /repos/.../branches/main/protection` returns **HTTP 403 — "Upgrade to GitHub Pro or
+make this repository public"**. The repo stays private, so GitHub cannot enforce condition
+5. Three things make the rule as hard to skip by accident as a written rule can be:
+
+1. **`artec agent-review` checks it after the fact.** `main_ci_gate_check()` asks GitHub
+   whether `main`'s HEAD carries a green CI run and reports **RED** if it does not —
+   including the dangerous case, a commit CI never ran against at all. It cannot PREVENT a
+   bad merge; nothing available on this plan can. It makes one visible the next time anyone
+   looks. Without a `GITHUB_TOKEN` it reports **NOT CHECKED**, never a pass: an
+   unverifiable rule is not a kept one.
+2. **The merge commit message states the CI run id that was green.** A merge without one is
+   self-evidently outside the rule.
+3. **Checkpoint 1 reports the rule and whether it held.**
+
+### The earlier framing (superseded by D2)
 
 **BLOCKED, and not by me.** `GET /repos/.../branches/main/protection` returns
 **HTTP 403: "Upgrade to GitHub Pro or make this repository public to enable this

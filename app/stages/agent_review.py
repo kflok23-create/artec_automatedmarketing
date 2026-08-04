@@ -227,3 +227,78 @@ def config_drift_check(repo_config: Path | None = None, log=print) -> dict:
     else:
         log("agent-review: profile config matches the repo-committed canonical file")
     return {"checked": True, "drifted": drifted, "live": str(live)}
+
+
+# ---------------------------------------------------------------------------------------
+# D2 — the merge gate is a WRITTEN RULE, so it needs somewhere to be visible.
+#
+# Branch protection is unavailable on this plan (HTTP 403: "Upgrade to GitHub Pro or make
+# this repository public") and the repo stays private, so condition 5 cannot be enforced by
+# GitHub. The rule stands anyway:
+#
+#   NO MERGE TO `main` WITHOUT A GREEN CI RUN ON THE EXACT COMMIT BEING MERGED — every
+#   `pg` test EXECUTED, not skipped.
+#
+# A rule nobody can see is a rule nobody keeps, so this checks it after the fact: does
+# main's current HEAD have a successful CI run? It cannot PREVENT a bad merge — nothing
+# available on this plan can — but it makes one visible the next time anybody looks.
+#
+# "Cannot check" is reported as NOT CHECKED and never as a pass, matching the toolset
+# drift check: an unverifiable rule is not a kept one.
+# ---------------------------------------------------------------------------------------
+
+GITHUB_API = "https://api.github.com"
+DEFAULT_REPO = "kflok23-create/artec_automatedmarketing"
+
+
+def main_ci_gate_check(fetch=None, repo: str | None = None, log=print) -> dict:
+    """Whether main's HEAD carries a green CI run. `fetch(url) -> dict | None` is injected
+    by tests; in production it is an authenticated GitHub API GET."""
+    repo = repo or os.environ.get("GITHUB_REPOSITORY") or DEFAULT_REPO
+
+    if fetch is None:
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+        if not token:
+            log("agent-review: merge-gate NOT CHECKED — no GITHUB_TOKEN, and this repo is "
+                "private. The written rule still stands: no merge to main without a green "
+                "CI run on the exact commit being merged.")
+            return {"checked": False, "green": False, "reason": "no GITHUB_TOKEN"}
+
+        def fetch(url: str):
+            import httpx
+
+            response = httpx.get(url, timeout=30, headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json"})
+            return response.json() if response.status_code == 200 else None
+
+    try:
+        head = fetch(f"{GITHUB_API}/repos/{repo}/commits/main")
+        sha = (head or {}).get("sha")
+        if not sha:
+            log("agent-review: merge-gate NOT CHECKED — could not resolve main's HEAD")
+            return {"checked": False, "green": False, "reason": "HEAD unresolved"}
+        runs = fetch(f"{GITHUB_API}/repos/{repo}/actions/runs?head_sha={sha}") or {}
+    except Exception as e:                                    # noqa: BLE001
+        log(f"agent-review: merge-gate NOT CHECKED — {type(e).__name__}: {e}")
+        return {"checked": False, "green": False, "reason": f"{type(e).__name__}"}
+
+    workflow_runs = runs.get("workflow_runs") or []
+    if not workflow_runs:
+        # The dangerous case, and the one the rule exists to catch: a commit on main that
+        # CI never ran against at all.
+        log(f"agent-review: RED — main HEAD {sha[:7]} has NO CI run. The written merge rule "
+            "requires a green run on the exact commit being merged.")
+        return {"checked": True, "green": False, "sha": sha, "run_id": None,
+                "reason": "no CI run for this commit"}
+
+    latest = workflow_runs[0]
+    green = latest.get("conclusion") == "success"
+    if green:
+        log(f"agent-review: merge gate held — main HEAD {sha[:7]} has a green CI run "
+            f"({latest.get('id')})")
+    else:
+        log(f"agent-review: RED — main HEAD {sha[:7]} CI run {latest.get('id')} concluded "
+            f"{latest.get('conclusion')!r}, not 'success'.")
+    return {"checked": True, "green": green, "sha": sha, "run_id": latest.get("id"),
+            "reason": latest.get("conclusion")}

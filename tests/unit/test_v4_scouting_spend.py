@@ -349,3 +349,57 @@ def test_the_capability_patterns_do_not_drift_from_the_cli_version(audit):
     live = [audit.TOOL_COUNT_RE.pattern, audit.NO_SUCH_TOOL_RE.pattern,
             audit.IMPERATIVE_RE.pattern]
     assert [p for _, p in CAPABILITY_PATTERNS] == live
+
+
+# ---- D2 · the merge gate is a written rule, so it has to be VISIBLE ----------------------
+
+from app.stages.agent_review import main_ci_gate_check  # noqa: E402
+
+
+def _api(sha="a1fa8fd0000000000000000000000000000000ab", runs=None):
+    def fetch(url: str):
+        if url.endswith("/commits/main"):
+            return {"sha": sha}
+        return {"workflow_runs": runs if runs is not None else []}
+    return fetch
+
+
+def test_a_green_run_on_mains_head_is_the_gate_holding():
+    result = main_ci_gate_check(
+        fetch=_api(runs=[{"id": 30872795253, "conclusion": "success"}]),
+        log=lambda *_: None)
+    assert result["checked"] is True and result["green"] is True
+    assert result["run_id"] == 30872795253
+
+
+def test_a_failed_run_is_red():
+    result = main_ci_gate_check(
+        fetch=_api(runs=[{"id": 1, "conclusion": "failure"}]), log=lambda *_: None)
+    assert result["checked"] is True and result["green"] is False
+
+
+def test_a_commit_with_no_ci_run_at_all_is_red():
+    """THE case the rule exists to catch: branch protection cannot stop a merge on this
+    plan, so a commit CI never saw is exactly what would slip through."""
+    messages = []
+    result = main_ci_gate_check(fetch=_api(runs=[]), log=messages.append)
+    assert result["checked"] is True and result["green"] is False
+    assert "NO CI run" in " ".join(messages)
+
+
+def test_no_token_is_NOT_CHECKED_and_never_a_pass(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    messages = []
+    result = main_ci_gate_check(log=messages.append)
+    assert result["checked"] is False and result["green"] is False
+    assert "NOT CHECKED" in " ".join(messages)
+    assert "written rule still stands" in " ".join(messages)
+
+
+def test_an_api_failure_is_not_checked_rather_than_green():
+    def boom(url):
+        raise RuntimeError("network down")
+
+    result = main_ci_gate_check(fetch=boom, log=lambda *_: None)
+    assert result["checked"] is False and result["green"] is False

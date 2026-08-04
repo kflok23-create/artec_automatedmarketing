@@ -1034,3 +1034,136 @@ Redaction is the operator's call, and it is recorded here rather than silently s
     Caught only because a later edit failed to find its anchor text in a file that had been
     checked out from `main`. **A document correction is not delivered when it is written; it
     is delivered when it is on the branch that ships.** Merged forward here.
+
+93. **2026-08-05 · THE DISCONNECTED GUARD — a named failure class, and a mechanical check
+    for it.** Three defects now share a shape that is NOT the wrong-comparison pattern. Each
+    guard was well written, correct in isolation, and **connected to nothing**:
+
+    | # | guard | why it was inert |
+    |---|---|---|
+    | 1 | branch-protection ruleset | enforcement disabled, `include: []` — targeted no branches |
+    | 2 | `audit_memory_report` | correct logic, pointed at paths where memory does not live |
+    | 3 | `validate_required_config` | correct logic, called by nothing outside `tests/` |
+
+    The standing review question does not catch these. It asks *what supplies each side of
+    the comparison* — and in all three the comparison was fine. Nothing ran it. The question
+    that catches them is different: **is this guard reachable from production code at all?**
+
+    Each of the three was found by accident, one pass at a time, after it had already failed
+    to protect something. `tests/unit/test_no_disconnected_guards.py` finds the fourth before
+    it ships: every named guard must have at least one reference outside `tests/`, and a
+    guard that does not is named in the failure.
+
+94. **2026-08-05 · A DEFAULT IS A FALLBACK, NOT A SETTING — and from outside the two are
+    indistinguishable.** Wiring `validate_required_config` into both boot paths took the
+    scheduler down and was right to. Verbatim:
+
+        app.config.RequiredConfigMissing: required config missing for role 'scheduler':
+        email_review_expiry_days (absent), facebook_page_id (absent),
+        linkedin_organization_urn (absent), max_output_megapixels (absent),
+        render_run_cap_cents (absent), video_review_expiry_days (absent)
+
+    Six keys; two were new. **The other four had been absent from production the whole
+    time**, including `render_run_cap_cents` — the render spend cap — and both review expiry
+    windows. Nothing ever failed, because every read passes a default:
+    `get_config(session, "render_run_cap_cents", 250)`. The system reported a cap it was not
+    reading, and no external observation could have distinguished that from a configured one.
+
+    **Root cause:** a key added to `OPERATOR_CONSTANTS` never reaches a database that was
+    seeded before that key existed. `artec config seed` had to be run by hand and nothing
+    ever said when. Fixed by calling the non-destructive `seed_config` at boot BEFORE
+    validation, so a new constant arrives with the deploy that introduces it — the one moment
+    anyone knows it is needed. Ordering matters and I got it wrong first: validate-then-seed
+    is an outage, seed-then-validate is a fix.
+
+95. **2026-08-05 · A WARNING IN A COMMENT IS NOT A GUARD.** Twice in two passes a correct
+    diagnosis sat directly above the code that ignored it — the always-wrong FATAL, then the
+    log flood that the flooding script's own docstring warned against. A comment is read by a
+    human after the fact; a guard is read by the machine before. **If the code must not do X,
+    assert it.** This is the standing review question applied to the FORM of a warning: a
+    comment supplies no side of any comparison.
+
+    Corollary, earned separately: **a check that is always wrong must be fixed or removed,
+    never made louder.** Escalating severity is only valid once the check's correctness has
+    been established independently of the thing it checks. Severity is not evidence, and a
+    loud wrong check converts a cosmetic defect into an outage.
+
+96. **2026-08-05 · The memory audit reported `clean — 0 file(s) scanned`, and a test asserted
+    that it should.** Its first ever production run, the same day the agent acted on a stale
+    capability claim for an entire session. Two independent defects:
+
+    1. **Wrong paths.** It scanned `$HERMES_HOME/{MEMORY.md,memories,skills}`. hermes-agent
+       stores memory under the ACTIVE PROFILE — the real path is
+       `/data/hermes/profiles/artec-brain/memories/MEMORY.md`. This is the identical
+       decoy-path trap already documented for the transcript store in VERIFY.md.
+    2. **`clean: not hits` was true for zero files.** A scan of nothing reported health.
+
+    The second was **encoded in its own test**: `test_the_audit_is_clean_on_empty_memory`
+    supplied an empty directory and demanded the word "clean". The guard's test asserted the
+    bug the guard existed to catch. Zero files is now its own state — `nothing_scanned`, NOT
+    clean, reporting every path it searched.
+
+    **The stale claim was gone before the purge ran.** The agent overwrote it itself after
+    its live self-correction; memory now names `read_draft_posts` as the designed way to run
+    the weekly gate. The tooling VERIFIED the state; it did not remediate it. Recording this
+    because the opposite is the tempting version.
+
+    Scope correction: the first fixed run scanned 401 files because both scripts recursed
+    `skills/`, which holds shipped skill packages — documentation and templates, not
+    autonomously written memory. Narrowed to `MEMORY.md`, `memories/`, `memory/` → 2 files.
+
+97. **2026-08-05 · The live catalog reaches the agent as DATA on the read it makes first.**
+    `read_brief` now emits the tool list generated from `HANDLERS` — the dispatch table
+    `register(ctx)` populates and every tool call resolves through. Not a manifest, not a
+    document: it cannot name a tool that is not callable, nor omit one that is. Same pattern
+    as `_spend_posture_lines`.
+
+    **The limit, stated rather than blurred:** this makes the truth present and authoritative
+    on the first read. It cannot reach inside the host's memory injection — nothing in a
+    plugin can. What it removes is the excuse, not the possibility. Separately, the boot-time
+    audit compares against the plugin MANIFEST, which is what *should* register; only a
+    session observes what *did*. `test_the_manifest_is_not_the_live_catalog` keeps that
+    weakness written down.
+
+98. **2026-08-05 · PAGE TARGETING — and the negative claim is the one that needed proving.**
+    Facebook and LinkedIn are OAuth'd through a personal account that administers the Artec
+    page. Nothing targeted a page, so both would have published to the personal profile —
+    silently, and SUCCESSFULLY, because Upload-Post returns success either way and nothing in
+    the response distinguishes the two outcomes.
+
+    It breaks MEASUREMENT, not only branding. LinkedIn exposes no member-level analytics at
+    all; Facebook analytics requires `page_id`. Published personally, `metrics` stays NULL
+    forever while `learn` scores those channels as though it had measured them — stale
+    reading as zero, arriving through the publisher.
+
+        facebook_page_id          = 574903736241765             "Artec Malaysia"
+        linkedin_organization_urn = urn:li:organization:97212204 "Artec Malaysia"
+
+    **The same account administers `urn:li:organization:74925843` — "Tech Up Advance l
+    GoTechUp", a different business.** Configuring the right URN proves the right URN works;
+    it does NOT prove the wrong one is unreachable. Those are different claims, and
+    `publish-by-slot` already reported PROVEN over an empty board on exactly that confusion.
+    `ForeignPageTarget` refuses it by name.
+
+    Publish REFUSES rather than defaults: there is no code path that publishes facebook or
+    linkedin without an explicit target — the guarantee is the absence of a fall-through.
+    Doctor compares config against Upload-Post's LIVE listing and prints the other
+    administered organisation, so the operator sees what the system is choosing between
+    rather than trusting that it chose.
+
+    **The fake runs the real refusal.** `FakeUploadPost` delegates to the real `_page_fields`
+    rather than accepting `page_targets` and ignoring it — a permissive fake would let the
+    dry run publish with no page configured and report success, which is the production
+    failure reproduced inside the harness built to catch it.
+
+99. **2026-08-05 · `digest_date` is the DELIVERY date, computed in ONE place.** Job 11 wrote
+    `now(UTC).date() - 1 day` (the data window it covers); job 12 read `date.today()` (the
+    container's UTC date). Both correct in isolation; nothing compared them. On 2026-08-04
+    the first digest this system ever produced was written under `2026-08-03`, looked for
+    under `2026-08-04`, and the operator was told job 11 had not run — about a job that had
+    run on time, unattended, for the first time.
+
+    `app/digest_dates.py::digest_date_for` is now the only place either side computes it.
+    Keying by the data window would orphan Sunday, since job 12 does not run that day.
+    Job 12 has THREE states and never collapses them: deliver · a digest exists under a
+    different key (named as `digest_date_mismatch`, both dates printed) · nothing at all.

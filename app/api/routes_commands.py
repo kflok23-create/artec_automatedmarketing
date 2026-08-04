@@ -196,6 +196,69 @@ def sweep_reviews_cmd():
         return {"expired": expired, "count": len(expired)}
 
 
+@router.post("/backup")
+def backup_cmd():
+    """Job 8 body over HTTPS. On the first of the month it also runs restore-check —
+    still ONE job, so the schedule stays twelve."""
+    from app.integrations.drive_client import DriveClient
+    from app.stages.backup import restore_check, rides_today, run_backup
+
+    settings = get_settings()
+    with record_run("backup", {}) as (session, rec):
+        try:
+            drive = DriveClient(settings)
+        except Exception:
+            drive = None
+        result = run_backup(settings.DATABASE_URL, drive=drive, log=rec.log)
+        if rides_today():
+            proof = restore_check(session, settings.DATABASE_URL, result["local_path"],
+                                  log=rec.log)
+            result["restore_check"] = {"ok": proof.ok, "detail": proof.detail,
+                                       "remedy": proof.remedy}
+        return result
+
+
+@router.post("/restore-check")
+def restore_check_cmd(body: CommandRequest):
+    """Prove the latest dump restores. RED with a reason beats a green line — a backup you
+    cannot prove is a backup you do not have."""
+    from app.stages.backup import restore_check
+
+    settings = get_settings()
+    with record_run("restore-check", {}) as (session, rec):
+        path = body.post_id or ""      # reuse the free-text field for the dump path
+        if not path:
+            raise HTTPException(status_code=422,
+                                detail="pass the dump path (post_id field) — run "
+                                       "POST /commands/backup first")
+        proof = restore_check(session, settings.DATABASE_URL, path, log=rec.log)
+        return {"ok": proof.ok, "detail": proof.detail, "remedy": proof.remedy,
+                "counts": proof.counts, "scratch_database": proof.scratch_database}
+
+
+@router.post("/publish-slot")
+def publish_slot_cmd(body: CommandRequest):
+    """Job 1 body over HTTPS — the slot pass, by hand. A job body that only ever runs on a
+    clock is a body nobody has exercised until the night it matters."""
+    from app.scheduler import run_publish_job
+
+    slot = body.post_id or ""
+    if not slot:
+        raise HTTPException(status_code=422, detail="pass the slot name (post_id field)")
+    with record_run("publish-slot", {"slot": slot}) as (session, rec):
+        return run_publish_job(session, slot, log=rec.log)
+
+
+@router.post("/measure-reminder")
+def measure_reminder_cmd():
+    """Job 4 body over HTTPS. RETIRED AT MERGE (D1) — the brain becomes the sole Telegram
+    owner and the digest carries the unmeasured list."""
+    from app.scheduler import run_measure_job
+
+    with record_run("measure-reminder", {}) as (session, rec):
+        return run_measure_job(session, log=rec.log)
+
+
 @router.post("/plan-diff")
 def plan_diff_cmd(body: CommandRequest):
     """Shadow-mode artefact: bespoke vs agent plans with per-field agreement and learning

@@ -19,7 +19,7 @@ deploys, so a partially-built branch cannot strand a post.
 1. **jobs 11 and 12 registered and verified BY LISTING**, `+08:00` next-run timestamps —
    end of 2c-iv, immediately before Checkpoint 1
 2. every `pg` test executed and green
-3. **`POST /commands/*` accepts the correct bearer** (probe A′ — still open, see below)
+3. ~~`POST /commands/*` accepts the correct bearer~~ — **CLOSED**. Resolved-ENVIRONMENT, not resolved-code: an un-redeployed container, then a malformed command that pasted a literal token in front of the os.environ lookup. The diagnostic named it on first use (`provided_len=128 expected_len=64`). See DECISIONS #63
 4. metrics entry either works against the production store layout — probe F1 confirms a
    Telegram session DOES create a `sessions` row, and the guard now accepts either
    `id` or `session_key` exactly, so this needs one live session to confirm rather than a
@@ -482,3 +482,25 @@ The agent found a real defect in production and wrote it into its own memory. It
 reached the gap register, so it survived four passes of review by people who do not read
 agent memory. Memory is not a defect tracker — anything the agent discovers about the
 system needs a path out of memory and into the register.
+
+
+---
+
+## 2c-ii — the ten HTTPS mirrors, job 8, and restore-check
+
+| Item | State |
+|---|---|
+| Job registry `app/jobs.py` | twelve jobs, ten artec-owned with mirrors, two brain cron. Parity asserted BOTH ways |
+| Job 8 `pg_dump` | `--format=custom`; refuses if pg_dump is absent, if the dump is zero-byte, and never echoes the connection string on failure |
+| `restore-check` | scratch DATABASE, free-disk check first, CREATE DATABASE denied is RED with the CREATEDB remedy and no schema fallback, eight tables compared, dropped in a `finally` |
+| `_backups/` | the second Drive write target, declared in `upload_backup` |
+| New mirrors | `/commands/backup`, `/commands/restore-check`, `/commands/publish-slot`, `/commands/measure-reminder` |
+| `artec jobs` | prints the twelve with owner, schedule, and how to invoke each by hand |
+
+**Operator item — `GITHUB_TOKEN`.** Not set on artec api, so `main_ci_gate_check` reports
+NOT CHECKED on every run. A rule whose voice never speaks decays the same way an ungating
+CI job does. A fine-grained PAT with **read-only Actions + Contents** on this repo is
+enough; I cannot mint it.
+
+**Open question for 2c-iv:** the job NUMBERING is reconstructed. The count is right and the
+bodies are real, but confirm the numbers before cron registration makes them load-bearing.

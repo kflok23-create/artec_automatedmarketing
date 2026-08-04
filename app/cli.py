@@ -355,6 +355,64 @@ def sweep_reviews():
         rec.log(f"sweep: {len(expired)} review(s) expired and PARKED")
 
 
+@cli.command("backup")
+def backup_cmd():
+    """Job 8: pg_dump the live database to Drive _backups/. On the first of the month it
+    also proves the dump restores — still ONE job."""
+    settings = _boot()
+    from app.integrations.drive_client import DriveClient
+    from app.stages.backup import BackupError, restore_check, rides_today, run_backup
+
+    with record_run("backup", {}) as (session, rec):
+        try:
+            drive = DriveClient(settings)
+        except Exception as e:
+            rec.log(f"backup: no Drive client ({type(e).__name__}) — dumping locally only")
+            drive = None
+        try:
+            result = run_backup(settings.DATABASE_URL, drive=drive, log=rec.log)
+        except BackupError as e:
+            typer.echo(f"backup FAILED: {e}", err=True)
+            raise typer.Exit(code=1) from None
+        if rides_today():
+            proof = restore_check(session, settings.DATABASE_URL, result["local_path"],
+                                  log=rec.log)
+            typer.echo(("restore-check: OK — " if proof.ok else "restore-check: RED — ")
+                       + proof.detail)
+            if not proof.ok:
+                typer.echo(proof.remedy, err=True)
+                raise typer.Exit(code=1)
+
+
+@cli.command("restore-check")
+def restore_check_cmd(
+    dump: str = typer.Option(..., "--dump", help="path to the .dump produced by `artec backup`"),
+):
+    """Prove the dump restores: scratch DATABASE, row counts, drop. RED with a reason
+    beats a green line — a backup you cannot prove is a backup you do not have."""
+    settings = _boot()
+    from app.stages.backup import restore_check
+
+    with record_run("restore-check", {"dump": dump}) as (session, rec):
+        proof = restore_check(session, settings.DATABASE_URL, dump, log=rec.log)
+        typer.echo(("OK — " if proof.ok else "RED — ") + proof.detail)
+        if not proof.ok:
+            typer.echo(proof.remedy, err=True)
+            raise typer.Exit(code=1)
+
+
+@cli.command("jobs")
+def jobs_cmd():
+    """The twelve jobs, their owners, and how a human invokes each one by hand."""
+    from app.jobs import JOBS
+
+    for job in JOBS:
+        mirror = job.mirror or "(brain — hermes cron, no HTTPS mirror)"
+        typer.echo(f"{job.number:>2}. {job.name:<22} {job.schedule:<38} {job.owner:<6} {mirror}")
+        if job.notes:
+            typer.echo(f"    {job.notes}")
+
+
 @cli.command("audit-memory")
 def audit_memory_cmd(
     path: list[str] = typer.Option(None, "--path", help="file/dir to scan (default: $HERMES_HOME)"),  # noqa: B008

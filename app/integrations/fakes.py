@@ -158,6 +158,11 @@ class FakeDrive:
         self._by_id[file_id] = local_path
         return file_id
 
+    def upload_backup(self, local_path: str, filename: str) -> str:
+        self._counter += 1
+        self.uploaded.append((local_path, "_backups", filename))
+        return f"backup_{self._counter}"
+
     def probe_write(self) -> bool:
         return True
 

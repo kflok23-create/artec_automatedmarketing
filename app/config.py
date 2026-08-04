@@ -169,6 +169,16 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
     },
     # First-publish safety gate (CHECKPOINT 4) — fires once per install, then persists off.
     "confirm_first_publish": True,
+
+    # PAGE TARGETING (§B). Facebook and LinkedIn are OAuth'd through a PERSONAL account
+    # that administers the Artec page. Publishing without these lands on the personal
+    # timeline — silently, and with a SUCCESS response — and permanently kills analytics
+    # for both channels, because LinkedIn exposes no member-level analytics at all.
+    # Public page references, not secrets: config, not env.
+    "facebook_page_id": "574903736241765",              # "Artec Malaysia" (only page)
+    "linkedin_organization_urn": "urn:li:organization:97212204",   # "Artec Malaysia"
+    # The same account administers urn:li:organization:74925843 "Tech Up Advance l
+    # GoTechUp" — A DIFFERENT BUSINESS. See FOREIGN_ORGANISATIONS in upload_post_client.
     # Drive changes-API cursor (set by assets sync)
     "drive_page_token": None,
     # NOTE: weekly_spend_minor is declared once, above, in the v4 §E1 block — it stays
@@ -218,6 +228,10 @@ REQUIRED_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
         "cm_per_unit_sgd_minor", "cm_per_unit_myr_minor",
         "discount_sgd_minor", "discount_myr_minor",
         "plan_source", "allow_person_assets",
+        # Without these, publish REFUSES for facebook/linkedin rather than defaulting to
+        # the personal profile. Required so a service refuses to boot rather than
+        # discovering the gap at the moment of a public post.
+        "facebook_page_id", "linkedin_organization_urn",
     ),
     # artec-scheduler: without these the twelve jobs cannot fire correctly
     "scheduler": (

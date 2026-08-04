@@ -47,17 +47,32 @@ def _json_stmt(sql: str, *params: str):
     return stmt
 
 
-def start_run(job: str, session_id: str | None = None, engine=None) -> int | None:
+def start_run(job: str, session_id: str | None = None, engine=None,
+              trigger: str = "cron") -> int | None:
     """Open an agent_runs row. Returns its id, or None if the write failed (never raises —
-    observability must not be able to take down the job it is observing)."""
+    observability must not be able to take down the job it is observing).
+
+    `trigger` distinguishes a scheduled firing from a run-now mirror. It defaults to 'cron'
+    because that is the path that had NO ROWS AT ALL: agent_runs held two entries, both
+    operator conversations, and jobs 3, 5 and 12 had never written one. An absent row must
+    mean "did not run", and it can only mean that if a run that does happen always leaves
+    one — the same reasoning that makes cron registration verified by listing rather than
+    by an exit code.
+
+    A brain-side stdout line is printed alongside, matching the scheduler's
+    `job N <name> due at HH:MM`, so a failure that happens before the database write is
+    still visible in the deploy log.
+    """
+    print(f"brain: job {job} starting (trigger={trigger}, session={session_id or '-'})")
     try:
         eng = _eng(engine)
         with eng.begin() as conn:
             row = conn.execute(
                 _json_stmt("INSERT INTO agent_runs (job, session_id, started_at, status, "
-                           "tools_called) VALUES (:j, :s, :t, 'running', :tc) "
+                           "tools_called, trigger) VALUES (:j, :s, :t, 'running', :tc, :tr) "
                            "RETURNING id", "tc"),
-                {"j": job, "s": session_id, "t": datetime.now(UTC), "tc": []},
+                {"j": job, "s": session_id, "t": datetime.now(UTC), "tc": [],
+                 "tr": trigger},
             ).first()
             return int(row[0]) if row else None
     except Exception as e:
@@ -150,8 +165,8 @@ def record_tool_call_for_session(session_id: str | None, tool: str, engine=None)
             if row is None:
                 opened = conn.execute(
                     _json_stmt("INSERT INTO agent_runs (job, session_id, started_at, status, "
-                               "tools_called) VALUES (:j, :s, :t, 'running', :tc) "
-                               "RETURNING id", "tc"),
+                               "tools_called, trigger) VALUES (:j, :s, :t, 'running', :tc, "
+                               "'manual') RETURNING id", "tc"),
                     {"j": "telegram-session", "s": str(session_id),
                      "t": datetime.now(UTC), "tc": []}).first()
                 run_id = int(opened[0]) if opened else None

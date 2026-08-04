@@ -116,6 +116,60 @@ def learn(session: Session, llm, week_start: date | None = None, log=print) -> d
     for o in session.execute(select(Order).where(Order.post_id.in_(post_ids))).scalars():
         orders_by_post[o.post_id].append(o)
 
+    # ------------------------------------------------------------------------------------
+    # INVARIANT 2 — UNMEASURED IS NOT ZERO. This was breached, and a probe against week
+    # 2026-08-03's real shape (five published, no metrics, two withdrawn) proved it:
+    #
+    #   lever=angle    value=build     score=0E-10 n=3 verdict=test
+    #   lever=channel  value=instagram score=0E-10 n=2 verdict=test
+    #   lever=hook     value=time      score=0E-10 n=3 verdict=test        ... six in all
+    #
+    # Six levers scored ZERO with a real verdict, derived from no measurement whatsoever.
+    # The arithmetic was `eng_n.get(value, 0.0)` — an absent engagement score defaulting to
+    # zero — plus `traffic[value] = 0.0` for no events and `sales_score = 0.0` for no
+    # orders. Three defaults, each individually reasonable, together asserting "this lever
+    # performed at the bottom of the range" about a week nobody measured.
+    #
+    # Those verdicts feed IDEATE. A `test` verdict on `hook=time` tells next week's planner
+    # that hook underperformed, when the truth is that nobody looked.
+    #
+    # A post is MEASURED if it carries any evidence at all — a metrics row, an event, or an
+    # order. Evidence in any lane counts, because the lanes are separate for combination,
+    # not for existence. A post with none of the three is excluded and reported, exactly as
+    # withdrawn posts are, and exactly as `channel_cac` already reports
+    # "unmeasurable (no spend configured)" rather than scoring a zero CAC.
+    # ------------------------------------------------------------------------------------
+    def _has_evidence(post: Post) -> bool:
+        return bool(metrics_by_post[post.post_id]) or bool(
+            events_by_post[post.post_id]) or bool(orders_by_post[post.post_id])
+
+    unmeasured = [p for p in posts if not _has_evidence(p)]
+    posts = [p for p in posts if _has_evidence(p)]
+    if unmeasured:
+        log(f"learn {week}: EXCLUDING {len(unmeasured)} unmeasured post(s) from scoring — "
+            f"{[p.post_id for p in unmeasured]}. No metrics, no events, no orders is an "
+            f"ABSENCE OF EVIDENCE, not a zero: scoring them would tell IDEATE that every "
+            f"lever they carry underperformed, when nobody looked.")
+        session.add(Learning(
+            week_start=week, lever="unmeasured", lever_value=None, kpi="all", score=None,
+            sample_size=len(unmeasured),
+            verdict=("unmeasured — published, never measured, excluded from lever scoring: "
+                     + ", ".join(p.post_id for p in unmeasured))[:500]))
+
+    if not posts:
+        # Every published post is unmeasured or withdrawn. Same honest answer as cold start,
+        # for a different reason — and the reason is named rather than collapsed into it.
+        session.add(Learning(
+            week_start=week, lever="cold_start", lever_value=None, kpi="all", score=None,
+            sample_size=0,
+            verdict="insufficient data — posts were published but NONE carries any "
+                    "measurement, so no lever can be scored"))
+        session.flush()
+        log(f"learn {week}: {len(unmeasured)} published post(s), none measured — "
+            f"'insufficient data', NOT a set of zero scores")
+        return {"week": str(week), "verdicts": 1 + (1 if unmeasured else 0),
+                "cold_start": True, "unmeasured": [p.post_id for p in unmeasured]}
+
     written = 0
     for lever in LEVERS:
         groups: dict[str, list[Post]] = defaultdict(list)

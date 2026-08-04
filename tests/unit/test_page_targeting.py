@@ -244,3 +244,82 @@ def test_a_withdrawn_post_keeps_its_external_id_so_republish_still_refuses(sessi
     assert row.status == "PUBLISHED"      # it WAS published; that stays true
     assert row.external_post_id == "ext_w"
     assert row.withdrawn_at is not None
+
+
+# --- §1.2 · three-state target verification, surfaced in NEEDS YOU ---------------------
+
+def test_the_three_target_states_are_never_collapsed():
+    """`verify_publish_target` returns None for BOTH "verified correct" and "could not
+    check". Merging them is how an unperformed check reads as a pass."""
+    from app.integrations.upload_post_client import _target_owner_reported
+
+    assert _target_owner_reported({"page_id": ARTEC_FB}) is True
+    assert _target_owner_reported({"status": "ok"}) is False      # nothing to check against
+    assert _target_owner_reported({}) is False
+
+
+@pytest.mark.parametrize("state,expected", [
+    ("mismatch", "WRONG SURFACE"),
+    ("unverified", "TARGET UNVERIFIED"),
+])
+def test_both_non_verified_states_reach_NEEDS_YOU(session, state, expected):
+    """Sunday publishes unattended, so surfacing IS the safety net. post_1488 and post_1489
+    sat on a personal timeline for days because this lived only in a run log."""
+    from datetime import UTC, date, datetime
+
+    from app.models import Post
+    from app.stages.digest import build_payload, render_digest_text
+
+    session.add(Post(
+        post_id="post_bad", channel="linkedin", week_start=date(2026, 8, 3),
+        status="PUBLISHED", slot="lunch", external_post_id="ext_bad",
+        posted_at=datetime(2026, 8, 4, tzinfo=UTC),
+        target_check={"state": state, "intended": ARTEC_LI,
+                      "detail": "post landed on urn:li:organization:74925843",
+                      "checked_at": "2026-08-04T01:00:00+00:00"}))
+    session.flush()
+
+    payload = build_payload(session, brevo=None, target=date(2026, 8, 4))
+    assert payload["needs_you"]["empty"] is False, (
+        "a target alert did not make NEEDS YOU non-empty — the section renders one line and "
+        "stops when empty, so the alert would never be seen")
+    text = render_digest_text(payload)
+    assert expected in text
+    assert "post_bad" in text
+    assert "withdraw post_bad" in text          # the action vocabulary, inline
+
+
+def test_a_verified_target_raises_nothing(session):
+    from datetime import UTC, date, datetime
+
+    from app.models import Post
+    from app.stages.digest import build_payload
+
+    session.add(Post(
+        post_id="post_ok", channel="facebook", week_start=date(2026, 8, 3),
+        status="PUBLISHED", slot="lunch", external_post_id="ext_ok",
+        posted_at=datetime(2026, 8, 4, tzinfo=UTC),
+        target_check={"state": "verified", "intended": ARTEC_FB, "detail": "confirmed"}))
+    session.flush()
+    payload = build_payload(session, brevo=None, target=date(2026, 8, 4))
+    assert payload["needs_you"]["target_alerts"] == []
+
+
+def test_a_withdrawn_post_stops_alerting(session):
+    """Once removed at source the alert is answered; repeating it every night would train
+    the operator to skip the section."""
+    from datetime import UTC, date, datetime
+
+    from app.models import Post
+    from app.stages.digest import build_payload
+
+    session.add(Post(
+        post_id="post_gone", channel="linkedin", week_start=date(2026, 8, 3),
+        status="PUBLISHED", slot="lunch", external_post_id="ext_gone",
+        posted_at=datetime(2026, 8, 4, tzinfo=UTC),
+        withdrawn_at=datetime(2026, 8, 5, tzinfo=UTC),
+        withdrawn_reason="removed at source",
+        target_check={"state": "mismatch", "intended": ARTEC_LI, "detail": "wrong page"}))
+    session.flush()
+    payload = build_payload(session, brevo=None, target=date(2026, 8, 4))
+    assert payload["needs_you"]["target_alerts"] == []

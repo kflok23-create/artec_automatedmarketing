@@ -39,15 +39,12 @@ def next_runs(now: datetime | None = None) -> list[dict]:
     list, so it lists itself — and every next-run carries `+08:00` so a timezone regression
     is visible rather than inferred.
     """
-    from app.jobs import ARTEC
-    from app.jobs import JOBS as REGISTRY
+    from app.jobs import firings
 
     now = now or datetime.now(SGT)
     out = []
-    for job in REGISTRY:
-        if job.owner != ARTEC or not job.at:
-            continue
-        parts = job.at.split()
+    for job, when in firings():
+        parts = when.split()
         dow, hhmm = (int(parts[0]), parts[1]) if len(parts) == 2 else (None, parts[0])
         hour, minute = (int(x) for x in hhmm.split(":"))
         candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -57,9 +54,9 @@ def next_runs(now: datetime | None = None) -> list[dict]:
             # 0 = Sunday, matching the numeric day-of-week cron requires.
             while (candidate.weekday() + 1) % 7 != dow:
                 candidate += timedelta(days=1)
-        out.append({"number": job.number, "name": job.name, "at": job.at,
+        out.append({"number": job.number, "name": job.name, "at": when,
                     "next_run": candidate.isoformat()})
-    return sorted(out, key=lambda r: r["number"])
+    return sorted(out, key=lambda r: (r["number"], r["at"]))
 
 
 def select_due_posts(session, slot: str) -> list:
@@ -159,6 +156,83 @@ def sweep_expired_reviews(session, now: datetime | None = None, log=print) -> li
     return expired
 
 
+def run_registry_job(session, job, log=print):
+    """Dispatch one registry job. Explicit, not `importlib` on `job.body`: a typo in a
+    dotted string would fail at 20:40 on a Tuesday instead of in CI."""
+    from app.settings import get_settings
+
+    settings = get_settings()
+    if job.name == "report":
+        from app.config import get_config
+        from app.stages.report import build_report
+        from app.toolbox.reconcile import reconcile_prices
+
+        # FIRST action, before the snapshot.
+        reconcile_prices(session, int(get_config(session, "render_run_cap_cents", 250)),
+                         log=log)
+        return build_report(session)
+    if job.name == "plan-diff":
+        from app.stages.plan_diff import build_diff
+
+        return build_diff(session, _last_monday())
+    if job.name == "render":
+        from app.integrations.anthropic_client import LLM
+        from app.integrations.drive_client import DriveClient
+        from app.integrations.fal_client import Fal
+        from app.stages.render import render
+
+        return render(session, LLM(settings), DriveClient(settings), Fal(settings),
+                      all_approved=True, log=log)
+    if job.name == "pg-dump":
+        from app.integrations.drive_client import DriveClient
+        from app.stages.backup import restore_check, rides_today, run_backup
+
+        result = run_backup(settings.DATABASE_URL, drive=DriveClient(settings), log=log)
+        if rides_today():
+            proof = restore_check(session, settings.DATABASE_URL, result["local_path"],
+                                  log=log)
+            result["restore_check"] = {"ok": proof.ok, "detail": proof.detail}
+        return result
+    if job.name == "assets-sync":
+        from app.integrations.drive_client import DriveClient
+        from app.stages.assets_sync import sync
+        from app.stages.wishlist import match
+
+        out = sync(session, DriveClient(settings), log=log)
+        out["wishlist"] = match(session, log=log)
+        return out
+    if job.name == "doctor-sweep":
+        from app.config import set_config
+        from app.stages.doctor import run_doctor
+
+        checks = run_doctor(settings, session=session, log=log)
+        set_config(session, "last_doctor", {
+            "at": datetime.now(UTC).isoformat(),
+            "checks": [{"name": c.name,
+                        "status": "GREEN" if c.ok else ("YELLOW" if c.warn else "RED"),
+                        "detail": c.detail} for c in checks]})
+        return {"checks": len(checks)}
+    if job.name == "digest-prepare":
+        from app.integrations.brevo_client import Brevo
+        from app.stages.digest import prepare_digest
+
+        # The expiry sweep runs INSIDE job 11, immediately before preparation, so a review
+        # that has just expired is parked and reported in the same payload.
+        expired = sweep_expired_reviews(session, log=log)
+        try:
+            brevo = Brevo(settings)
+        except Exception:
+            brevo = None
+        payload = prepare_digest(session, brevo=brevo, log=log)
+        return {"expired": len(expired), "needs_you": not payload["needs_you"]["empty"]}
+    raise RuntimeError(f"job {job.number} {job.name!r} has no dispatch")
+
+
+def _last_monday():
+    today = datetime.now(SGT).date()
+    return today - timedelta(days=today.weekday())
+
+
 def run_publish_job(session, slot: str, log=print) -> dict:
     from app.config import get_config
     from app.integrations.brevo_client import Brevo
@@ -212,7 +286,31 @@ def tick(now: datetime, fired: set[str], log=print) -> set[str]:
     hhmm = now.strftime("%H:%M")
     day = now.strftime("%Y-%m-%d")
 
+    from app.jobs import firings
+
     with record_run("scheduler tick", {"at": f"{day} {hhmm}"}) as (session, rec):
+        # THE REGISTRY IS WHAT FIRES. Until 2c-iv the registry knew the times and this loop
+        # did not read it, so six jobs had times nothing acted on — a schedule that exists
+        # only in a data structure.
+        for job, when in firings():
+            parts = when.split()
+            dow, at = (int(parts[0]), parts[1]) if len(parts) == 2 else (None, parts[0])
+            if hhmm != at:
+                continue
+            if dow is not None and (now.weekday() + 1) % 7 != dow:
+                continue
+            key = f"{day}|job{job.number}|{when}"
+            if key in fired:
+                continue
+            fired.add(key)
+            rec.log(f"scheduler: job {job.number} {job.name} due at {when}")
+            try:
+                run_registry_job(session, job, log=rec.log)
+            except Exception as e:                              # noqa: BLE001
+                # One job must not take the tick down with it — the rest of the night's
+                # chain still has to run, and the digest is what reports the failure.
+                rec.log(f"job {job.number} {job.name} FAILED: {type(e).__name__}: {e}")
+
         slot_times: dict = get_config(session, "slot_times")
         for slot, at in slot_times.items():
             key = f"{day}|publish|{slot}"

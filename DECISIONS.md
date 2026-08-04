@@ -653,3 +653,45 @@ unless marked.
     slot-driven. The tenth artec-owned job is the bespoke half of learn-ideate. "RECONSTRUCTED,
     NOT RECOVERED" is removed from the registry docstring and a test asserts its absence: a
     caveat that outlives its reason becomes noise, and noise is what people learn to skip.
+
+77. **v4 · THE REGISTERED SET WAS NOT §3's TWELVE — reconciled, with every deviation named.**
+    The reconstruction diverged in seven places and four of them were not numbering
+    preferences:
+    * **The 20:30 → 20:40 → 20:55 → 21:05 chain is a designed sequence.** Assets sync so
+      tonight's wishlist reflects last night's drop; doctor so its RED lines exist to be
+      carried; digest preparation so the payload is written before the brain reads it.
+      Preparation had been set to **21:00 — the same minute as delivery** — which races
+      `read_digest` against the row it needs, and the failure mode is an EMPTY DIGEST on a
+      night something needed the operator. Restored to 20:55.
+    * **`measure-reminder` is RETIRED, not rescheduled.** The digest replaces it, and it was
+      the only thing on a bespoke service that sent to Telegram. D1 removes
+      `TELEGRAM_BOT_TOKEN` from artec api and artec-scheduler at merge so the brain is
+      STRUCTURALLY the sole owner; keeping the job would mean either a job that crashes on a
+      missing token or a token that has to stay and a policy that is no longer structural.
+    * **`review-expiry-sweep` is FOLDED INTO job 11**, not run beside it. Job 11 already runs
+      daily and already reads exactly those posts, and a separate sweep at 20:00 could park a
+      review the operator was about to answer at 21:05.
+    * **Render fires SUN 10:00 + MON 10:00 retry, not daily.** There is no weekly fal cap:
+      the weekly bound IS this job firing twice against the USD 2.50 per-run cap (~USD 5
+      worst case). Daily would make it ~USD 17.50 and the digest's `fal · week to date` line
+      would report against a bound nobody set — the flat-rate price table again.
+    * **`plan-diff` (job 4, SUN 08:00) was ABSENT.** In shadow mode it is the whole point:
+      both planners produce a plan and the diff is the evidence for the I16 cutover. Without
+      it the Sunday gate has nothing to compare and shadow mode proves nothing.
+    * The brain owns **three** cron jobs (3, 5, 12), not two.
+    A repo test now asserts the set is EXACTLY twelve, numbered 1–12, with the three brain
+    jobs identified and the retired names unable to reappear.
+
+78. **v4 · jobs 2 and 7 are DECLARED UNRECOVERED rather than guessed.** §3's entries for
+    those two numbers were never quoted to this build. `publish-by-slot` must exist and sits
+    at 2; slot 7 carries `owner=UNKNOWN` and a note saying so. Inventing a twelfth job to
+    make the count reach twelve is how a schedule comes to contain something nobody
+    designed — the same instinct that made an empty-board `publish-by-slot` report PROVEN.
+    **Job 7 must be filled from §3 before registration.**
+
+79. **v4 · `tick()` now fires from the registry.** The registry knew the times and the loop
+    did not read them, so six jobs had times nothing acted on — a schedule that existed only
+    in a data structure. Dispatch is an explicit `if job.name ==` chain rather than
+    `importlib` on `job.body`: a typo in a dotted string would fail at 20:40 on a Tuesday
+    instead of in CI. One failing job is logged and the tick continues, because the rest of
+    the night's chain still has to run and the digest is what reports the failure.

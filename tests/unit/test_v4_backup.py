@@ -61,14 +61,60 @@ def test_no_commands_route_belongs_to_nobody():
     assert not unaccounted, f"routes belonging to no job and no stated exception: {unaccounted}"
 
 
-def test_there_are_twelve_jobs_and_ten_are_ours():
+def test_the_schedule_is_EXACTLY_the_twelve_and_nothing_else():
+    """§2: the twelve in §3, and only those. Any job not on that list is a defect — so a
+    thirteenth cannot appear without this failing."""
+    from app.jobs import RETIRED, UNKNOWN, brain_jobs, unknown_jobs
+
     assert len(JOBS) == 12
-    # TEN artec-owned jobs, two brain cron. The tenth is the BESPOKE half of learn-ideate:
-    # shadow mode runs both planners every Sunday, so that half fires on a clock too. A
-    # first reconstruction had it brain-only and produced nine — the discrepancy was the
-    # question worth asking, not a number to be adjusted until it matched.
-    assert len(artec_jobs()) == 10, "ten HTTPS mirrors — the other two are brain cron"
-    assert {j.owner for j in JOBS} == {ARTEC, BRAIN}
+    assert [j.number for j in JOBS] == list(range(1, 13))
+    assert len(brain_jobs()) == 3, "jobs 3, 5 and 12 are hermes-agent cron on the brain"
+    assert {j.number for j in brain_jobs()} == {3, 5, 12}
+    # Retired jobs must not reappear under any number.
+    assert not [j for j in JOBS if j.name in RETIRED]
+    # An unrecovered §3 slot is DECLARED, never filled with a guess.
+    assert [j.number for j in unknown_jobs()] == [7]
+    assert unknown_jobs()[0].owner == UNKNOWN
+
+
+def test_the_nightly_chain_is_ordered_and_never_races_delivery():
+    """20:30 → 20:40 → 20:55 → 21:05 is a designed sequence. Preparing at 21:00 would race
+    delivery: the brain can call read_digest before job 11 has written the row, and the
+    failure mode is an EMPTY DIGEST on a night something needed the operator."""
+    by_name = {j.name: j for j in JOBS}
+    assert by_name["assets-sync"].at == "20:30"
+    assert by_name["doctor-sweep"].at == "20:40"
+    assert by_name["digest-prepare"].at == "20:55"
+    assert "21:05" in by_name["digest-delivery"].schedule
+    order = [by_name[n].at for n in ("assets-sync", "doctor-sweep", "digest-prepare")]
+    assert order == sorted(order), "the chain must be in ascending time order"
+
+
+def test_render_fires_twice_a_week_because_that_IS_the_weekly_budget_bound():
+    """There is no weekly fal cap. The bound is job 6 firing twice against the USD 2.50
+    per-run cap — daily would make it ~USD 17.50 against a bound nobody set."""
+    render = [j for j in JOBS if j.name == "render"][0]
+    assert render.at == "0 10:00" and render.also_at == ("1 10:00",)
+    assert "USD 5" in render.notes
+
+
+def test_the_expiry_sweep_lives_inside_job_11_not_beside_it():
+    digest = [j for j in JOBS if j.name == "digest-prepare"][0]
+    assert "EXPIRY SWEEP RUNS INSIDE THIS JOB" in digest.notes
+    assert "review-expiry-sweep" not in {j.name for j in JOBS}
+
+
+def test_plan_diff_is_a_job_and_lands_before_the_gate():
+    """Without it the Sunday gate has nothing to compare and shadow mode proves nothing."""
+    by_name = {j.name: j for j in JOBS}
+    assert by_name["plan-diff"].at == "0 08:00"
+    assert by_name["plan-diff"].at < by_name["weekly-gate"].schedule.replace("Sunday ", "0 ")
+
+
+def test_there_are_twelve_jobs_and_the_artec_ones_are_mirrored():
+    # EIGHT artec-owned jobs, three brain cron, one unrecovered §3 slot.
+    assert len(artec_jobs()) == 8
+    assert {j.owner for j in JOBS} >= {ARTEC, BRAIN}
     assert len({j.number for j in JOBS}) == 12, "job numbers are unique"
 
 
@@ -233,22 +279,48 @@ def test_the_jobs_command_lists_all_twelve():
     assert "brain — hermes cron" in result.stdout
 
 
-def test_the_numbering_is_confirmed_and_the_caveat_has_been_retired():
-    """The registry carried "RECONSTRUCTED, NOT RECOVERED" until the numbering was
-    confirmed at 2c-iv. A caveat that outlives its reason becomes noise, and noise is what
-    people learn to skip."""
+def test_the_registry_says_which_numbers_are_still_unrecovered():
+    """The blanket "RECONSTRUCTED, NOT RECOVERED" caveat is gone — §3's times are now known
+    — but two slots genuinely are not, and a registry that implied otherwise would be worse
+    than one that says so."""
     import app.jobs as jobs_mod
 
     assert "RECONSTRUCTED, NOT RECOVERED" not in (jobs_mod.__doc__ or "")
-    assert "NUMBERING CONFIRMED" in (jobs_mod.__doc__ or "")
+    assert "TWO NUMBERS ARE STILL UNRECOVERED" in (jobs_mod.__doc__ or "")
     assert os.path.exists("app/jobs.py")
 
 
 def test_every_artec_job_has_a_firing_time_except_the_slot_driven_one():
-    """Job 7 is slot-driven and has no fixed time by design. Every other artec job must
+    """Job 2 is slot-driven and has no fixed time by design. Every other artec job must
     have one, or it is a job that never fires."""
     timeless = [j.number for j in artec_jobs() if not j.at]
-    assert timeless == [7], f"artec jobs with no firing time: {timeless}"
+    assert timeless == [2], f"artec jobs with no firing time: {timeless}"
+
+
+def test_the_scheduler_TICK_reads_the_registry(session, monkeypatch):
+    """THE FINDING: the registry knew the times and the loop did not read them, so six jobs
+    had times nothing acted on — a schedule that existed only in a data structure."""
+    from datetime import datetime as dt
+
+    from app import scheduler
+
+    called = []
+    monkeypatch.setattr(scheduler, "run_registry_job",
+                        lambda s, job, log=None: called.append(job.name))
+    monkeypatch.setattr(scheduler, "record_run", None, raising=False)
+
+    import contextlib
+
+    class _Rec:
+        log = staticmethod(lambda *_a, **_k: None)
+
+    @contextlib.contextmanager
+    def fake_record_run(*_a, **_k):
+        yield (session, _Rec())
+
+    monkeypatch.setattr("app.db.record_run", fake_record_run)
+    scheduler.tick(dt(2026, 8, 5, 20, 40, tzinfo=scheduler.SGT), set())
+    assert "doctor-sweep" in called, "20:40 must fire job 10 from the registry"
 
 
 def test_the_scheduler_lists_its_own_next_runs_with_an_explicit_offset():
@@ -258,7 +330,8 @@ def test_the_scheduler_lists_its_own_next_runs_with_an_explicit_offset():
     from app.scheduler import next_runs
 
     rows = next_runs()
-    assert len(rows) == 9, "nine artec jobs have a fixed time; job 7 is slot-driven"
+    # seven timed artec jobs, plus job 6's Monday retry = eight firings; job 2 is slot-driven
+    assert len(rows) == 8
     assert all("+08:00" in r["next_run"] for r in rows)
     sunday = [r for r in rows if r["at"].startswith("0 ")]
     assert sunday, "the Sunday jobs must resolve to a Sunday"

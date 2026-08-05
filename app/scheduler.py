@@ -414,15 +414,17 @@ def main() -> None:
         seed_config(session)
         keys = validate_required_config(session, "scheduler")
     print(f"scheduler: config manifest validated at boot — {len(keys)} keys")
-    # §B — read-only matching probe at boot, so the answer to "can Sunday's drafts be
-    # serviced?" arrives without anyone holding a bearer token. No render, no spend.
-    try:
-        from app.toolbox.match_probe import probe_drafts
-
-        with session_scope() as session:
-            probe_drafts(session, log=print)
-    except Exception as e:                                   # noqa: BLE001
-        print(f"match probe failed (non-fatal): {type(e).__name__}: {e}")
+    # THE MATCH PROBE IS NOT RUN AT BOOT. It was, for one deploy, and the scheduler
+    # produced NOTHING beyond "Starting Container" for fifteen minutes — no manifest line,
+    # no job listing, no tick. Previous boots logged within three seconds.
+    #
+    # I did not finish diagnosing it and I am not going to on the Sunday runway. What is
+    # certain is the SHAPE of the mistake: I put a diagnostic BEFORE the tick loop, so
+    # anything it does slowly or forever costs the nine jobs this service owns. `try/except
+    # Exception` does not catch a hang, and I reached for it as though it did.
+    #
+    # A diagnostic must never be able to stop the thing it diagnoses. The probe lives at
+    # POST /commands/match-probe on artec api, where the worst case is one slow request.
     print(f"artec-scheduler up — {len(artec_jobs())} registry jobs, timezone Asia/Singapore")
     for row in next_runs():
         # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the

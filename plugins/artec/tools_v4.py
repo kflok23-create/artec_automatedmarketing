@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -179,6 +179,34 @@ def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
             "vocabulary": gate_vocabulary()}
 
 
+def digest_date_for(now: datetime | None = None) -> date:
+    """The digest's DELIVERY date, in Asia/Singapore.
+
+    DUPLICATED FROM `app/digest_dates.py`, DELIBERATELY, AND THIS IS WHY.
+
+    I single-sourced this by importing `app.digest_dates` here. It passed every test and
+    broke `read_digest` in production the same day:
+
+        WARNING agent.tool_executor: Tool read_digest returned error:
+        {"ok": false, "error": "ModuleNotFoundError: No module named 'app'"}
+
+    **The brain image does not carry the app package.** tools.py says so in its own
+    docstring — "Self-contained on purpose: sqlalchemy textual SQL only, never the artec app
+    package" — and I imported across that line anyway. Tests run where `app` IS importable,
+    so nothing local could fail. Tested one way, deployed another, on job 12's only tool:
+    the digest could not be delivered at all.
+
+    The established remedy in this repo is duplication with an asserted equality, not an
+    import: `audit_memory_report.py` duplicates the memory patterns for the same reason and
+    a test keeps the copies identical. `test_digest_date_convention.py` now does the same
+    for these two, so the one-convention guarantee survives without the coupling that broke.
+
+    Keep this byte-identical in behaviour to `app.digest_dates.digest_date_for`.
+    """
+    moment = now.astimezone(SGT) if now is not None else datetime.now(SGT)
+    return moment.date()
+
+
 def is_sunday(now: datetime | None = None) -> bool:
     """Asia/Singapore, because the whole schedule is in SGT."""
     return (now or datetime.now(SGT)).weekday() == 6
@@ -195,12 +223,6 @@ def _read_digest_impl(digest_date: str | None = None, now: datetime | None = Non
     the refusal lives here, in the body, where nothing can route around it.
     """
     eng = _get_engine(engine)
-    # THE ONE SHARED FUNCTION. This read `date.today()` — the container's local date, which
-    # is UTC — while job 11 wrote `now(UTC).date() - 1 day`. Two correct implementations,
-    # two conventions, and on 2026-08-04 the first digest this system ever produced was
-    # written under 2026-08-03 and looked for under 2026-08-04.
-    from app.digest_dates import digest_date_for
-
     target = str(digest_date or digest_date_for(now))
     if is_sunday(now):
         return {"date": target, "deliver": False,

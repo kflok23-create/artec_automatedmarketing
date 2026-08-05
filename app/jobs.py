@@ -145,6 +145,15 @@ NON_JOB_ROUTES: dict[str, str] = {
     "/commands/wishlist-match": "runs inside job 9; exposed for the monthly wishlist review",
     "/commands/media/{post_id}": "not a job — deliver_video reads the publish bytes here",
     "/commands/gate": "409 by design: the gate is an interactive Telegram session",
+    "/commands/match-probe": "not a job — READ-ONLY: can each DRAFT be serviced from the "
+                             "bank? wishlist.match() only inspects PARKED posts, so a "
+                             "draft's servicability was unanswerable until render parked "
+                             "it, which is after the spend and after the gate",
+    "/commands/digest-preview": "not a job — the half of job 12 that CAN be mirrored. "
+                                "Delivery cannot: D1 makes the brain the sole Telegram "
+                                "owner and this service has no token, deliberately. This "
+                                "returns the exact message job 12 would send, at any hour, "
+                                "WITHOUT marking it delivered",
     "/commands/prove": "not a job — operator-driven capability proofs (§9). CLI/HTTPS only, "
                        "never an agent tool, which is why it may write config.proofs",
     "/commands/restore-check": "rides job 8 monthly; exposed so a restore can be proven on "

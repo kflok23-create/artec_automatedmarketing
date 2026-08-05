@@ -129,6 +129,8 @@ def _needs_you(session: Session, brevo, target: date, cfg: dict) -> dict:
                 "hero_image": post.media_drive_file_id,
                 "tracked_url": post.tracked_url,
                 "days_to_expiry": _days_left(post.email_review, email_expiry),
+                # Written by review_email(send_test=True); absent means never previewed.
+                "test_sends": (post.email_review or {}).get("test_sends") or [],
             })
         elif carries_video(session, post):
             videos.append({
@@ -556,6 +558,24 @@ def render_digest_text(payload: dict) -> str:
             lines.append(f"   story:    {(e['story_block'] or '')[:120]}")
             lines.append(f"   hero:     {e['hero_image']}")
             lines.append(f"   link:     {e['tracked_url']}")
+            # §C — REAL SUBSCRIBERS, AND WHETHER THIS COPY WAS EVER PREVIEWED.
+            # Brevo list 3's single contact is a REAL CUSTOMER, not the operator's own
+            # address. The first send is a real marketing email to a real person, written
+            # by a model, on a path that has never run — and email is the one surface with
+            # no remedy. An operator approving that must not have to REMEMBER to ask
+            # whether they previewed it.
+            #
+            # REPORTED, NOT GATED. `send_test` is not made mandatory and `approve` is not
+            # blocked on it: the operator decides, and this system's discipline is to
+            # surface facts rather than auto-handle them. What it removes is having to
+            # remember the question.
+            tests = e.get("test_sends") or []
+            if tests:
+                lines.append(f"   ⚠️  REAL SUBSCRIBERS — not test addresses. "
+                             f"test send performed {len(tests)}x, last {tests[-1][:16]}")
+            else:
+                lines.append("   ⚠️  REAL SUBSCRIBERS — not test addresses. "
+                             "NO TEST SEND HAS BEEN PERFORMED for this copy.")
             lines.append(f"   expires in {e['days_to_expiry']}d · approve / edit / reject / test send")
         if needs["unmeasured"]:
             ids = ", ".join(u["post_id"] for u in needs["unmeasured"])

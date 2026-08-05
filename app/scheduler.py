@@ -414,6 +414,15 @@ def main() -> None:
         seed_config(session)
         keys = validate_required_config(session, "scheduler")
     print(f"scheduler: config manifest validated at boot — {len(keys)} keys")
+    # §B — read-only matching probe at boot, so the answer to "can Sunday's drafts be
+    # serviced?" arrives without anyone holding a bearer token. No render, no spend.
+    try:
+        from app.toolbox.match_probe import probe_drafts
+
+        with session_scope() as session:
+            probe_drafts(session, log=print)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"match probe failed (non-fatal): {type(e).__name__}: {e}")
     print(f"artec-scheduler up — {len(artec_jobs())} registry jobs, timezone Asia/Singapore")
     for row in next_runs():
         # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the

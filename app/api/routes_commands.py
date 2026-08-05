@@ -313,6 +313,48 @@ def wishlist_match_cmd():
         return match(session, log=rec.log)
 
 
+@router.post("/match-probe")
+def match_probe_cmd():
+    """§B — can each DRAFT be serviced from the bank? READ-ONLY: no render, no spend.
+
+    `wishlist.match()` only inspects PARKED posts, so "no parked post can be serviced yet"
+    said nothing about the nine drafts. If they cannot be serviced, job 6 parks everything
+    the operator approved and the week produces nothing, with no error line.
+    """
+    from app.toolbox.match_probe import probe_drafts
+
+    with record_run("match-probe", {}) as (session, rec):
+        return probe_drafts(session, log=rec.log)
+
+
+@router.post("/digest-preview")
+def digest_preview_cmd(body: CommandRequest):
+    """Exactly what job 12 WOULD send, without sending it.
+
+    A `run-now` mirror for job 12 itself cannot live here: delivery goes through Telegram,
+    and D1 makes the brain the SOLE Telegram owner — `artec api` has no token, deliberately.
+    Building a delivery route here would mean giving this service a token, which is the one
+    thing D1 exists to prevent (two pollers on one token is a 409 that breaks the live gate).
+
+    So this is the half that CAN be mirrored, and it is the half nobody could see: the exact
+    message text, at any hour, without waiting for 21:00 and without marking the digest
+    delivered. Same `digest_date_for()` as both cron sides, same three-state logic, same
+    payload. It reads through `_read_digest_impl` with a fresh engine so a preview cannot
+    produce a result the cron could not.
+    """
+    from app.digest_dates import digest_date_for
+    from plugins.artec.tools_v4 import _read_digest_impl
+
+    target = str(body.week) if body.week else str(digest_date_for())
+    with record_run("digest-preview", {"date": target}) as (session, rec):
+        result = _read_digest_impl(digest_date=target, engine=session.get_bind())
+        rec.log(f"digest-preview {target}: prepared={result.get('prepared')} "
+                f"deliver={result.get('deliver')} fault={result.get('fault')}")
+        # NOT marked delivered: a preview that consumed the digest would make the real
+        # 21:00 delivery a no-op, which is a preview with a side effect nobody asked for.
+        return result
+
+
 @router.post("/doctor")
 def doctor_cmd():
     """CHECKPOINT 3 mirror: full green/red verification, incl. the live LoRA probes and

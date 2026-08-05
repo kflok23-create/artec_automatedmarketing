@@ -1495,3 +1495,68 @@ Redaction is the operator's call, and it is recorded here rather than silently s
      when one side is empty.
 
      Three states, never collapsed: nothing planned at all · one planner silent · both spoke.
+
+115. **2026-08-05 · A `run-now` MIRROR FOR JOB 12 CANNOT EXIST ON `artec api`, and that is
+     D1 working rather than a gap.** Job 12 delivers through Telegram. D1 makes the brain the
+     SOLE Telegram owner *structurally* — `artec api` has no token, deliberately, because two
+     pollers on one token is a 409 that breaks the live gate. Building a delivery route on
+     the API would mean giving that service a token, which is the one thing D1 exists to
+     prevent.
+
+     So the pair splits, and only one half was ever mirrorable:
+     - **job 11 (prepare) ALREADY had a route** — `POST /commands/digest-prepare`. Nobody had
+       checked; the enumeration in A.1 is what established it.
+     - **job 12 (deliver) cannot have one here.** Delivery stays on the brain.
+
+     What was missing and is now built: `POST /commands/digest-preview` returns **the exact
+     message job 12 would send**, at any hour, without sending it and **without marking the
+     digest delivered**. A preview that consumed the digest would make the real 21:00
+     delivery a no-op — a preview with a side effect nobody asked for.
+
+     It reads through `_read_digest_impl`, the same function job 12 calls, with the same
+     `digest_date_for()` and the same three-state logic. **A manual run must not be able to
+     produce a result the cron could not**; sharing the function is what makes that true
+     rather than merely intended.
+
+     Jobs 3 and 5 remain brain-only for the same reason job 12 does: both run as
+     hermes-agent sessions, and a session cannot be started from the API without the token.
+
+116. **2026-08-05 · A DRAFT'S SERVICABILITY WAS UNANSWERABLE UNTIL AFTER THE SPEND.**
+     `wishlist.match()` inspects **PARKED** posts only, and a DRAFT has no wishlist — a
+     wishlist is written when a post PARKS at render. So the sync's nightly
+     *"wishlist match: no parked post can be serviced yet"* said nothing whatsoever about the
+     nine drafts, and the question had never been asked of them.
+
+     The consequence if they cannot be serviced: job 6 parks everything the operator approved
+     at 09:00, and the week produces nothing. **No crash, no error line — another Sunday that
+     looks like it worked**, which is the failure shape this build keeps finding.
+
+     `app/toolbox/match_probe.py::probe_drafts` calls the SAME `find_candidates` the render
+     path calls (`render.py:174`) with the SAME arguments derived from `channel_media`. No
+     LLM, no fal, no ffmpeg, no writes. Exposed at `POST /commands/match-probe` and run at
+     scheduler boot so the answer arrives without anyone holding a bearer token.
+
+     **What it cannot answer, stated so it is not over-read:** whether the ffmpeg pipeline
+     will succeed on a real file. It answers whether an asset EXISTS for render to try. No
+     read can answer the other question, and `video-pipeline` stays unproven until real
+     footage passes through it.
+
+117. **2026-08-05 · LIST 3'S SINGLE CONTACT IS A REAL CUSTOMER — the first send is not a
+     rehearsal.** Not the operator's own address. So `post_1499` is a real marketing email to
+     a real person, written by a model, on a path that has never run, to the one surface in
+     this system with no remedy.
+
+     The EMAIL REVIEW block now states, beside the live recipient count, that recipients are
+     **real subscribers, not test addresses**, and **whether a test send has been performed
+     for this copy** — naming the count and date if so, and saying plainly that none has if
+     not. An absent line reads as "nothing to report", which is the same family as every
+     other defect here: an absence that must be noticed rather than one that announces
+     itself.
+
+     **REPORTED, NOT GATED.** `send_test` is not mandatory and `approve` is not blocked on
+     it — a test asserts that explicitly, so a later reader does not "tighten" it into a
+     gate. The operator decides; the system surfaces. What this removes is having to remember
+     the question, not the freedom to answer it either way.
+
+     `learn` still marks email `insufficient_sample` below `email_min_recipients`: sending
+     proves the path, it does not make one recipient a signal.

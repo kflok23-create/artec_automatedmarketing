@@ -23,8 +23,17 @@ from app.config import get_config
 from app.models import Asset, Post
 from app.toolbox.asset_match import find_candidates
 
+# THE SET JOB 6 RENDERS, not the set that happened to exist when this was written.
+#
+# The first version probed status == "DRAFT" only. The operator then gated all nine, and the
+# probe went blind at exactly the moment its answer mattered: job 6 at SUN 10:00 renders
+# APPROVED posts, and there were zero DRAFTs left to look at. A diagnostic scoped to a
+# transient state stops answering the moment the state moves — which is the same shape as
+# `wishlist.match()` inspecting only PARKED, the gap this probe was built to close.
+RENDERABLE_STATUSES = ("APPROVED", "DRAFT")
 
-def probe_drafts(session: Session, log=print) -> dict:
+
+def probe_drafts(session: Session, statuses=RENDERABLE_STATUSES, log=print) -> dict:
     from app.stages.render import DEFAULT_SUBJECT_BY_MEDIA
 
     cfg_media = get_config(session, "channel_media", {}) or {}
@@ -44,7 +53,7 @@ def probe_drafts(session: Session, log=print) -> dict:
 
     results, blocked = [], []
     for post in session.execute(
-        select(Post).where(Post.status == "DRAFT").order_by(Post.post_id)
+        select(Post).where(Post.status.in_(tuple(statuses))).order_by(Post.post_id)
     ).scalars():
         spec = cfg_media.get(post.channel) or {}
         media = spec.get("media", "photo")
@@ -59,20 +68,43 @@ def probe_drafts(session: Session, log=print) -> dict:
         found = find_candidates(session, subject=subject, medium=media, aspect=aspect,
                                 allow_person=allow_person, limit=5)
         entry = {
-            "post_id": post.post_id, "channel": post.channel, "media": media,
+            "post_id": post.post_id, "status": post.status,
+            "channel": post.channel, "media": media,
             "aspect": aspect, "subject": subject, "candidates": len(found),
             "example": found[0].drive_file_id if found else None,
             "servicable": bool(found),
         }
         results.append(entry)
         if found:
-            log(f"  {post.post_id} {post.channel:<10} {media:<6} aspect={str(aspect):<9} "
-                f"OK  {len(found)} candidate(s), e.g. {found[0].drive_file_id}")
+            log(f"  {post.post_id} [{post.status}] {post.channel:<10} {media:<6} "
+                f"aspect={str(aspect):<9} OK  {len(found)} candidate(s), "
+                f"e.g. {found[0].drive_file_id}")
         else:
             blocked.append(post.post_id)
-            log(f"  {post.post_id} {post.channel:<10} {media:<6} aspect={str(aspect):<9} "
-                f"*** NO ASSET — would PARK (needs subject={subject} medium={media} "
-                f"aspect={aspect})")
+            log(f"  {post.post_id} [{post.status}] {post.channel:<10} {media:<6} "
+                f"aspect={str(aspect):<9} *** NO ASSET — would PARK "
+                f"(needs subject={subject} medium={media} aspect={aspect})")
+            # WHY it has none. `allow_person_assets` gates ONLY the has_person filter;
+            # aspect is an independent predicate, so flipping it to true adds assets to the
+            # person dimension and cannot turn a landscape video into a vertical one. The
+            # single escape is Asset.aspect IS NULL, which matches any requested aspect.
+            same_kind = session.execute(select(
+                Asset.aspect, Asset.has_person).where(
+                Asset.status == "active", Asset.subject == subject,
+                Asset.medium == media)).all()
+            if not same_kind:
+                log(f"      the bank holds NO active {subject}/{media} at any aspect")
+            else:
+                shapes = {}
+                for asp, person in same_kind:
+                    shapes[(asp or "NULL", bool(person))] = shapes.get(
+                        (asp or "NULL", bool(person)), 0) + 1
+                log(f"      bank has {len(same_kind)} {subject}/{media} but none at "
+                    f"aspect={aspect}: " + ", ".join(
+                        f"aspect={a} person={p}: {n}" for (a, p), n in sorted(
+                            shapes.items(), key=lambda x: str(x[0]))))
+                log("      NOTE: allow_person_assets does not affect ASPECT. Only an asset "
+                    "with aspect NULL or the exact aspect can satisfy this.")
 
     log(f"match probe: {len(results) - len(blocked)} servicable, {len(blocked)} would park "
         f"{blocked}")

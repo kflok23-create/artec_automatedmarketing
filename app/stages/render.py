@@ -143,12 +143,42 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
                           max_output_megapixels=cfg["max_output_megapixels"], log=log)
     gfal = GuardedFal(fal, budget)
 
-    q = select(Post).where(Post.status == "APPROVED").order_by(Post.post_id)
-    posts = [p for p in session.execute(q).scalars()
+    # NO WEEK PREDICATE, AND THERE NEVER WAS ONE. `week_start` is a PLANNING BUCKET, not an
+    # execution filter: a post that has been approved is work to be done, and the week it was
+    # planned in does not decide whether it renders. Approved work legitimately spans weeks —
+    # post_1490 carries 2026-07-27 through a park and an autonomous wishlist return — and any
+    # week filter on execution strands something. Job 7 gets this right too: status, slot,
+    # external_post_id, no week.
+    approved = list(session.execute(
+        select(Post).where(Post.status == "APPROVED").order_by(Post.post_id)).scalars())
+    posts = [p for p in approved
              if all_approved or (post_ids and p.post_id in post_ids)]
+
+    # THE DEFECT: SUCCESS REPORTED OVER AN EMPTY SELECTION.
+    #
+    # `POST /commands/render {}` returned {"rendered":0,"parked":0,"spent_cents":0} — HTTP
+    # 200 — with six APPROVED posts on the board and four of them servicable. Render did not
+    # try and fail; it selected nothing and said nothing was wrong. The operator ran the
+    # command directly and it still told them the system was fine, for three days.
+    #
+    # The cause is the FILTER, not the query. `all_approved` defaults to False on the HTTPS
+    # route (schemas.py), and with no `post_id` the comprehension keeps nothing. Job 6 passes
+    # all_approved=True, and the CLI EXITS 2 rather than guess — so of the three callers, the
+    # only one that could silently do nothing was the one a human types by hand.
+    #
+    # Both numbers are now always reported. A selection smaller than the board is a FAULT in
+    # the response, not an absence to be inferred from a zero.
+    result_head = {"approved_total": len(approved), "selected": len(posts)}
     if not posts:
-        log("render: no APPROVED posts selected")
-        return {"rendered": 0, "parked": 0, "spent_cents": 0}
+        if approved:
+            log(f"render: SELECTED NOTHING while {len(approved)} APPROVED post(s) are "
+                f"waiting — {[p.post_id for p in approved]}. Pass all_approved=true or a "
+                f"post_id. This is a FAULT, not an empty board.")
+            return {**result_head, "rendered": 0, "parked": 0, "spent_cents": 0,
+                    "fault": "empty_selection_over_a_non_empty_board",
+                    "approved_post_ids": [p.post_id for p in approved]}
+        log("render: no APPROVED posts exist — nothing to render")
+        return {**result_head, "rendered": 0, "parked": 0, "spent_cents": 0}
 
     rendered = parked = 0
     budget_exhausted = False
@@ -239,4 +269,6 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
     if recorder is not None:
         recorder.cost_micros = budget.spent_micros
     log(f"render: spent {budget.spent_cents:.2f}¢ of {budget.run_cap_cents:.0f}¢ this run")
-    return {"rendered": rendered, "parked": parked, "spent_cents": budget.spent_cents}
+    return {**result_head, "rendered": rendered, "parked": parked,
+            "spent_cents": budget.spent_cents,
+            "cap_cents": int(cfg["render_run_cap_cents"])}

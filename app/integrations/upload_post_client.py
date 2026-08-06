@@ -59,8 +59,19 @@ PAGE_TARGET_CONFIG_KEY = {
     "facebook": "facebook_page_id",
     "linkedin": "linkedin_organization_urn",
 }
-# Read by analytics as well as by publish, so the channel MEASURED is provably the channel
-# POSTED TO. One source; there is no second place for these to drift.
+# THE ANALYTICS FIELD NAMES. NOTHING CALLS AN ANALYTICS ENDPOINT — probed 2026-08-05:
+# grep finds this constant referenced only by its own test. There is no fetcher.
+#
+# Measurement in this system is TRANSCRIPTION ONLY. /commands/measure takes rows FROM THE
+# CALLER (measure_json -> upsert_rows) and fetches nothing; measure-reminder is RETIRED.
+# So this mapping is not unwired plumbing waiting to be connected -- it is the field names
+# a fetcher WOULD need, recorded when page targeting was built, and it reads like plumbing
+# to anyone who greps for it. Kept because the names came from the docs and are not
+# guessable; labelled because a stub that looks like a feature is how an operator ends up
+# waiting for figures that are never coming.
+#
+# Wiring it would move where numbers come from, which is an INVARIANT question (the agent
+# may never compute, estimate, infer or carry a figure forward), not a plumbing task.
 PAGE_ANALYTICS_FIELD = {
     "facebook": "page_id",
     "linkedin": "page_urn",

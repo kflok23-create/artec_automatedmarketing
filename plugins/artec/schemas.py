@@ -26,7 +26,10 @@ SCHEMAS: dict[str, dict] = {
                 "week_start": {"type": "string",
                                "description": "Monday of the scored week, YYYY-MM-DD"},
             },
-            "required": ["week_start"],
+            # week_start is OPTIONAL: absent means the planning week, computed by the
+            # SAME function ideate uses. It was required, so an agent that did not know
+            # which week to gate had to invent one.
+            "required": [],
         },
     },
     "read_asset_inventory": {

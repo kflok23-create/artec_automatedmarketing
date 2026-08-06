@@ -52,7 +52,7 @@ def test_script_head_resolves_without_cwd_or_alembic_ini(tmp_path, monkeypatch):
     # 0007 recreates v_brief. The PARKED fix had been in V_BRIEF_SQL for weeks and had
     # never reached production, because the view is created by 0001 and alembic never
     # re-runs it — see tests/unit/test_view_migrations.py.
-    assert script_head_revision() == "0009"
+    assert script_head_revision() == "0010"
 
 
 REPO_ROOT_WALK = re.compile(r"parent\s*\.\s*parent\s*\.\s*parent")

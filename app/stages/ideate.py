@@ -18,8 +18,31 @@ from app.stages.learn import render_brief
 
 
 def next_week_start(today: date | None = None) -> date:
+    """The Monday of the week ABOUT TO BEGIN — the week this plan is for.
+
+    IT USED TO RETURN THE MONDAY THAT HAD ALREADY PASSED. `today - today.weekday()` is the
+    Monday of the CURRENT week, so on a Sunday — the only day ideate runs — weekday() is 6
+    and it returned six days BACKWARDS, despite the name.
+
+    The consequence was not an error. Ideate would target the week that was ending, find its
+    cadence already met by existing posts, add nothing, and the 09:00 gate would open on a
+    board someone had already emptied. **A Sunday that looks like it worked**, and a week of
+    planning lost with no line anywhere saying so.
+
+    Deferred through 2026-08-09 (DECISIONS 107, D-vii) because the nine drafts for week
+    2026-08-03 WERE that Sunday's plan and changing date arithmetic 72 hours before a first
+    run is how this system has been broken before. **All nine have now been gated** — six
+    approved, three rejected — so the week is spent and the reason to defer expired with it.
+
+    THE MONDAY STRICTLY AFTER TODAY. On a Sunday that is tomorrow; on any other day it is
+    the start of the next week, because the current one has already begun and cannot be
+    planned. `learn`/`report` still read `last_week_start`, the week just finished, so the
+    Sunday pair is coherent: learn from the week that ended, plan the week that starts.
+
+    `today` is a parameter, never a hidden clock — DECISIONS 112.
+    """
     today = today or datetime.now(UTC).date()
-    return today - timedelta(days=today.weekday())
+    return today + timedelta(days=7 - today.weekday())
 
 
 def ideate(session: Session, llm, week_start: date | None = None, log=print) -> dict:

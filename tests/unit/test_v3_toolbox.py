@@ -235,8 +235,13 @@ def test_run_over_cap_parks_the_remainder_with_wishlist(session):
     set_config(session, "per_call_ceiling_cents", 90)
     set_config(session, "max_output_megapixels", 4.0)
     lines: list[str] = []
-    out = render(session, FakeLLM(), FakeDrive(), FakeFal(), all_approved=True,
-                 log=lines.append)
+    # A 600x600 SOURCE, deliberately smaller than the 1080x1080 square canvas. The upscale
+    # only runs — and only costs — when it has something to add; a source already at or
+    # above the canvas is skipped, because the result would be cropped straight back down.
+    # With the default 1080x1080 fake this test rendered BOTH posts for zero cents, which is
+    # correct behaviour and made the cap unreachable. The premise needed the real case.
+    out = render(session, FakeLLM(), FakeDrive(source_size=(600, 600)), FakeFal(),
+                 all_approved=True, log=lines.append)
     assert out["rendered"] == 1 and out["parked"] == 1
     assert out["spent_cents"] == 60
     assert p1.status == "RENDERED"

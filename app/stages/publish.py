@@ -30,6 +30,7 @@ from app.integrations.upload_post_client import (  # noqa: F401
     verify_publish_target,
 )
 from app.models import Post
+from app.toolbox.park import park_reason_text
 
 
 class DoublePublishError(RuntimeError):
@@ -156,7 +157,8 @@ def run_preflight(session: Session, drive, post: Post, log=print) -> bool:
     if result.ok:
         return True
     post.status = "PARKED"
-    post.park_reason = f"publish pre-flight: {'; '.join(result.failures)}"[:500]
+    post.park_reason = park_reason_text(
+        "publish pre-flight", "; ".join(result.failures), log=log)
     post.asset_wishlist = preflight_wishlist(kind, spec.get("aspect", "square"),
                                              result.failures)
     session.flush()
@@ -310,7 +312,8 @@ def publish(session: Session, drive, fal, uploader, brevo,
             raise
         except Exception as e:
             post.status = "FAILED"
-            post.park_reason = f"publish: {type(e).__name__}: {e}"[:500]
+            post.park_reason = park_reason_text(
+                "publish", f"{type(e).__name__}: {e}", log=log)
             session.flush()
             log(f"{post.post_id}: publish FAILED — {type(e).__name__}: {e}")
             # Surface the failing call site — a message alone gives nothing to locate a

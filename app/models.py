@@ -77,6 +77,13 @@ class Post(Base):
     # {"state": "verified" | "mismatch" | "unverified", ...}. Written by publish for
     # page-targeted channels; the digest raises the two non-verified states into NEEDS YOU.
     target_check: Mapped[dict | None] = mapped_column(JSONVariant)
+    # {"waived": true, "reason": "...", "waived_at": "..."} — a THIRD exclusion reason,
+    # same design as withdrawn_at: a flag with a reason, never a status. Set deliberately
+    # by the operator; no code path in this system waives anything on its own. Waived posts
+    # leave lever scoring and NEEDS YOU, and are reported as WAIVED — never zero, never
+    # unmeasured. A post created under a previous system carries no measurement obligation,
+    # and one that sits in NEEDS YOU forever is noise that hides real work.
+    measurement_waived: Mapped[dict | None] = mapped_column(JSONVariant)
 
     # v3: which planner authored this row ('bespoke' | 'agent'), recorded at insert; and
     # the gate verdict WITH the edit deltas — the deltas are what train taste.

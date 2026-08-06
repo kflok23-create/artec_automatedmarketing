@@ -138,7 +138,7 @@ def _gate_opening_summary(week_start: str, drafts: list[dict],
     return lines
 
 
-def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
+def _read_draft_posts_impl(week_start: str | None = None, engine=None) -> list[dict]:
     """Every DRAFT for the week with its full creative genome — closes gap A1.
 
     The gate previously had to fish drafts out of v_brief's LIMIT 14 window, which was
@@ -147,6 +147,8 @@ def _read_draft_posts_impl(week_start: str, engine=None) -> list[dict]:
     Each draft carries `slot_off_vocabulary` and the action vocabulary travels with the
     result, so the gate cannot present a draft without also presenting how to act on it.
     """
+    # DEFAULTED, NOT REQUIRED. An absent week used to mean the agent picked one.
+    week_start = str(week_start or planning_week_start())
     eng = _get_engine(engine)
     with eng.begin() as conn:
         _log_run(conn, "read_draft_posts", {"week_start": week_start})
@@ -205,6 +207,27 @@ def digest_date_for(now: datetime | None = None) -> date:
     """
     moment = now.astimezone(SGT) if now is not None else datetime.now(SGT)
     return moment.date()
+
+
+def planning_week_start(today: date | None = None) -> date:
+    """The Monday of the week ABOUT TO BEGIN — the week the gate is gating.
+
+    DUPLICATED from `app.stages.ideate.next_week_start`, for the same reason
+    `digest_date_for` is duplicated: the brain image does not carry the app package, and an
+    import across that boundary broke `read_digest` in production. A test asserts the two
+    stay identical.
+
+    THE GATE HAD NO DEFINED WEEK AT ALL. `cron-weekly-gate.txt` says "Present each DRAFT
+    post" and names no week, so the agent chose one — an unnamed side of the comparison, on
+    the surface where the whole week's decisions are made. A planner and a gate disagreeing
+    about which week they are in is precisely the defect that produced D-vii; leaving the
+    gate free to guess would have left half of it in place.
+
+    `read_draft_posts` now defaults to this, so gate and ideate cannot diverge without the
+    duplication test failing.
+    """
+    today = today or datetime.now(SGT).date()
+    return today + timedelta(days=7 - today.weekday())
 
 
 def is_sunday(now: datetime | None = None) -> bool:

@@ -145,11 +145,23 @@ def _needs_you(session: Session, brevo, target: date, cfg: dict) -> dict:
 
     published = list(session.execute(
         select(Post).where(Post.status == "PUBLISHED")).scalars())
+    # §3.2/§3.3 — TWO SURFACES MUST NOT DISAGREE ABOUT ONE FACT. `learn` already excludes
+    # withdrawn posts from scoring, while the digest kept asking the operator for their
+    # figures. post_1488 and post_1489 were deleted at source: nobody can measure a post
+    # that no longer exists, and asking nightly trains the operator to skip the line — which
+    # is how a real METRICS ask stops being read.
+    #
+    # `measurement_waived` is the third exclusion, same design as withdrawn: a flag with a
+    # reason, set deliberately by the operator, never by this code. Posts created under a
+    # previous system carry no measurement obligation, and an unmeasurable post sitting in
+    # NEEDS YOU forever is noise that hides real work.
     unmeasured = [
         {"post_id": p.post_id, "channel": p.channel,
          "posted_at": p.posted_at.isoformat() if p.posted_at else None}
         for p in published
         if session.get(Metric, (p.post_id, p.channel, target)) is None
+        and p.withdrawn_at is None
+        and not (p.measurement_waived or {}).get("waived")
     ]
 
     failures = [
@@ -167,6 +179,33 @@ def _needs_you(session: Session, brevo, target: date, cfg: dict) -> dict:
     last_doctor = get_config(session, "last_doctor", None) or {}
     doctor_red = [c for c in last_doctor.get("checks", [])
                   if c.get("status") == "RED"]
+
+    # §4 — A QUEUE THAT CANNOT BE SEEN IS A QUEUE THAT STOPS.
+    #
+    # Nine drafts sat DRAFT from 2026-08-03. Nothing published for two days, because
+    # DRAFT → gate → APPROVED → render → RENDERED → publish halts at step two — and the
+    # digest never said so. It reported PARKED, RETRY and METRICS while a full pipeline and
+    # an empty one looked identical from the outside.
+    #
+    # Every stage where work can pile up WITHOUT ERRORING is counted here. None of these is
+    # a fault; each is work waiting on a specific act, and the act is named.
+    queues = []
+    for status, waiting_on in (
+        ("DRAFT", "the weekly gate — nothing renders or publishes until these are approved"),
+        ("APPROVED", "job 6 render (SUN 10:00, retry MON 10:00)"),
+        ("RENDERED", "job 7 publish-by-slot, or a review if it carries video or is email"),
+    ):
+        rows = list(session.execute(
+            select(Post).where(Post.status == status).order_by(Post.post_id)).scalars())
+        if not rows:
+            continue
+        weeks = sorted({str(r.week_start) for r in rows})
+        oldest = min(weeks)
+        age = (target - date.fromisoformat(oldest)).days if oldest else None
+        queues.append({"status": status, "count": len(rows), "weeks": weeks,
+                       "oldest_week": oldest, "age_days": age,
+                       "waiting_on": waiting_on,
+                       "post_ids": [r.post_id for r in rows][:12]})
 
     from app.scheduler import sweep_orphaned_slots
 
@@ -195,7 +234,7 @@ def _needs_you(session: Session, brevo, target: date, cfg: dict) -> dict:
     section = {
         "video_review": videos, "email_review": emails, "unmeasured": unmeasured,
         "failures": failures, "parked": parked, "doctor_red": doctor_red,
-        "orphaned_slots": orphans, "target_alerts": target_alerts,
+        "orphaned_slots": orphans, "target_alerts": target_alerts, "queues": queues,
         "brevo_list_count": _live_recipient_count(brevo),
         "doctor_last_run": last_doctor.get("at"),
     }
@@ -204,7 +243,8 @@ def _needs_you(session: Session, brevo, target: date, cfg: dict) -> dict:
     # which would reproduce the exact failure §1.2 exists to close, one layer further in.
     section["empty"] = not any(
         section[k] for k in ("video_review", "email_review", "unmeasured", "failures",
-                             "parked", "doctor_red", "orphaned_slots", "target_alerts"))
+                             "parked", "doctor_red", "orphaned_slots", "target_alerts",
+                             "queues"))
     return section
 
 
@@ -590,6 +630,12 @@ def render_digest_text(payload: dict) -> str:
             lines.append(f"🚨 DOCTOR RED — {d.get('name')}: {d.get('detail')}")
         for o in needs["orphaned_slots"]:
             lines.append(f"⚠️  ORPHAN SLOT — {o['post_id']}: {o['reason']}")
+    for q in needs.get("queues", []):
+        age = f", oldest week {q['oldest_week']}" + (
+            f" ({q['age_days']}d ago)" if q.get("age_days") is not None else "")
+        lines.append(f"⏳ {q['count']} post(s) waiting at {q['status']}{age}")
+        lines.append(f"   waiting on: {q['waiting_on']}")
+        lines.append(f"   {', '.join(q['post_ids'])}")
     for alert in needs.get("target_alerts", []):
         if alert["state"] == "mismatch":
             lines.append(

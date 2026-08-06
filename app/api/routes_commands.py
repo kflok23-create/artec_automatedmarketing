@@ -59,9 +59,20 @@ def render_cmd(body: CommandRequest):
 
     s = get_settings()
     with record_run("render", body.model_dump(mode="json")) as (session, rec):
+        # A BARE POST NOW DOES WHAT JOB 6 DOES. `all_approved` defaulted to False here, so
+        # `POST /commands/render {}` selected nothing and answered 200 with zeros — while
+        # the CLI EXITS 2 on the same ambiguity and job 6 passes all_approved=True. Of the
+        # three callers, the only one that could silently do nothing was the one a human
+        # types by hand, which is the worst place for it.
+        #
+        # Defaulting to the job-6 behaviour rather than refusing: job 6 renders every
+        # APPROVED post unattended every Sunday, bounded by render_run_cap_cents, so a bare
+        # POST doing the same is consistent rather than reckless. An explicit
+        # `all_approved: false` with no post_id still selects nothing — and now SAYS so.
+        explicit = body.all_approved or bool(body.post_id)
         return render(session, LLM(s), DriveClient(s), Fal(s),
                       post_ids=[body.post_id] if body.post_id else None,
-                      all_approved=body.all_approved, log=rec.log)
+                      all_approved=body.all_approved or not explicit, log=rec.log)
 
 
 @router.post("/publish")

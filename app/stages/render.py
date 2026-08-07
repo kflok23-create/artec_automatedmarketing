@@ -24,10 +24,14 @@ from app.integrations.upload_post_client import PlatformValidationError, validat
 from app.models import Post
 from app.toolbox.asset_match import find_candidates, mark_used
 from app.toolbox.budget import GuardedFal, RenderBudget, RunBudgetExceeded
-from app.toolbox.edit_combine import edit_video_pipeline, fit_image_aspect
+from app.toolbox.edit_combine import (
+    IMAGE_ASPECTS,
+    edit_video_pipeline,
+    fit_image_aspect,
+)
 from app.toolbox.enhance import enhance_image
 from app.toolbox.overlay import overlay_caption
-from app.toolbox.park import park_post
+from app.toolbox.park import park_post, park_reason_text
 from app.toolbox.selector import select_tools
 from app.toolbox.text_card import FONTS_DIR, next_pairing, render_text_card
 
@@ -60,7 +64,8 @@ def _caption_for(llm, post: Post, media_spec: dict) -> str:
     return caption
 
 
-def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, gfal, cfg) -> tuple[str, str]:
+def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, gfal, cfg,
+                  log=print) -> tuple[str, str]:
     """Run the ordered tool chain; returns (local_path, extension). gfal is the GuardedFal
     — text guard + budget on every model call."""
     media_kind = media_spec["media"]
@@ -95,8 +100,15 @@ def _execute_plan(session: Session, plan, post: Post, media_spec: dict, drive, g
         elif tool == "enhance":
             if local is None:
                 raise RenderFailure("enhance reached with no prior image in the chain")
+            # THE CANVAS IS PASSED IN. ENHANCE runs on the SOURCE asset and
+            # `fit_image_aspect` crops to the canvas afterwards, so without knowing the
+            # target it upscaled 1600x1600 to 2400x2400 (5.76 MP) purely to have it cropped
+            # to 1080x1080 (1.17 MP) — and tripped max_output_megapixels doing it. Every
+            # square photo post parked, every time: two constants that were never compared.
             local = enhance_image(gfal, cfg["model_endpoints"], cfg["enhance_whitelist"],
-                                  "upscale", local, "photo" if media_kind == "photo" else media_kind)
+                                  "upscale", local,
+                                  "photo" if media_kind == "photo" else media_kind,
+                                  log=log, target=IMAGE_ASPECTS.get(aspect))
         elif tool == "overlay":
             if local is None:
                 raise RenderFailure("overlay reached with no prior image in the chain")
@@ -217,7 +229,8 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
             if plan is None:
                 raise RenderFailure("no bank asset and no Python path hits the match")
 
-            local, ext = _execute_plan(session, plan, post, media_spec, drive, gfal, cfg)
+            local, ext = _execute_plan(session, plan, post, media_spec, drive, gfal, cfg,
+                                       log=log)
 
             drive_file_id = drive.upload_generated(local, str(post.week_start), f"{post.post_id}.{ext}")
             post.media_drive_file_id = drive_file_id
@@ -235,7 +248,7 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
         except PlatformValidationError as e:
             log(f"{post.post_id}: platform validation failed pre-spend — {e}")
             post.status = "FAILED"
-            post.park_reason = str(e)[:500]
+            post.park_reason = park_reason_text("render", str(e), log=log)
             session.flush()
         except Exception as e:
             wishlist = None
@@ -261,7 +274,8 @@ def render(session: Session, llm, drive, fal, post_ids: list[str] | None = None,
                 log(f"{post.post_id}: PARKED — {type(e).__name__}: {e}")
             except Exception as park_err:
                 post.status = "FAILED"
-                post.park_reason = f"{type(e).__name__}: {e}"[:500]
+                post.park_reason = park_reason_text(
+                    "render", f"{type(e).__name__}: {e}", log=log)
                 session.flush()
                 log(f"{post.post_id}: FAILED (park also failed: {park_err})")
     # Record the run's fal spend as a NUMBER so the digest can query week-to-date spend

@@ -133,10 +133,15 @@ class FakeDrive:
     """Minimal in-memory bank; download() writes a real scratch file so Pillow/ffmpeg-free
     code paths can run."""
 
-    def __init__(self):
+    def __init__(self, source_size: tuple[int, int] = (1080, 1080)):
         self.uploaded: list[tuple[str, str, str]] = []  # (local, week, filename)
         self._counter = 0
         self._by_id: dict[str, str] = {}
+        # The SOURCE asset's dimensions, which decide whether ENHANCE has anything to do.
+        # Default 1080x1080 matches the square canvas exactly, so the upscale is skipped —
+        # which is the real production case and the reason three posts parked. A test that
+        # needs the upscale to actually run must pass something SMALLER than the canvas.
+        self.source_size = source_size
 
     def download(self, file_id: str, suffix: str = "") -> str:
         """Returns the bytes that were uploaded under this id where we have them — so a
@@ -149,7 +154,7 @@ class FakeDrive:
             with open(known, "rb") as src, open(path, "wb") as dst:
                 dst.write(src.read())
             return path
-        return _write_scratch_media(suffix or ".png")
+        return _write_scratch_media(suffix or ".png", self.source_size)
 
     def upload_generated(self, local_path: str, week_start: str, filename: str) -> str:
         self._counter += 1

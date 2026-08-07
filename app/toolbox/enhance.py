@@ -49,28 +49,69 @@ KNOWN_OPS = ("upscale", "color_correct", "autocontrast")
 #
 # Named as a constant, and READ — the max_title lesson: a limit that is declared and never
 # consulted is not a rule, it is a comment that looks like enforcement.
-FAL_UPSCALER_MAX_INPUT_MP = 3.0
+# fal's ACTUAL constraint, re-established from its own arithmetic. post_1482's park reason
+# carried the fuller sentence the earlier one truncated:
+#
+#   "… upscale factor is 2. Which results in 77.25 (4500 * 4500 * 2 / 1024^2) MP which is
+#    greater than the max allowed value of 32."
+#
+# 4500 × 4500 with factor 2 gives 9000 × 9000 = 81,000,000 px; ÷ 1024² = 77.25. So fal
+# measures the RESULT, in 1024²-pixel units, and its ceiling is 32.
+#
+# `FAL_UPSCALER_MAX_INPUT_MP = 3.0` WAS WRONG BY AN ORDER OF MAGNITUDE. It came from a
+# message truncated mid-number — "the maximum megapixels that can be processed is 3…" — and
+# the digit was the first of 32. An input bound set from a truncated sentence is a guess
+# wearing a constant's clothes, and this one would have refused a 3000×3000 bank photo whose
+# ×1.5 result is 19.3, comfortably inside fal's real limit.
+FAL_UPSCALER_MAX_RESULT_MP = 32.0
+FAL_MP_DIVISOR = 1024 * 1024        # fal counts in 1024² units, not 10⁶
 
 
-def upscale_skip_reason(width: int, height: int,
-                        limit_mp: float = FAL_UPSCALER_MAX_INPUT_MP) -> str | None:
+def upscale_result_mp(width: int, height: int, scale: float) -> float:
+    """The figure fal itself computes and compares against 32."""
+    return (width * scale) * (height * scale) / FAL_MP_DIVISOR
+
+
+def upscale_skip_reason(width: int, height: int, target: tuple[int, int] | None = None,
+                        scale: float = 1.5,
+                        limit_mp: float = FAL_UPSCALER_MAX_RESULT_MP) -> str | None:
     """Why the upscale must be skipped for this input, or None.
 
-    SKIP, NOT FAIL, and not downscale. The upscaler is a SHARPENING pass on a real product
-    photo — `creativity: 0.1`, `resemblance: 0.9`, never invent block geometry. An image
-    already above 3 MP does not need it; the original is the better artefact. Shrinking a
-    good photo so it can be enlarged again would spend money to lose detail.
+    TWO REASONS, and the first is the one that parked every square photo post.
 
-    Failing instead would PARK every photo post whose source came off a real camera, which
-    on 2026-08-09 is the whole photo lane.
+    1. NOTHING TO GAIN. ENHANCE runs INSIDE the tool chain, on the SOURCE asset, and
+       `fit_image_aspect` crops to the platform canvas AFTERWARDS (render.py:119). Square is
+       1080×1080 = 1.17 MP. A 1600×1600 source upscaled ×1.5 is 2400×2400 = 5.76 MP — which
+       is then thrown away by the crop. We were paying to enlarge pixels nobody would ever
+       see, and tripping our own ceiling to do it.
+
+       `max_output_megapixels: 4.0` is a COST bound: §7·C5 uses it inside `estimate_micros`
+       to price a call before making it. Applying a costing number as a hard capability
+       refusal is a category error, and it is why three posts parked with a message about
+       megapixels when the real answer is that the upscale was pointless.
+
+       The upscaler is a SHARPENING pass — creativity 0.1, resemblance 0.9, never invent
+       block geometry. Its value is on a source SMALLER than the canvas, where the crop
+       would otherwise stretch real detail. On a source already at or above the canvas there
+       is no detail to add, so skipping is not a workaround: it is the correct behaviour, and
+       it happens to cost nothing instead of $0.173 an image.
+
+    2. fal WOULD REFUSE THE RESULT. Kept as a second, independent condition because it is a
+       different fact about a different party, and one day a genuinely small source will meet
+       a genuinely large scale.
     """
-    mp = (width * height) / 1_000_000
-    if mp <= limit_mp:
-        return None
-    return (f"input is {mp:.2f} MP and fal's upscaler accepts at most {limit_mp} MP — "
-            f"skipping ENHANCE and using the original, which at this resolution needs no "
-            f"upscale. Not a failure: the source is already better than the pass would "
-            f"return.")
+    if target:
+        tw, th = target
+        if width >= tw and height >= th:
+            return (f"source is {width}x{height} and the {tw}x{th} canvas is smaller — the "
+                    f"upscale would be cropped away immediately. Nothing to gain, so nothing "
+                    f"spent: ENHANCE skipped and the original used.")
+    result = upscale_result_mp(width, height, scale)
+    if result > limit_mp:
+        return (f"{width}x{height} at scale {scale} results in {result:.2f} MP and fal's "
+                f"maximum is {limit_mp} (it measures the RESULT, in 1024² units). Skipping "
+                f"ENHANCE and using the original rather than paying for a refusal.")
+    return None
 
 
 def build_enhance_args(image_url: str, medium: str) -> dict:
@@ -94,7 +135,8 @@ def _pillow_out(im: Image.Image) -> str:
 
 
 def enhance_image(fal, model_endpoints: dict, whitelist: list[str], op: str,
-                  local_path: str, medium: str, log=print) -> str:
+                  local_path: str, medium: str, log=print,
+                  target: tuple[int, int] | None = None) -> str:
     """Run one whitelisted enhancement on a bank photograph; returns a local path."""
     if op not in KNOWN_OPS or op not in whitelist:
         raise EnhanceNotWhitelisted(
@@ -119,11 +161,11 @@ def enhance_image(fal, model_endpoints: dict, whitelist: list[str], op: str,
     with Image.open(local_path) as probe:
         in_w, in_h = probe.size
     # The dimensions were already here. Nothing compared them to the provider's limit.
-    skip = upscale_skip_reason(in_w, in_h)
+    scale = build_enhance_args("", "photo")["scale"]
+    skip = upscale_skip_reason(in_w, in_h, target=target, scale=scale)
     if skip:
         log(f"ENHANCE upscale skipped: {skip}")
         return local_path
-    scale = build_enhance_args("", "photo")["scale"]
     out_w, out_h = int(round(in_w * scale)), int(round(in_h * scale))
 
     public_url = fal.upload_public(local_path)

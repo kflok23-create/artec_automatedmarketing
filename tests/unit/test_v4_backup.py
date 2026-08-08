@@ -260,7 +260,12 @@ def test_the_scratch_database_name_is_unique_and_obviously_disposable():
 
 def test_the_admin_url_targets_the_same_instance_and_a_different_database():
     url = backup_mod._admin_url("postgresql://u:p@host:5432/railway", "scratch_db")
-    assert url == "postgresql://u:p@host:5432/scratch_db"
+    # The scheme is now NORMALIZED to the psycopg3 marker — this assertion previously pinned
+    # the raw `postgresql://` and so pinned the defect: SQLAlchemy resolves that to psycopg2,
+    # which is not installed, and the restore proof died on ModuleNotFoundError before it
+    # ever issued a CREATE DATABASE. What the test protects is host and target database.
+    assert url == "postgresql+psycopg://u:p@host:5432/scratch_db"
+    assert "@host:5432/" in url, "the same instance, always"
     assert "railway" not in url.rsplit("/", 1)[1], "the live database is never the target"
 
 
@@ -432,3 +437,36 @@ def test_job_7_selects_an_APPROVED_TO_SEND_post_at_its_slot(session):
     due = select_due_posts(session, "evening")
     assert {p.post_id for p in due} == {"post_approved"}
     assert skip_reason(session, due[0]) is None
+
+
+def test_the_admin_url_carries_the_psycopg3_driver_marker():
+    """PRODUCTION, 2026-08-08:
+
+        prove restore: FAILED — CREATE DATABASE denied:
+        ModuleNotFoundError: No module named 'psycopg2'
+
+    `_admin_url` built an engine from the RAW DATABASE_URL. Railway hands out
+    `postgresql://`, which SQLAlchemy resolves to psycopg2 — a package this project does not
+    install. Every other path reaches the database through `app.db.get_engine`, which
+    normalizes; this was the only place that did not, and so the only place that could not
+    connect. The proof had never once reached a CREATE DATABASE statement.
+    """
+    from app.stages.backup import _admin_url
+
+    admin = _admin_url("postgresql://u:p@host:5432/railway", "postgres")
+    assert admin.startswith("postgresql+psycopg://"), admin
+    assert admin.endswith("/postgres")
+
+
+def test_the_admin_url_normalizes_the_bare_postgres_scheme_too():
+    """`postgres://` is the other shape Railway has handed out."""
+    from app.stages.backup import _admin_url
+
+    assert _admin_url("postgres://u:p@h/db", "postgres").startswith("postgresql+psycopg://")
+
+
+def test_the_admin_url_leaves_an_already_normalized_url_alone():
+    from app.stages.backup import _admin_url
+
+    once = _admin_url("postgresql+psycopg://u:p@h/db", "postgres")
+    assert once == _admin_url(once, "postgres")

@@ -117,8 +117,25 @@ def rides_today(now: datetime | None = None) -> bool:
 
 
 def _admin_url(database_url: str, database: str) -> str:
-    """The same instance, a different database. Never touches the live one."""
-    head, _, _tail = database_url.rpartition("/")
+    """The same instance, a different database. Never touches the live one.
+
+    NORMALIZED, because SQLAlchemy picks the DBAPI from the URL scheme. Railway hands out
+    `postgresql://`, which SQLAlchemy resolves to **psycopg2** — a package this project does
+    not install; it runs psycopg 3, which needs the `postgresql+psycopg://` marker. So the
+    restore proof died before it began:
+
+        prove restore: FAILED — CREATE DATABASE denied:
+        ModuleNotFoundError: No module named 'psycopg2'
+
+    Everywhere else reaches the database through `app.db.get_engine`, which normalizes; this
+    is the one place that built an engine from the raw environment string, so it was also the
+    one place that could not connect. Reported as "CREATE DATABASE denied" because the
+    except clause could not tell a permissions refusal from a missing driver — the message
+    named the wrong cause for the whole life of the check.
+    """
+    from app.db import normalize_url
+
+    head, _, _tail = normalize_url(database_url).rpartition("/")
     return f"{head}/{database}"
 
 

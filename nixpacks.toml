@@ -1,24 +1,31 @@
 # One Railway service, one process. ffmpeg is required by the visual toolbox.
 #
-# postgresql_18 is required by JOB 8, THE ONLY BACKUP THIS SYSTEM HAS, and its absence was
-# invisible for as long as it existed:
+# `nixPkgs = [..., "postgresql_18"]` BROKE THE BUILD of artec api and artec-scheduler:
 #
-#   2026-08-07T19:00:09Z  job 8 pg-dump FAILED: BackupError: pg_dump is not on PATH
+#   error: undefined variable 'postgresql_18'
+#     at /app/.nixpacks/nixpkgs-bc8f8d1be58e8c8383e683a06e1e1e57893fff87.nix:19:16
 #
-# Every night, in a log line nobody read. The dependency is not a Python package — psycopg
-# talks the wire protocol and needs no client binaries — so nothing in pyproject.toml implies
-# it and nothing failed at build or boot. Only the job failed, once a day, quietly.
+# Railway pins nixpkgs to one commit and that commit predates PostgreSQL 18. I shipped a
+# package name I had not verified existed in the pin, and both nixpacks services failed to
+# build — the brain was untouched only because it has its own Dockerfile.
 #
-# THE VERSION IS LOAD-BEARING, not tidiness. Railway's Postgres is
-# ghcr.io/railwayapp-templates/postgres-ssl:18, and pg_dump REFUSES a server newer than
-# itself. A `postgresql` that resolved to 16 would put the binary on PATH, satisfy every
-# presence check, and abort every night on "server version mismatch" — which is why the
-# doctor compares the two majors rather than asking whether the file exists.
+# WHY NOT AN OLDER postgresql FROM THE PIN: the server is postgres-ssl:18 and pg_dump refuses
+# a server newer than itself. A `postgresql_16` would install cleanly, satisfy every presence
+# check, and abort every night on "server version mismatch" — a green build and no backup,
+# which is the state this whole change exists to end.
+#
+# So the client comes from PGDG, in the install phase, and the install CANNOT fail the build
+# (see scripts/install_pg_client.sh for why that `|| echo` is justified here and nowhere
+# else: `artec doctor` compares pg_dump's major against the live server's major daily, so a
+# failed install is reported by something other than the thing that failed).
 [phases.setup]
-nixPkgs = ["python312", "ffmpeg", "postgresql_18"]
+nixPkgs = ["python312", "ffmpeg"]
 
 [phases.install]
-cmds = ["python -m venv /opt/venv && . /opt/venv/bin/activate && pip install --upgrade pip && pip install ."]
+cmds = [
+  "sh scripts/install_pg_client.sh || echo 'WARN: postgresql-client-18 did not install — job 8 (the only backup) cannot run; artec doctor reports this RED nightly'",
+  "python -m venv /opt/venv && . /opt/venv/bin/activate && pip install --upgrade pip && pip install .",
+]
 
 [start]
 cmd = ". /opt/venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port $PORT"

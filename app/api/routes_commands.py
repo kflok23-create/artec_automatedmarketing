@@ -367,17 +367,24 @@ def digest_preview_cmd(body: CommandRequest):
 
 
 @router.post("/prove-all")
-def prove_all_cmd():
+def prove_all_cmd(include_restore: bool = True):
     """Every capability in one pass, classified three ways. Nothing irreversible.
 
     Nine capabilities have been UNPROVEN since the build began, reported as a single count
     that could not distinguish "the code is broken" from "the world has not supplied the
     precondition". Those have different owners. This separates them.
+
+    `include_restore` defaults TRUE here and FALSE from the unattended boot sweep, and the
+    asymmetry is deliberate: an operator asking for the matrix by hand wants all nine, while
+    a sweep that fires on every redeploy must not turn a monthly CREATE DATABASE /
+    pg_restore / DROP DATABASE into a per-deploy one. Skipping never overwrites an earlier
+    verdict — `run()` re-raises NotProvable before recording.
     """
     from app.stages import prove as prove_mod
 
-    with record_run("prove-all", {}) as (session, rec):
-        return prove_mod.run_all(session, settings=get_settings(), log=rec.log)
+    with record_run("prove-all", {"include_restore": include_restore}) as (session, rec):
+        return prove_mod.run_all(session, settings=get_settings(), log=rec.log,
+                                 include_restore=include_restore)
 
 
 @router.post("/doctor")

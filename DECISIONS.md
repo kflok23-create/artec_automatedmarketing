@@ -1628,3 +1628,44 @@ Redaction is the operator's call, and it is recorded here rather than silently s
      reported "cron jobs missing", a FALSE FAILURE naming the exact defect the entrypoint
      hard-fails on. It would have passed on the UTF-8 brain and lied anywhere else. A prover
      whose verdict depends on the locale it runs in is not a prover.
+
+121. **2026-08-08 · A PROOF THAT ONLY HAPPENS WHEN SOMEBODY REMEMBERS REPORTS THE STATE OF
+     THEIR ATTENTION.** `POST /commands/prove-all` existed and worked for days while the
+     matrix stayed stale, because running it needed an authenticated call a human had to
+     make. The capability was built; the *habit* was the missing part, and a system that
+     depends on a habit has an unmonitored dependency on a person.
+
+     The sweep now runs itself, on artec api, at boot, in a daemon thread that is started
+     and never joined.
+
+     **THIS IS NOT A REVERSAL OF 118.** I removed exactly this from the scheduler, and that
+     reasoning stands unchanged: the scheduler's boot path gates nine jobs, so anything
+     added to it can cost all nine. What differs is the blast radius, not the principle.
+     This service owns HTTP serving; uvicorn is already accepting requests before the thread
+     starts, nothing queues behind it, and a hung sweep leaves a hung thread rather than a
+     missed slot. "Nothing that proves the scheduler may run inside the scheduler" was always
+     a statement about the scheduler.
+
+     **THE GATES ARE THE DESIGN**, and each has both sides named:
+     * *Staleness* — `now` is a PARAMETER, never read inside the function (DECISIONS 112: a
+       hidden clock is an unnamed side). The other side is the `at` stamp the last sweep
+       wrote. An absent or unparseable stamp reads as DUE, never as fresh: treating a corrupt
+       value as "now" is how a sweep stops running and nothing says so, which is the memory
+       audit's `clean — 0 files scanned` in a new costume.
+     * *`restore` on a separate, slower clock* — it is the ONLY proof that mutates the
+       server (CREATE DATABASE / pg_restore / DROP DATABASE) and it rides job 8 monthly.
+       Excluded unless genuinely due, and its freshness is read from ITS OWN entry: reading
+       the whole-matrix stamp would keep it permanently fresh and it would never run again.
+     * *Advisory lock* — a second replica no-ops, the same mechanism the scheduler uses
+       against double-firing. Two concurrent sweeps would make `prove_stripe_attribution`
+       report a false FAILURE, since it refuses when a probe order already exists.
+
+     **A SKIP IS NOT A VERDICT.** `include_restore=False` records NOTHING: `run()` re-raises
+     `NotProvable` before `record`, so the last real restore proof survives. Had a skip
+     written through, an unattended sweep would have erased the monthly evidence twice a day
+     and left a permanent "never".
+
+     Also fixed in passing: `blocked_s1` indexed `results[c]` and would `KeyError` on a
+     capability absent from the pass — the S1 summary line crashing the whole matrix at the
+     exact moment it was reporting that something had not run. `.get` now reads absence as
+     unproven, which is what absence means.

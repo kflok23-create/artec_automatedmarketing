@@ -420,7 +420,8 @@ def run(session: Session, capability: str, settings=None, log=print, **kwargs) -
     return proof
 
 
-def run_all(session: Session, settings=None, log=print, **kwargs) -> dict:
+def run_all(session: Session, settings=None, log=print, include_restore: bool = True,
+            **kwargs) -> dict:
     """Every capability, one pass, three outcomes — never two.
 
     THE POINT IS THE CLASSIFICATION, not the score. Nine capabilities have sat UNPROVEN
@@ -452,7 +453,17 @@ def run_all(session: Session, settings=None, log=print, **kwargs) -> dict:
     # prove the restore command runs, not that THIS database round-trips — and
     # FALSE_PASS["restore"] names that exact trap ("a dump that restores structure with no
     # rows"). If the backup fails, restore stays not_provable and says the backup was why.
-    if "dump_path" not in kwargs and settings is not None:
+    #
+    # `include_restore=False` exists because this function is now called UNATTENDED, from
+    # the api's boot sweep. `restore` is the one proof that MUTATES THE SERVER — CREATE
+    # DATABASE, pg_restore, DROP DATABASE against the live instance — and it rides job 8 on
+    # day_of_month == 1. Running it on every redeploy would quietly turn a monthly operation
+    # into a per-deploy one, which is the kind of thing discovered during an incident.
+    # Skipping records NOTHING: `run()` re-raises NotProvable before `record`, so the last
+    # real verdict stays in config.proofs rather than being overwritten by a skip.
+    if not include_restore:
+        kwargs.pop("dump_path", None)
+    if include_restore and "dump_path" not in kwargs and settings is not None:
         try:
             from app.stages.backup import run_backup
 
@@ -466,6 +477,17 @@ def run_all(session: Session, settings=None, log=print, **kwargs) -> dict:
 
     results: dict[str, dict] = {}
     for capability in CAPABILITIES:
+        if capability == "restore" and not include_restore:
+            # NOT PROVABLE BY THIS PASS, and worded so nobody reads it as a defect. The
+            # absent precondition here is "it is due" — the same three states, no fourth.
+            reason = ("not attempted in this pass — `restore` mutates the server (CREATE "
+                      "DATABASE / pg_restore / DROP DATABASE) and runs on a 30-day cadence "
+                      "with job 8. Force it with POST /commands/prove-all {\"include_restore\": "
+                      "true} or `artec restore-check`. Any earlier verdict is UNCHANGED in "
+                      "config.proofs — a skip never overwrites a proof.")
+            results[capability] = {"state": "not_provable", "detail": reason, "needs": reason}
+            log(f"prove {capability}: NOT PROVABLE — {reason}")
+            continue
         try:
             proof = run(session, capability, settings=settings, log=log, **kwargs)
             results[capability] = {"state": "proven" if proof.ok else "failed",
@@ -488,7 +510,10 @@ def run_all(session: Session, settings=None, log=print, **kwargs) -> dict:
     log("=== PROOF MATRIX ===")
     for state in ("proven", "failed", "not_provable"):
         log(f"  {state:<13} {len(tally[state])}  {tally[state]}")
-    blocked_s1 = [c for c in S1 if results[c]["state"] != "proven"]
+    # `.get`, not `[]`: a capability ABSENT from results is unproven, not a KeyError. An S1
+    # line that crashes on a missing capability would take the whole matrix down at the
+    # exact moment it is reporting that something did not run.
+    blocked_s1 = [c for c in S1 if results.get(c, {}).get("state") != "proven"]
     if blocked_s1:
         log(f"  S1 STILL UNPROVEN: {blocked_s1}")
     return {"results": results, "tally": tally, "s1_unproven": blocked_s1}

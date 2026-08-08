@@ -55,6 +55,24 @@ async def lifespan(app: FastAPI):
         seed_config(session)
         keys = validate_required_config(session, "api")
         logging.info("config manifest validated at boot: %d keys", len(keys))
+
+    # THE NINE CLASSIFY THEMSELVES FROM HERE. `POST /commands/prove-all` worked for days
+    # while the matrix stayed stale, because running it needed an authenticated call
+    # somebody had to remember to make — so the matrix reported the state of somebody's
+    # attention rather than the state of the system.
+    #
+    # I REMOVED EXACTLY THIS FROM THE SCHEDULER, and that reasoning stands: the scheduler's
+    # boot path gates nine jobs, so anything added to it can cost all nine. This service
+    # owns HTTP serving. The thread is started and never joined, uvicorn is already
+    # accepting requests, and nothing queues behind it — a hung sweep here leaves a hung
+    # thread, not a missed slot. Different blast radius, different answer.
+    #
+    # Gated on two independently supplied times (app/stages/prove_sweep.py), advisory-locked
+    # against a second replica, and `restore` is excluded unless it is genuinely due,
+    # because that proof mutates the server. Every failure is caught inside the thread.
+    from app.stages.prove_sweep import start_boot_sweep
+
+    start_boot_sweep()
     yield
 
 

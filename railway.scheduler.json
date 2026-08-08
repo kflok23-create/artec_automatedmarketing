@@ -4,8 +4,9 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python -m app.scheduler",
+    "startCommand": "python -u -m app.scheduler",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
-  }
+  },
+  "//": "python -u, NOT python. artec-scheduler reports itself with print() to stdout, and stdout is block-buffered when it is a pipe: ~8KB of output has to accumulate before anything reaches Railway. The boot banner is ~600 bytes, so a HEALTHY scheduler and a WEDGED one look identical -- 'Starting Container' and nothing else. That cost hours of misdiagnosis on 2026-08-08: silence was read as a hang, an unbounded DB connect was found and fixed on its own merits, and the silence persisted afterwards because it was never the cause. -u makes stdout unbuffered, so the banner and every tick line arrive when they happen. The api does not need this: it logs via `logging` to stderr, which is not block-buffered -- which is exactly why the api was legible all along and this service was not."
 }

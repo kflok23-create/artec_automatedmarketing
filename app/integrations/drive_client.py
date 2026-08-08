@@ -240,7 +240,17 @@ class DriveClient:
         Stated here rather than left as an exception someone discovers later."""
         from googleapiclient.http import MediaFileUpload
 
-        root = self.settings.GOOGLE_DRIVE_ROOT_FOLDER_ID
+        # `self.settings` DOES NOT EXIST. This line read it anyway, and job 8 died on it
+        # the first night it ever got this far:
+        #
+        #   job 8 pg-dump FAILED: AttributeError: 'DriveClient' object has no attribute
+        #   'settings'
+        #
+        # __init__ stores `self.root_id` and every other method uses it (the folder walk, the
+        # generated-folder lookup). This one line was the only reader of an attribute nobody
+        # ever set, so `upload_backup` had never completed once — it could not be reached
+        # while pg_dump was missing from the image, and fixing that exposed it.
+        root = self.root_id
         folder = self._find_child_folder(root, "_backups")
         if not folder:
             folder = (self.service.files().create(

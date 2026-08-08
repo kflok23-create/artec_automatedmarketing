@@ -50,6 +50,42 @@ from pathlib import Path
 # hermes writes epoch seconds as REAL. A session that never ended has ended_at NULL.
 COST_IS_KNOWN = ("estimated", "actual")
 
+# USD PER MILLION TOKENS. The store records tokens for every session but prices only some:
+# the brain runs claude-opus-5 through the Anthropic transport, and hermes' pricing snapshot
+# did not cover it, so the first production run reported "5 cron session(s); 0 with a known
+# cost". Tokens without a price is not the same as no data — we know the rates, so the meter
+# prices what the store cannot.
+#
+# A MODEL ABSENT FROM THIS TABLE STAYS UNMEASURED, never guessed at a neighbouring model's
+# rate: a wrong number is worse than an honest gap, because a wrong number gets spent against.
+# Cache read is 0.1x input and cache write 1.25x input (5-minute TTL) per Anthropic pricing.
+PRICING_USD_PER_MTOK = {
+    "claude-opus-5":     {"in": 5.00, "out": 25.00, "cache_read": 0.50, "cache_write": 6.25},
+    "claude-opus-4-8":   {"in": 5.00, "out": 25.00, "cache_read": 0.50, "cache_write": 6.25},
+    "claude-sonnet-5":   {"in": 3.00, "out": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-haiku-4-5":  {"in": 1.00, "out":  5.00, "cache_read": 0.10, "cache_write": 1.25},
+}
+
+
+def price_from_tokens(model: str | None, row) -> int | None:
+    """Cents from token counts, or None when this model has no rate in the table.
+
+    The four token classes are ADDITIVE, matching the Anthropic usage contract: `input_tokens`
+    is the uncached remainder, with cache reads and cache writes reported separately. Summing
+    them the other way (treating input as inclusive) would double-count the cached prefix,
+    which on this workload is the largest term by an order of magnitude.
+    """
+    rates = PRICING_USD_PER_MTOK.get((model or "").strip())
+    if not rates:
+        return None
+    usd = (
+        (row["input_tokens"] or 0) * rates["in"]
+        + (row["output_tokens"] or 0) * rates["out"]
+        + (row["cache_read_tokens"] or 0) * rates["cache_read"]
+        + (row["cache_write_tokens"] or 0) * rates["cache_write"]
+    ) / 1_000_000
+    return int(round(usd * 100))
+
 
 def cron_job_names() -> dict[str, str]:
     """{job_id: name} from `hermes cron list`. Empty means unknown, and unknown never guesses.
@@ -129,6 +165,14 @@ def read_cron_sessions(home: Path) -> list[dict]:
         if usd is None and (row["cost_status"] in COST_IS_KNOWN):
             usd = row["estimated_cost_usd"]
         cost_cents = None if usd is None else int(round(float(usd) * 100))
+        cost_source = "hermes" if cost_cents is not None else None
+
+        # THE STORE PRICES SOME MODELS AND NOT OTHERS. It records tokens for all of them, so
+        # where hermes does not know the rate and we do, price it here rather than recording
+        # an honest-but-useless NULL. Still NULL for a model absent from the rate table.
+        if cost_cents is None:
+            cost_cents = price_from_tokens(row["model"], row)
+            cost_source = "artec-rate-table" if cost_cents is not None else None
 
         tokens = (row["input_tokens"] or 0) + (row["output_tokens"] or 0)
         out.append({
@@ -136,6 +180,7 @@ def read_cron_sessions(home: Path) -> list[dict]:
             "started_at": _epoch(row["started_at"]), "finished_at": _epoch(row["ended_at"]),
             "tokens": tokens or None, "cost_cents": cost_cents,
             "cost_status": row["cost_status"] or "unknown", "model": row["model"],
+            "cost_source": cost_source,
         })
     return out
 

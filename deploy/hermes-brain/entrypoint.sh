@@ -121,6 +121,14 @@ python /bootstrap/audit_memory_report.py || echo "WARN: memory audit script itse
 # READ-ONLY production report: the board, agent_runs, and the orphaned digest payload.
 # Every statement is a SELECT. Never fatal.
 python /bootstrap/report_board.py || echo "WARN: board report script itself failed"
+# THE AGENT SPEND METER READ $0.00 FOR THE LIFE OF THE SYSTEM, because nothing in production
+# wrote agent_runs.cost_cents: the three brain jobs are native cron entries with no Python
+# wrapper to call start_run/finish_run, and the only plugin hook is pre_tool_call. hermes
+# measures cost per session in its own store, so this carries the real numbers across and
+# REPAIRS the rows the hook opened as telegram-session/manual. A run whose cost the store
+# does not know is written NULL, never 0 - an unmeasured week must not read as a free one.
+# Never fatal.
+python /bootstrap/report_agent_runs.py || echo "WARN: agent-runs report script itself failed"
 
 step "8/11 plugin discovery + enable"
 HERMES_PLUGINS_DEBUG=1 hermes plugins list || true

@@ -117,14 +117,25 @@ DROP_SCOUTING_AT = 0.60          # of the weekly cap
 SHORTEN_GATE_AT = 0.85
 
 
-def spend_posture(spent_cents: int, cap_cents: int) -> dict:
-    """What the brain may spend this week's remaining budget on. Pure and total."""
+def spend_posture(spent_cents: int, cap_cents: int, blind: bool = False,
+                  unmeasured_runs: int = 0) -> dict:
+    """What the brain may spend this week's remaining budget on. Pure and total.
+
+    `blind` is the case a bare number cannot express: runs happened and NONE of them recorded
+    a cost. The posture is then reported as UNKNOWN rather than as the comfortable one — a
+    meter reading zero because it is disconnected must not license full spending, which is
+    exactly what it did for the whole life of this system.
+    """
     cap = max(0, int(cap_cents or 0))
     spent = max(0, int(spent_cents or 0))
     fraction = (spent / cap) if cap else 0.0
     scouting = fraction < DROP_SCOUTING_AT
     gate_style = "full" if fraction < SHORTEN_GATE_AT else "short"
     actions = []
+    if blind:
+        actions.append(f"agent spend is UNMEASURED for all {unmeasured_runs} run(s) this "
+                       "week — the cap cannot be enforced against a meter that recorded "
+                       "nothing, and 0 here means unknown, not free")
     if not scouting:
         actions.append("scouting dropped — plan from the bank and last week's learnings")
     if gate_style == "short":
@@ -132,6 +143,8 @@ def spend_posture(spent_cents: int, cap_cents: int) -> dict:
                        "same decisions")
     return {
         "spent_cents": spent, "cap_cents": cap, "fraction": round(fraction, 3),
+        # Carried so every renderer can say "unknown" instead of printing a confident $0.00.
+        "measured": not blind, "unmeasured_runs": int(unmeasured_runs),
         "scouting": scouting,
         "gate_style": gate_style,
         # INVARIANT: the gate always runs. Not a threshold, not a flag — a constant.
@@ -142,7 +155,25 @@ def spend_posture(spent_cents: int, cap_cents: int) -> dict:
 
 
 def current_posture(cap_cents: int, engine=None, days: int = 7) -> dict:
-    return spend_posture(week_to_date_spend_cents(engine=engine, days=days), cap_cents)
+    meter = week_to_date_spend(engine=engine, days=days)
+    return spend_posture(meter["cents"], cap_cents, blind=meter["blind"],
+                         unmeasured_runs=meter["unmeasured_runs"])
+
+
+def job_and_trigger_for(session_id: str | None) -> tuple[str, str]:
+    """(job, trigger) from the session id alone — no I/O, so it is safe on every tool call.
+
+    hermes names a cron session `cron_<jobid>_<YYYYMMDD>_<HHMMSS>`. The job id is a real
+    handle: `hermes cron list` prints it beside the name, which is how
+    report_agent_runs.py later replaces `cron:<jobid>` with the actual job name. Until then
+    the id is carried verbatim rather than guessed at — an unresolved id is still a fact,
+    where a plausible name would be a fabrication.
+    """
+    sid = str(session_id or "")
+    if sid.startswith("cron_"):
+        parts = sid.split("_")
+        return (f"cron:{parts[1]}" if len(parts) > 2 else "cron:unknown"), "cron"
+    return "telegram-session", "manual"
 
 
 def record_tool_call_for_session(session_id: str | None, tool: str, engine=None) -> None:
@@ -163,11 +194,22 @@ def record_tool_call_for_session(session_id: str | None, tool: str, engine=None)
                 "SELECT id FROM agent_runs WHERE session_id = :s "
                 "ORDER BY id DESC LIMIT 1"), {"s": str(session_id)}).first()
             if row is None:
+                # THE SESSION ID ALREADY SAYS WHICH IT IS. This hardcoded
+                # `telegram-session`/`manual` on every row, so a Sunday cron firing and an
+                # operator's Tuesday chat were textually identical — and migration 0009 added
+                # `trigger` precisely so they would not be. The 'cron' side of that comparison
+                # was structurally unsuppliable, because nothing else ever inserted a row.
+                #
+                # hermes names a cron session `cron_<jobid>_<YYYYMMDD>_<HHMMSS>`, so the
+                # trigger is readable here with no extra plumbing. The job NAME needs the
+                # cron listing, which this hook must not shell out for on every tool call —
+                # deploy/hermes-brain/report_agent_runs.py resolves it and repairs the row.
+                job, trigger = job_and_trigger_for(session_id)
                 opened = conn.execute(
                     _json_stmt("INSERT INTO agent_runs (job, session_id, started_at, status, "
                                "tools_called, trigger) VALUES (:j, :s, :t, 'running', :tc, "
-                               "'manual') RETURNING id", "tc"),
-                    {"j": "telegram-session", "s": str(session_id),
+                               ":tr) RETURNING id", "tc"),
+                    {"j": job, "tr": trigger, "s": str(session_id),
                      "t": datetime.now(UTC), "tc": []}).first()
                 run_id = int(opened[0]) if opened else None
             else:
@@ -193,13 +235,34 @@ def finish_run(run_id: int | None, status: str = "ok", tokens: int | None = None
         print(f"agent_runs: could not close run {run_id}: {type(e).__name__}: {e}")
 
 
-def week_to_date_spend_cents(engine=None, days: int = 7) -> int:
-    """The meter the weekly agent cap reads. Sums cost_cents over the window."""
+def week_to_date_spend(engine=None, days: int = 7) -> dict:
+    """The meter, with the thing a bare sum cannot say: HOW MUCH OF THE WEEK IT SAW.
+
+    `SELECT COALESCE(SUM(cost_cents), 0)` returns 0 for three different weeks — one where
+    nothing ran, one where everything ran free, and one where everything ran and nothing
+    recorded a cost. Production was the third for the whole life of the system: nothing wrote
+    `cost_cents`, so the cap's meter and the digest's "agent - week to date: $0.00" were a
+    measured-looking zero for a quantity nothing measured.
+
+    STALE IS NOT ZERO. Runs whose cost is NULL are counted SEPARATELY and never summed as
+    free, so a caller can tell an idle week from a blind one.
+    """
     eng = _eng(engine)
+    from datetime import timedelta
+
+    since = datetime.now(UTC).replace(microsecond=0) - timedelta(days=days)
     with eng.begin() as conn:
-        total = conn.execute(text(
-            "SELECT COALESCE(SUM(cost_cents), 0) FROM agent_runs "
-            "WHERE started_at >= :since"),
-            {"since": datetime.now(UTC).replace(microsecond=0)
-             - __import__("datetime").timedelta(days=days)}).scalar()
-    return int(total or 0)
+        row = conn.execute(text(
+            "SELECT COALESCE(SUM(cost_cents), 0) AS cents, "
+            "       COUNT(*) FILTER (WHERE cost_cents IS NOT NULL) AS measured, "
+            "       COUNT(*) FILTER (WHERE cost_cents IS NULL) AS unmeasured "
+            "FROM agent_runs WHERE started_at >= :since"), {"since": since}).first()
+    cents, measured, unmeasured = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0))
+    return {"cents": cents, "measured_runs": measured, "unmeasured_runs": unmeasured,
+            "blind": unmeasured > 0 and measured == 0}
+
+
+def week_to_date_spend_cents(engine=None, days: int = 7) -> int:
+    """Cents only, for callers that genuinely want the number. Prefer `week_to_date_spend`:
+    this cannot distinguish an idle week from an unmeasured one, which is the defect."""
+    return week_to_date_spend(engine=engine, days=days)["cents"]

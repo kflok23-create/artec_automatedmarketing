@@ -202,7 +202,13 @@ def test_only_artec_api_runs_the_migration_predeploy(repo_root):
         cfg = jsonlib.loads((repo_root / fname).read_text(encoding="utf-8"))
         assert "preDeployCommand" not in cfg.get("deploy", {}), f"{fname} must not migrate"
     sched = jsonlib.loads((repo_root / "railway.scheduler.json").read_text(encoding="utf-8"))
-    assert sched["deploy"]["startCommand"] == "python -m app.scheduler"
+    # This pinned the command byte-for-byte, which made it a tripwire on the interpreter
+    # FLAGS as well as the module. What it exists to protect is that the scheduler runs the
+    # scheduler and does not run migrations — not how python is invoked. `-u` is required
+    # separately by tests/unit/test_scheduler_is_observable.py, and for a stated reason:
+    # without it the boot banner sits in a block buffer and a healthy scheduler is
+    # indistinguishable from a wedged one.
+    assert sched["deploy"]["startCommand"].endswith("-m app.scheduler")
     brain = jsonlib.loads((repo_root / "railway.hermes-brain.json").read_text(encoding="utf-8"))
     assert brain["build"]["dockerfilePath"] == "deploy/hermes-brain/Dockerfile"
 

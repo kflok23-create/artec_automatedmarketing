@@ -196,3 +196,65 @@ def test_a_measured_week_still_degrades_at_the_thresholds():
 @pytest.mark.parametrize("spent,cap", [(0, 0), (10, 0)])
 def test_a_zero_cap_never_divides_by_zero(spent, cap):
     assert spend_posture(spent, cap)["fraction"] == 0.0
+
+
+# --- pricing: tokens without a rate is not the same as no data ---------------------------
+
+def test_a_model_hermes_cannot_price_is_priced_from_tokens(tmp_path, monkeypatch):
+    """THE PRODUCTION RESULT THAT MOTIVATED THIS. The first real run reported "5 cron
+    session(s); 0 with a known cost totalling $0.00" — hermes records tokens for every
+    session but its pricing snapshot did not cover claude-opus-5, so every row came back
+    unmeasured. We know the rates; the store knows the tokens."""
+    monkeypatch.setattr(rar.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": CRON_LIST})())
+    # 200k input, 40k output, 1M cache read, 100k cache write on claude-opus-5:
+    #   0.2*5 + 0.04*25 + 1.0*0.50 + 0.1*6.25 = 1.00 + 1.00 + 0.50 + 0.625 = $3.125
+    home = _store(tmp_path, [
+        ("cron_22cf30408fee_20260809_070000", "cron", "claude-opus-5",
+         200_000, 40_000, 1_000_000, 100_000, None, None, None, 12,
+         1785883479.0, 1785883518.0, "cron_complete"),
+    ])
+    row = rar.read_cron_sessions(home)[0]
+    # $3.125 -> 312c, not 313: Python's round() is half-to-even. Pinned deliberately rather
+    # than dodged with a non-half figure — a meter that silently changed rounding mode would
+    # drift against real billing, and this is the case that would show it.
+    assert row["cost_cents"] == 312
+    assert row["cost_source"] == "artec-rate-table"
+
+
+def test_hermes_own_cost_wins_over_our_rate_table(tmp_path, monkeypatch):
+    """When the store priced it, that is the authority — our table is the fallback, not an
+    override. Otherwise a stale rate here would silently rewrite real billing data."""
+    monkeypatch.setattr(rar.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": CRON_LIST})())
+    home = _store(tmp_path, [
+        ("cron_22cf30408fee_20260809_070000", "cron", "claude-opus-5",
+         200_000, 40_000, 0, 0, 9.99, None, "estimated", 12,
+         1785883479.0, 1785883518.0, "cron_complete"),
+    ])
+    row = rar.read_cron_sessions(home)[0]
+    assert row["cost_cents"] == 999 and row["cost_source"] == "hermes"
+
+
+def test_an_unknown_model_stays_unmeasured_rather_than_guessed(tmp_path, monkeypatch):
+    """A wrong number is worse than an honest gap, because a wrong number gets spent
+    against. No neighbouring-model rate, no averaging — NULL."""
+    monkeypatch.setattr(rar.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"stdout": CRON_LIST})())
+    home = _store(tmp_path, [
+        ("cron_22cf30408fee_20260809_070000", "cron", "some-model-we-do-not-price",
+         200_000, 40_000, 0, 0, None, None, None, 12,
+         1785883479.0, 1785883518.0, "cron_complete"),
+    ])
+    row = rar.read_cron_sessions(home)[0]
+    assert row["cost_cents"] is None and row["cost_source"] is None
+
+
+def test_the_four_token_classes_are_additive_not_inclusive():
+    """`input_tokens` is the UNCACHED remainder; cache reads and writes are reported
+    separately. Treating input as inclusive would double-count the cached prefix, which on
+    this workload is the largest term by an order of magnitude."""
+    row = {"input_tokens": 1_000_000, "output_tokens": 0,
+           "cache_read_tokens": 1_000_000, "cache_write_tokens": 0}
+    # 1M input @ $5 + 1M cache-read @ $0.50 = $5.50, not $5.00
+    assert rar.price_from_tokens("claude-opus-5", row) == 550

@@ -21,7 +21,7 @@ fail() { printf '\n=== [hermes-brain boot] FATAL: %s ===\n' "$1" >&2; exit 1; }
 PROFILE=artec-brain
 ENVFILE="$HERMES_HOME/profiles/$PROFILE/.env"
 
-step "1/10 volume probe (HERMES_HOME=$HERMES_HOME)"
+step "1/11 volume probe (HERMES_HOME=$HERMES_HOME)"
 : "${HERMES_HOME:?HERMES_HOME must be set (the /data/hermes volume)}"
 [ -d "$HERMES_HOME" ] || fail "HERMES_HOME does not exist — is the volume mounted?"
 touch "$HERMES_HOME/.write-probe" 2>/dev/null || fail "HERMES_HOME is not writable — read-only volume?"
@@ -29,7 +29,7 @@ rm -f "$HERMES_HOME/.write-probe"
 python /bootstrap/report_volume.py || echo "WARN: volume marker report to Postgres failed — artec doctor will show this RED"
 echo "volume ok"
 
-step "2/10 profile '$PROFILE' (create if missing, then use)"
+step "2/11 profile '$PROFILE' (create if missing, then use)"
 if hermes profile list 2>/dev/null | grep -q "$PROFILE"; then
     echo "profile exists — skipping create (volume persisted it)"
 else
@@ -37,7 +37,7 @@ else
 fi
 hermes profile use "$PROFILE"
 
-step "3/10 remove stray pre-rename 'artec' profile (wrapper-binary collision trap)"
+step "3/11 remove stray pre-rename 'artec' profile (wrapper-binary collision trap)"
 if hermes profile list 2>/dev/null | grep -Eq "(^|[[:space:]])artec[:[:space:]]"; then
     hermes profile delete artec -y && echo "stray 'artec' profile deleted" \
         || echo "WARN: could not delete stray 'artec' profile — remove manually"
@@ -45,7 +45,7 @@ else
     echo "no stray profile"
 fi
 
-step "4/10 install plugin package onto the volume"
+step "4/11 install plugin package onto the volume"
 # The volume mounts OVER /data/hermes at runtime, so the package must be copied on every
 # boot, after the mount, into BOTH candidate scan locations.
 for dest in "$HERMES_HOME/plugins" "$HERMES_HOME/profiles/$PROFILE/plugins"; do
@@ -58,7 +58,7 @@ ls -la "$HERMES_HOME/plugins/artec" || fail "plugin package missing at \$HERMES_
 echo "--- verify: $HERMES_HOME/profiles/$PROFILE/plugins/artec ---"
 ls -la "$HERMES_HOME/profiles/$PROFILE/plugins/artec" || fail "plugin package missing at profile plugins dir"
 
-step "5/10 profile config.yaml"
+step "5/11 profile config.yaml"
 if [ -d "$HERMES_HOME/profiles/$PROFILE" ]; then
     cp /bootstrap/config.yaml "$HERMES_HOME/profiles/$PROFILE/config.yaml"
 else
@@ -66,7 +66,7 @@ else
 fi
 echo "config installed"
 
-step "6/10 credentials → profile .env (hermes reads THE PROFILE .env, not Railway env)"
+step "6/11 credentials → profile .env (hermes reads THE PROFILE .env, not Railway env)"
 # Strip ALL whitespace defensively: a trailing newline from a dashboard paste survives the
 # presence check and then 401s at the first real conversation — which happened live.
 ANTHROPIC_KEY_CLEAN=$(printf '%s' "$ANTHROPIC_API_KEY" | tr -d '[:space:]')
@@ -103,7 +103,7 @@ sys.exit(0 if resp.status_code == 200 else 1)
 PY
 echo "credentials present in profile .env and VALID against the Anthropic API"
 
-step "7/10 scouting probe + memory audit (neither may fail the boot)"
+step "7/11 scouting probe + memory audit (neither may fail the boot)"
 # A5: presence is not validity — probe the REAL search endpoint and record the answer where
 # the digest reads it. A5 failure is reported, never fatal: losing trend input costs a
 # worse week, refusing to boot costs the whole week.
@@ -122,7 +122,7 @@ python /bootstrap/audit_memory_report.py || echo "WARN: memory audit script itse
 # Every statement is a SELECT. Never fatal.
 python /bootstrap/report_board.py || echo "WARN: board report script itself failed"
 
-step "8/10 plugin discovery + enable"
+step "8/11 plugin discovery + enable"
 HERMES_PLUGINS_DEBUG=1 hermes plugins list || true
 hermes plugins enable artec || fail "hermes plugins enable artec failed — see the discovery log above for scanned directories and skip reasons"
 if hermes plugins list --plain 2>/dev/null | grep -i "artec" | grep -qi "enabled"; then
@@ -164,7 +164,7 @@ echo "--- proof: artec toolset present (COUNT DEFERRED — tools register at ses
 echo "artec plugin enabled; the 15 handlers register at SESSION START, so no boot-time"
 echo "count is possible — step 8/10 above is the check that can actually be made here"
 
-step "9/10 cron jobs (numeric day-of-week; create exits 0 on failure, so VERIFY by listing)"
+step "9/11 cron jobs (numeric day-of-week; create exits 0 on failure, so VERIFY by listing)"
 if ! hermes cron list 2>/dev/null | grep -qi "learn-ideate"; then
     hermes cron create "0 7 * * 0" "$(cat /bootstrap/cron-learn-ideate.txt)" \
         --name learn-ideate --deliver telegram
@@ -207,5 +207,22 @@ touch does not happen. Both are fatal here."
 fi
 echo "all THREE brain cron jobs registered (3 learn-ideate, 5 weekly-gate, 12 nightly-digest); times resolve to +08:00 (Asia/Singapore)"
 
-step "10/10 gateway (foreground)"
+step "10/11 the three proofs that can only run here (never fatal)"
+# §9 classifies nine capabilities. `artec prove-all` runs on artec-scheduler and can only
+# ever report three of them NOT PROVABLE — agent-session, sunday-cron, audit-memory — because
+# the evidence is the hermes message store, the cron registry and the memory files, and all
+# three live on THIS volume. A prover pointed at a machine that cannot hold the evidence
+# reports not_provable forever, however correct it is.
+#
+# Runs AFTER step 9, deliberately: sunday-cron proves itself by reading `hermes cron list`,
+# so the jobs must already be registered. Results merge into config.proofs, the same row the
+# other six write, so proof_status and the digest see one set.
+#
+# NEVER FATAL, and the reason is on the record twice: escalating an always-wrong check to a
+# FATAL took this service down once, and a boot-time diagnostic that can hang cost the
+# scheduler nineteen minutes on 2026-08-08. A proof that cannot prove must report, not halt.
+# Step 9 above already hard-fails on the cron facts that genuinely must hold at boot.
+python /bootstrap/prove_brain.py || echo "WARN: brain proof script itself failed"
+
+step "11/11 gateway (foreground)"
 exec hermes gateway run

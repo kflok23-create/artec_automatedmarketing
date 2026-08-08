@@ -6,6 +6,7 @@ Railway's filesystem is ephemeral — /tmp is scratch only; Postgres is the only
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -30,10 +31,52 @@ def normalize_url(url: str) -> str:
     return url
 
 
+# A CONNECT WITH NO TIMEOUT IS NOT A CONNECT THAT FAILS — IT IS ONE THAT NEVER ANSWERS.
+#
+# 2026-08-08 09:05:14 UTC, artec-scheduler logged "Starting Container" and then nothing at
+# all for nineteen minutes. It was not crashed: 66 MB resident, 0% CPU, ~0 bytes transmitted.
+# It was blocked inside wait_for_schema() on the first connection, before the boot banner
+# that every healthy deploy prints 0.3s after start. Nine jobs sat behind it.
+#
+# libpq's connect_timeout defaults to 0, which means WAIT FOREVER. So the retry loop in
+# wait_for_schema — which catches Exception, announces the wait and polls — could never run,
+# because the call it was written to retry never returned and never raised. That loop looked
+# like a guard and was connected to nothing.
+#
+# It is the mistake already recorded in scheduler.py about the boot-time match probe:
+# "`try/except Exception` does not catch a hang, and I reached for it as though it did." The
+# same sentence applies to the function written to make boot safe. Bounding the connect is
+# what turns the hang into an exception the existing loop can already handle.
+#
+# KEEPALIVES matter for THIS service specifically: the scheduler holds a pooled connection
+# across hours of sleeping between ticks. A silently dropped socket is not closed, it is
+# merely never answered again, and pool_pre_ping's SELECT 1 would then hang exactly as the
+# connect did. keepalives turn a dead peer into an error; pool_recycle retires sockets old
+# enough to have gone stale unnoticed.
+DB_CONNECT_TIMEOUT_S = int(os.environ.get("DB_CONNECT_TIMEOUT_S", "10"))
+
+
+def engine_kwargs(url: str) -> dict:
+    """Engine options for a normalized URL. Postgres-only options are gated on the driver,
+    because sqlite (tests, `--dry-run`) rejects every one of them."""
+    kwargs: dict = {"pool_pre_ping": True}
+    if url.startswith("postgresql"):
+        kwargs["pool_recycle"] = 1800
+        kwargs["connect_args"] = {
+            "connect_timeout": DB_CONNECT_TIMEOUT_S,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        }
+    return kwargs
+
+
 def get_engine() -> Engine:
     global _engine
     if _engine is None:
-        _engine = create_engine(normalize_url(get_settings().DATABASE_URL), pool_pre_ping=True)
+        url = normalize_url(get_settings().DATABASE_URL)
+        _engine = create_engine(url, **engine_kwargs(url))
     return _engine
 
 

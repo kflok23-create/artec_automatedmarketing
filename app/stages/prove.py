@@ -442,6 +442,28 @@ def run_all(session: Session, settings=None, log=print, **kwargs) -> dict:
     card purchase that no code can manufacture. Both report what is missing instead. A proof
     harness that could fake either would be worse than no harness.
     """
+    # `restore` was NOT_PROVABLE for one reason only: "pass --dump <path>". That is a
+    # precondition this function can satisfy itself — `run_backup` produces exactly the
+    # custom-format dump `restore_check` needs and returns its local path. Leaving the
+    # capability unproven because nobody passed an argument would be the harness declining
+    # to do the one thing it exists for.
+    #
+    # A REAL dump of the REAL database, not a fixture: restoring a synthetic file would
+    # prove the restore command runs, not that THIS database round-trips — and
+    # FALSE_PASS["restore"] names that exact trap ("a dump that restores structure with no
+    # rows"). If the backup fails, restore stays not_provable and says the backup was why.
+    if "dump_path" not in kwargs and settings is not None:
+        try:
+            from app.stages.backup import run_backup
+
+            dump = run_backup(settings.DATABASE_URL, drive=None, log=lambda *_: None)
+            kwargs["dump_path"] = dump["local_path"]
+            log(f"prove: took a real dump for the restore proof "
+                f"({dump['bytes']} bytes, {dump['filename']})")
+        except Exception as e:                                # noqa: BLE001
+            log(f"prove: could not take a dump for the restore proof — restore will report "
+                f"not_provable: {type(e).__name__}: {e}")
+
     results: dict[str, dict] = {}
     for capability in CAPABILITIES:
         try:

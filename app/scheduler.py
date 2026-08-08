@@ -393,45 +393,24 @@ def wait_for_schema(timeout_s: int = 300, poll_s: int = 5) -> None:
             time.sleep(poll_s)
 
 
-def _start_proof_sweep() -> None:
-    """Run all nine proofs once, in a BACKGROUND THREAD, AFTER the tick loop is live.
-
-    Nine capabilities have been UNPROVEN since the build began, and nobody could run them:
-    every route needs a bearer token, and the one person holding it has other work. So the
-    sweep runs where the credentials already are.
-
-    THREE THINGS ABOUT THE PLACEMENT, all learned the hard way:
-
-    1. A DAEMON THREAD, NOT INLINE. I put a diagnostic before this loop once and the
-       scheduler produced nothing but "Starting Container" for fifteen minutes — nine jobs
-       unscheduled because a probe hung. `try/except Exception` does not catch a hang. A
-       thread cannot block the loop no matter what it does.
-    2. AFTER the loop starts, not before. The jobs are the product; the proof of the jobs
-       is not.
-    3. IT SLEEPS FIRST. The first tick matters more than the sweep, and a proof run
-       competing with it would make both slower and neither clearer.
-
-    NOTHING IRREVERSIBLE. `brevo-send` is dry unless `live=True` — a real send reaches a
-    real customer and requires review_email(approve), which is a human decision this thread
-    must never make. `stripe-attribution` needs a real card purchase no code can produce.
-    Both report what is missing.
-    """
-    import threading
-
-    def _sweep() -> None:
-        try:
-            time.sleep(45)
-            from app.db import session_scope
-            from app.stages import prove as prove_mod
-
-            print("proof sweep: running all nine capabilities (nothing irreversible)")
-            with session_scope() as session:
-                prove_mod.run_all(session, settings=get_settings(), log=print)
-        except Exception as e:                                # noqa: BLE001
-            print(f"proof sweep failed (non-fatal, the loop is unaffected): "
-                  f"{type(e).__name__}: {e}")
-
-    threading.Thread(target=_sweep, name="proof-sweep", daemon=True).start()
+# THE PROOF SWEEP DOES NOT RUN HERE — AND NOT FOR THE REASON I FIRST WROTE DOWN.
+#
+# I removed it while blaming it for a stall, and the deploy logs say plainly that it was
+# innocent. Deployment 46e96205, the commit that ADDED the sweep, booted normally: banner at
+# 08:49:45, full proof matrix at 08:50:35, fifty seconds, nine jobs unharmed. The service
+# that hung was the NEXT deploy, whose only diff was six lines inside prove_brevo_send. The
+# real cause was an unbounded DB connect (app/db.py, DB_CONNECT_TIMEOUT_S) and it would have
+# hung this service with or without a sweep.
+#
+# The false attribution is recorded rather than quietly deleted, because it is the more
+# useful half: I had a suspect I had recently touched, a symptom that fit, and I stopped
+# looking. The log that exonerated it was one query away and I ran it only afterwards.
+#
+# The sweep stays out on its own merits, which do not depend on that story. This process
+# owns nine jobs; a proof sweep on its boot path can only ever risk them, and buys nothing
+# that POST /commands/prove-all on artec api does not buy with a bounded blast radius. The
+# three brain-side proofs live in deploy/hermes-brain/prove_brain.py, where the evidence is.
+# Nothing that proves the scheduler may run inside the scheduler.
 
 
 def main() -> None:
@@ -471,8 +450,6 @@ def main() -> None:
         # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the
         # scheduler has no external registry, so it lists itself at every boot.
         print(f"  job {row['number']:>2} {row['name']:<22} next {row['next_run']}")
-    _start_proof_sweep()
-
     fired: set[str] = set()
     current_day = datetime.now(SGT).strftime("%Y-%m-%d")
     while True:

@@ -1560,3 +1560,71 @@ Redaction is the operator's call, and it is recorded here rather than silently s
 
      `learn` still marks email `insufficient_sample` below `email_min_recipients`: sending
      proves the path, it does not make one recipient a signal.
+
+118. **2026-08-08 · A CONNECT WITH NO TIMEOUT IS NOT A CONNECT THAT FAILS — IT IS ONE THAT
+     NEVER ANSWERS.** `artec-scheduler` logged `Starting Container` at 09:05:14Z and nothing
+     for the next nineteen minutes, against a baseline where the boot banner lands **0.3
+     seconds** after start. Not crashed: 66 MB resident, 0% CPU, ~0 bytes transmitted. It was
+     blocked on its first connection inside `wait_for_schema`, with nine jobs behind it.
+
+     `wait_for_schema` catches `Exception`, announces the wait and polls. It could never run.
+     libpq's `connect_timeout` defaults to `0`, meaning wait forever, so the call it was
+     written to retry never returned and never raised. **The retry loop was a guard connected
+     to nothing** — and the sentence that names the fault was already in this repo, written
+     by me about the boot-time match probe: *"`try/except Exception` does not catch a hang,
+     and I reached for it as though it did."* The same words applied to the function whose
+     entire job was making boot safe.
+
+     `app/db.py` now bounds the connect (`DB_CONNECT_TIMEOUT_S`, default 10s) plus TCP
+     keepalives and `pool_recycle`, which matter for this service specifically: the scheduler
+     holds a pooled connection across hours of sleeping, and a silently dropped socket is not
+     closed, merely never answered again — `pool_pre_ping`'s `SELECT 1` would hang on it
+     exactly as the connect did. Bounding it turns a hang into the exception the existing
+     loop already handles.
+
+     **The test has teeth, checked rather than assumed.** Against RFC 5737 TEST-NET-1, the
+     unfixed engine hung past 25s and was killed (exit 124); the fixed one raises inside the
+     bound. If `connect_args` ever stops reaching libpq the test hangs rather than passing.
+
+     **I ALSO GOT THE CAUSE WRONG FIRST, AND THAT IS THE MORE USEFUL HALF.** I had removed
+     the boot proof sweep the deploy before and blamed it, in a comment committed to
+     `scheduler.py`. The deploy logs exonerate it: deployment `46e96205`, the commit that
+     ADDED the sweep, booted normally — banner 08:49:45, full proof matrix 08:50:35, fifty
+     seconds, nine jobs unharmed. The service that hung was the NEXT deploy, whose only diff
+     was six lines inside `prove_brevo_send`. I had a suspect I had recently touched, a
+     symptom that fit, and I stopped looking; the log that cleared it was one query away.
+     The comment is corrected in place rather than deleted. The sweep stays out on its own
+     merits, which never depended on that story.
+
+119. **2026-08-08 · THE SCOPE OF A GUARD IS PART OF THE GUARD.** The AST guard that forbids
+     importing `app` on the brain scanned `plugins/` and stopped, while seven scripts under
+     `deploy/hermes-brain/` are COPYed into the same image and run by the entrypoint. It was
+     correct about half the code it needed to cover, and passing.
+
+     Worse there than where it was caught. `read_digest` failed loudly in front of the
+     operator; every brain bootstrap script runs as `python /bootstrap/<name>.py || echo
+     WARN`, so a `ModuleNotFoundError` would not raise, would not crash, and would not read
+     as an error — the digest would go on reporting a memory audit for a script that died on
+     its import line. Guard extended to both trees.
+
+120. **2026-08-08 · THE THREE BRAIN PROOFS, AND THE FALSE PASS THAT TURNED UP UNINVITED.**
+     `agent-session`, `sunday-cron` and `audit-memory` reported NOT PROVABLE forever, and
+     correctly: `prove.py` runs on artec-scheduler and the evidence — the hermes message
+     store, the cron registry, the memory files — is on the brain's volume. A prover pointed
+     at a machine that cannot hold the evidence never proves anything, however right it is.
+     `deploy/hermes-brain/prove_brain.py` runs them where the evidence is and MERGES into
+     `config.proofs`, never replaces it: overwriting would silently un-prove the other six.
+
+     Smoke-run on a developer machine, `sunday-cron` read a perfectly healthy `hermes cron
+     list` — well-formed, resolving to +08:00 — belonging to somebody's **trading bot**:
+     `['hermes-trading-daily-review', 'hermes-trading-weekly-tactical']`. That is the
+     registered false pass verbatim ("a cron listing from any hermes install, not artec's"),
+     arriving by accident on the first run. `hermes cron list` answers about whichever
+     install is on PATH, so "does the listing have jobs in it" is a question about the
+     machine, not about artec. The prover refused it, and that listing is now a test.
+
+     Also fixed there: `text=True` decodes with the platform codec, and `hermes` prints
+     em-dashes — on cp1252 the reader thread died, stdout came back empty, and the proof
+     reported "cron jobs missing", a FALSE FAILURE naming the exact defect the entrypoint
+     hard-fails on. It would have passed on the UTF-8 brain and lied anywhere else. A prover
+     whose verdict depends on the locale it runs in is not a prover.

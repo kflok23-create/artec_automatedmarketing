@@ -1560,3 +1560,185 @@ Redaction is the operator's call, and it is recorded here rather than silently s
 
      `learn` still marks email `insufficient_sample` below `email_min_recipients`: sending
      proves the path, it does not make one recipient a signal.
+
+118. **2026-08-08 · A CONNECT WITH NO TIMEOUT IS NOT A CONNECT THAT FAILS — IT IS ONE THAT
+     NEVER ANSWERS.** `artec-scheduler` logged `Starting Container` at 09:05:14Z and nothing
+     for the next nineteen minutes, against a baseline where the boot banner lands **0.3
+     seconds** after start. Not crashed: 66 MB resident, 0% CPU, ~0 bytes transmitted. It was
+     blocked on its first connection inside `wait_for_schema`, with nine jobs behind it.
+
+     `wait_for_schema` catches `Exception`, announces the wait and polls. It could never run.
+     libpq's `connect_timeout` defaults to `0`, meaning wait forever, so the call it was
+     written to retry never returned and never raised. **The retry loop was a guard connected
+     to nothing** — and the sentence that names the fault was already in this repo, written
+     by me about the boot-time match probe: *"`try/except Exception` does not catch a hang,
+     and I reached for it as though it did."* The same words applied to the function whose
+     entire job was making boot safe.
+
+     `app/db.py` now bounds the connect (`DB_CONNECT_TIMEOUT_S`, default 10s) plus TCP
+     keepalives and `pool_recycle`, which matter for this service specifically: the scheduler
+     holds a pooled connection across hours of sleeping, and a silently dropped socket is not
+     closed, merely never answered again — `pool_pre_ping`'s `SELECT 1` would hang on it
+     exactly as the connect did. Bounding it turns a hang into the exception the existing
+     loop already handles.
+
+     **The test has teeth, checked rather than assumed.** Against RFC 5737 TEST-NET-1, the
+     unfixed engine hung past 25s and was killed (exit 124); the fixed one raises inside the
+     bound. If `connect_args` ever stops reaching libpq the test hangs rather than passing.
+
+     **I ALSO GOT THE CAUSE WRONG FIRST, AND THAT IS THE MORE USEFUL HALF.** I had removed
+     the boot proof sweep the deploy before and blamed it, in a comment committed to
+     `scheduler.py`. The deploy logs exonerate it: deployment `46e96205`, the commit that
+     ADDED the sweep, booted normally — banner 08:49:45, full proof matrix 08:50:35, fifty
+     seconds, nine jobs unharmed. The service that hung was the NEXT deploy, whose only diff
+     was six lines inside `prove_brevo_send`. I had a suspect I had recently touched, a
+     symptom that fit, and I stopped looking; the log that cleared it was one query away.
+     The comment is corrected in place rather than deleted. The sweep stays out on its own
+     merits, which never depended on that story.
+
+119. **2026-08-08 · THE SCOPE OF A GUARD IS PART OF THE GUARD.** The AST guard that forbids
+     importing `app` on the brain scanned `plugins/` and stopped, while seven scripts under
+     `deploy/hermes-brain/` are COPYed into the same image and run by the entrypoint. It was
+     correct about half the code it needed to cover, and passing.
+
+     Worse there than where it was caught. `read_digest` failed loudly in front of the
+     operator; every brain bootstrap script runs as `python /bootstrap/<name>.py || echo
+     WARN`, so a `ModuleNotFoundError` would not raise, would not crash, and would not read
+     as an error — the digest would go on reporting a memory audit for a script that died on
+     its import line. Guard extended to both trees.
+
+120. **2026-08-08 · THE THREE BRAIN PROOFS, AND THE FALSE PASS THAT TURNED UP UNINVITED.**
+     `agent-session`, `sunday-cron` and `audit-memory` reported NOT PROVABLE forever, and
+     correctly: `prove.py` runs on artec-scheduler and the evidence — the hermes message
+     store, the cron registry, the memory files — is on the brain's volume. A prover pointed
+     at a machine that cannot hold the evidence never proves anything, however right it is.
+     `deploy/hermes-brain/prove_brain.py` runs them where the evidence is and MERGES into
+     `config.proofs`, never replaces it: overwriting would silently un-prove the other six.
+
+     Smoke-run on a developer machine, `sunday-cron` read a perfectly healthy `hermes cron
+     list` — well-formed, resolving to +08:00 — belonging to somebody's **trading bot**:
+     `['hermes-trading-daily-review', 'hermes-trading-weekly-tactical']`. That is the
+     registered false pass verbatim ("a cron listing from any hermes install, not artec's"),
+     arriving by accident on the first run. `hermes cron list` answers about whichever
+     install is on PATH, so "does the listing have jobs in it" is a question about the
+     machine, not about artec. The prover refused it, and that listing is now a test.
+
+     Also fixed there: `text=True` decodes with the platform codec, and `hermes` prints
+     em-dashes — on cp1252 the reader thread died, stdout came back empty, and the proof
+     reported "cron jobs missing", a FALSE FAILURE naming the exact defect the entrypoint
+     hard-fails on. It would have passed on the UTF-8 brain and lied anywhere else. A prover
+     whose verdict depends on the locale it runs in is not a prover.
+
+121. **2026-08-08 · A PROOF THAT ONLY HAPPENS WHEN SOMEBODY REMEMBERS REPORTS THE STATE OF
+     THEIR ATTENTION.** `POST /commands/prove-all` existed and worked for days while the
+     matrix stayed stale, because running it needed an authenticated call a human had to
+     make. The capability was built; the *habit* was the missing part, and a system that
+     depends on a habit has an unmonitored dependency on a person.
+
+     The sweep now runs itself, on artec api, at boot, in a daemon thread that is started
+     and never joined.
+
+     **THIS IS NOT A REVERSAL OF 118.** I removed exactly this from the scheduler, and that
+     reasoning stands unchanged: the scheduler's boot path gates nine jobs, so anything
+     added to it can cost all nine. What differs is the blast radius, not the principle.
+     This service owns HTTP serving; uvicorn is already accepting requests before the thread
+     starts, nothing queues behind it, and a hung sweep leaves a hung thread rather than a
+     missed slot. "Nothing that proves the scheduler may run inside the scheduler" was always
+     a statement about the scheduler.
+
+     **THE GATES ARE THE DESIGN**, and each has both sides named:
+     * *Staleness* — `now` is a PARAMETER, never read inside the function (DECISIONS 112: a
+       hidden clock is an unnamed side). The other side is the `at` stamp the last sweep
+       wrote. An absent or unparseable stamp reads as DUE, never as fresh: treating a corrupt
+       value as "now" is how a sweep stops running and nothing says so, which is the memory
+       audit's `clean — 0 files scanned` in a new costume.
+     * *`restore` on a separate, slower clock* — it is the ONLY proof that mutates the
+       server (CREATE DATABASE / pg_restore / DROP DATABASE) and it rides job 8 monthly.
+       Excluded unless genuinely due, and its freshness is read from ITS OWN entry: reading
+       the whole-matrix stamp would keep it permanently fresh and it would never run again.
+     * *Advisory lock* — a second replica no-ops, the same mechanism the scheduler uses
+       against double-firing. Two concurrent sweeps would make `prove_stripe_attribution`
+       report a false FAILURE, since it refuses when a probe order already exists.
+
+     **A SKIP IS NOT A VERDICT.** `include_restore=False` records NOTHING: `run()` re-raises
+     `NotProvable` before `record`, so the last real restore proof survives. Had a skip
+     written through, an unattended sweep would have erased the monthly evidence twice a day
+     and left a permanent "never".
+
+     Also fixed in passing: `blocked_s1` indexed `results[c]` and would `KeyError` on a
+     capability absent from the pass — the S1 summary line crashing the whole matrix at the
+     exact moment it was reporting that something had not run. `.get` now reads absence as
+     unproven, which is what absence means.
+
+122. **2026-08-08 - FOUR OF THE NINE PROVERS COULD REPORT PROVEN WITHOUT THE CAPABILITY
+     WORKING** - found by turning the standing review question on the proof harness itself.
+     It matters more since 121: the sweep now runs unattended every twelve hours, and
+     `proof_status` drops a "proven" capability off the digest's unproven list and out of
+     doctor's YELLOW. **A false PROVEN is not a stale fact; it removes the surface that
+     would have reported the truth.**
+
+     * **`publish-by-slot`** - `evaluated = would_publish + held` defended only the
+       registered false pass ("zero posts to select"), so an all-held board made `evaluated`
+       large, `would_publish` EMPTY, and it returned ok=True with the detail "0 would
+       publish". All-held is the ORDINARY end-of-week state: `select_due_posts` filters on
+       `external_post_id IS NULL`, so photo posts leave the board as they publish and what
+       remains is exactly the email and video posts held pending an approval receipt. The
+       green row would have landed on a normal Friday. Now NOT_PROVABLE - the gates working
+       is not a defect, but it is not proof of publishing either.
+     * **`stripe-attribution`** - the prover built the Checkout event ITSELF, including the
+       `client_reference_id`, then asserted the webhook copied it. The one untested link in
+       the I19 chain - does artec.my's Payment Link populate that field from
+       `utm_campaign=post_XXXX` at all? - was precisely the link being fabricated.
+       `run_all`'s own docstring already said it "needs a real card purchase that no code
+       can manufacture ... reports what is missing instead", and it reported PROVEN while
+       gap B6 stayed open. The join is still verified; end-to-end needs one real order.
+     * **`video-pipeline`** - pre-flighted with `aspect_ratio="16:9"` and
+       `duration_bounds=(1.0, 10.0)`, neither of which occurs in production. The live spec
+       comes from `channel_media`: tiktok 9:16/12s (6-24s) and youtube 9:16/15s (7.5-30s).
+       The check ran in a configuration THAT CANNOT OCCUR, and the bytes making it green are
+       bytes `run_preflight` would park twice over - the fixture is 1920x1080 at 3.0s, while
+       a real 12s vertical render would fail the prover's own 1-10s bound. Half of S1, green
+       on a check whose two configured sides had been replaced by constants.
+     * **`brevo-send`** - `ok` was the literal `True` and the measured `deleted` reached only
+       the detail string. A MEASURED OUTCOME THAT NEVER ENTERS A COMPARISON IS NOT A CHECK.
+       The campaign is created on the production account against the live consumer list, so
+       a refused DELETE left a send-ready campaign aimed at every subscriber and still
+       recorded PROVEN - accumulating at up to one per api boot, while `run_all` claimed
+       NOTHING IRREVERSIBLE HAPPENS HERE.
+
+     Also closed: **`sweep_orphaned_slots` matched the literal `"RENDERED"`** while
+     `select_due_posts` two functions above uses `PUBLISHABLE_STATUSES`, which also holds
+     APPROVED_TO_SEND. A post approved onto a slot matching no `slot_times` key was invisible
+     to the only A7 guard - never selected, never reported, shown nightly as queued for
+     delivery. Approval is exactly when a post is most likely to be orphaned, because it is
+     when the operator is most likely to have just edited `slot_times`.
+
+123. **2026-08-08 - RETIRED WAS A COMMENT, AND THE JOB WENT ON FIRING.** From
+     artec-scheduler's own log, 2026-08-07, two consecutive lines:
+
+         22:30:18  measure reminder: telegram send failed (TelegramError)
+         22:30:18  measure 2026-08-07: 5 unmeasured post(s), reminder sent
+
+     The send failed inside a try/except and the next statement announced success
+     unconditionally. It could never have succeeded: D1 removed TELEGRAM_BOT_TOKEN from
+     artec api AND artec-scheduler so the brain is structurally the sole Telegram owner -
+     verified against both services' variable lists. A daily call to a service holding no
+     credentials for it, reporting delivery of a message nobody received.
+
+     `measure-reminder` had sat in `jobs.RETIRED` the whole time, and the module docstring
+     still advertised it as one of "EXACTLY TWO jobs" while the registry had grown to twelve.
+     Every document that might have contradicted the behaviour agreed with it instead.
+
+     The body is DELETED rather than unscheduled, and the route with it - the route had its
+     expiry written down ("kept invocable only until D1 removes TELEGRAM_BOT_TOKEN") and that
+     condition was met. `measure_reminder_time` is out of OPERATOR_CONSTANTS and out of the
+     scheduler REQUIRED keys, where it could have made a service refuse to boot over a
+     setting that set nothing.
+
+     THE GUARD: `tests/unit/test_retired_jobs_do_not_fire.py` drives all 1440 minutes of a
+     day through `tick` and compares the firings to the registry. It asserts on the loop's
+     OWN `fired` set rather than on spied functions - the first draft spied on
+     `run_registry_job` and `run_publish_job` and WOULD NOT HAVE CAUGHT THIS, because the
+     reminder fired through a third function nobody had thought to spy on. A guard that only
+     sees the firings you remembered to enumerate cannot find the one you forgot. Verified by
+     re-injecting the defect: both assertions fail.

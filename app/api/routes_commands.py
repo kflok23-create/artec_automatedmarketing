@@ -271,14 +271,14 @@ def publish_slot_cmd(body: CommandRequest):
         return run_publish_job(session, slot, log=rec.log)
 
 
-@router.post("/measure-reminder")
-def measure_reminder_cmd():
-    """Job 4 body over HTTPS. RETIRED AT MERGE (D1) — the brain becomes the sole Telegram
-    owner and the digest carries the unmeasured list."""
-    from app.scheduler import run_measure_job
-
-    with record_run("measure-reminder", {}) as (session, rec):
-        return run_measure_job(session, log=rec.log)
+# /commands/measure-reminder IS REMOVED, on the condition it set for itself. jobs.py carried
+# the expiry in writing — "kept invocable only until D1 removes TELEGRAM_BOT_TOKEN from this
+# service at merge" — and D1 is done: neither artec api nor artec-scheduler holds that
+# variable any more, verified against both services. The route could only ever have called
+# Telegram from a service with no Telegram credentials.
+#
+# What remains is POST /commands/measure, where the operator posts figures directly, and the
+# nightly digest, which carries the unmeasured list.
 
 
 @router.post("/prove")
@@ -367,17 +367,24 @@ def digest_preview_cmd(body: CommandRequest):
 
 
 @router.post("/prove-all")
-def prove_all_cmd():
+def prove_all_cmd(include_restore: bool = True):
     """Every capability in one pass, classified three ways. Nothing irreversible.
 
     Nine capabilities have been UNPROVEN since the build began, reported as a single count
     that could not distinguish "the code is broken" from "the world has not supplied the
     precondition". Those have different owners. This separates them.
+
+    `include_restore` defaults TRUE here and FALSE from the unattended boot sweep, and the
+    asymmetry is deliberate: an operator asking for the matrix by hand wants all nine, while
+    a sweep that fires on every redeploy must not turn a monthly CREATE DATABASE /
+    pg_restore / DROP DATABASE into a per-deploy one. Skipping never overwrites an earlier
+    verdict — `run()` re-raises NotProvable before recording.
     """
     from app.stages import prove as prove_mod
 
-    with record_run("prove-all", {}) as (session, rec):
-        return prove_mod.run_all(session, settings=get_settings(), log=rec.log)
+    with record_run("prove-all", {"include_restore": include_restore}) as (session, rec):
+        return prove_mod.run_all(session, settings=get_settings(), log=rec.log,
+                                 include_restore=include_restore)
 
 
 @router.post("/doctor")

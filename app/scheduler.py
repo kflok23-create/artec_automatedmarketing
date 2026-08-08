@@ -1,11 +1,16 @@
-"""artec-scheduler — the daily body. EXACTLY TWO jobs live here (2 of the 4 v3 scheduled
-jobs; the other two are hermes-agent cron on hermes-brain):
+"""artec-scheduler — the daily body. WHAT FIRES HERE IS app/jobs.py:JOBS AND NOTHING ELSE:
+nine of the twelve are owned by this service, three are hermes-agent cron on artec-brain.
 
-  daily-publish-by-slot  every APPROVED+RENDERED post whose slot time has arrived
-                         (slot is a real Asia/Singapore firing time AND a learned lever)
-  daily-measure-0630     the 06:30 measure prompt — lists unmeasured PUBLISHED posts to
-                         Telegram; figures still enter via `artec measure` / POST
-                         /commands/measure (no channel APIs, no CSVs)
+THIS DOCSTRING USED TO SAY "EXACTLY TWO jobs live here" and name `daily-measure-0630` as one
+of them. Both had been false for a long time — the registry had grown to twelve, and the
+measure reminder was RETIRED. It is worth recording rather than quietly rewriting, because
+the stale docstring is how the retired job kept its licence: it fired daily from `tick`,
+failed on the Telegram token D1 removed from this service, logged "reminder sent" anyway,
+and every document that might have contradicted it agreed with it instead.
+
+`tests/unit/test_retired_jobs_do_not_fire.py` drives a whole simulated day through `tick`
+and asserts the set of firings is EXACTLY what the registry lists — so a thirteenth firing
+now fails a test rather than accumulating a paragraph of prose describing it.
 
 This is the narrow, deliberate lift of v2's blanket no-scheduler rule (§9). Nothing else
 in either codebase fires on a clock — a repo test counts the jobs.
@@ -92,10 +97,23 @@ def sweep_orphaned_slots(session) -> list[dict]:
     """
     from app.config import get_config
     from app.models import Post
+    from app.stages.publish import PUBLISHABLE_STATUSES
 
+    # THE SAME STATUS SET `select_due_posts` USES, read from the same constant.
+    #
+    # This said `Post.status == "RENDERED"`, a literal, while selection two functions above
+    # uses `PUBLISHABLE_STATUSES` — which also contains APPROVED_TO_SEND. So a post that had
+    # been APPROVED into an orphaned slot was invisible to the only A7 guard: never selected
+    # by any slot pass because its slot matches no key, and never reported as orphaned
+    # because its status was not the literal. It sits forever, and the digest shows it as
+    # queued for delivery.
+    #
+    # An approval is the moment a post is MOST likely to be sitting on an orphaned slot,
+    # because approving is when the operator is most likely to have edited slot_times.
     slot_times = get_config(session, "slot_times", {}) or {}
     orphans = session.execute(
-        select(Post).where(Post.status == "RENDERED", Post.external_post_id.is_(None))
+        select(Post).where(Post.status.in_(PUBLISHABLE_STATUSES),
+                           Post.external_post_id.is_(None))
     ).scalars()
     return [
         {"post_id": p.post_id, "channel": p.channel, "slot": p.slot,
@@ -264,27 +282,14 @@ def run_publish_job(session, slot: str, log=print) -> dict:
                    confirm=False, log=log)
 
 
-def run_measure_job(session, log=print) -> dict:
-    """06:30 — the measure prompt: unmeasured PUBLISHED posts go to Telegram so the
-    operator can reply with figures via `artec measure`."""
-    from app.integrations.telegram_client import Telegram
-    from app.stages.measure import unmeasured_posts
-
-    target = (datetime.now(SGT) - timedelta(days=1)).date()
-    pending = unmeasured_posts(session, target)
-    if not pending:
-        log(f"measure {target}: nothing unmeasured")
-        return {"pending": 0}
-    lines = [f"MEASURE {target} — {len(pending)} post(s) unmeasured (blank stays NULL, never 0):"]
-    for p in pending:
-        lines.append(f"  {p.post_id} · {p.channel} · {(p.hook or '')[:60]}")
-    lines.append("Enter figures: artec measure  (or POST /commands/measure)")
-    try:
-        Telegram(get_settings()).send_message("\n".join(lines))
-    except Exception as e:
-        log(f"measure reminder: telegram send failed ({type(e).__name__})")
-    log(f"measure {target}: {len(pending)} unmeasured post(s), reminder sent")
-    return {"pending": len(pending)}
+# `run_measure_job` IS GONE, not merely unscheduled. It sent the unmeasured list to Telegram
+# from a service D1 deliberately stripped of TELEGRAM_BOT_TOKEN, so every call failed; and it
+# logged "reminder sent" on the statement after the except clause, so every failure read as a
+# success. Leaving the body behind "just in case" would leave a function whose only possible
+# behaviour is to fail and claim otherwise — one import away from returning.
+#
+# The operator path that still exists is POST /commands/measure, where figures are posted
+# directly, and the unmeasured list reaches the operator through the nightly digest.
 
 
 def tick(now: datetime, fired: set[str], log=print) -> set[str]:
@@ -328,11 +333,27 @@ def tick(now: datetime, fired: set[str], log=print) -> set[str]:
                 fired.add(key)
                 rec.log(f"scheduler: slot '{slot}' arrived — publishing due posts")
                 run_publish_job(session, slot, log=rec.log)
-        measure_at = get_config(session, "measure_reminder_time", "06:30")
-        key = f"{day}|measure"
-        if hhmm == measure_at and key not in fired:
-            fired.add(key)
-            run_measure_job(session, log=rec.log)
+        # THE RETIRED MEASURE REMINDER FIRED HERE EVERY DAY, FAILED EVERY DAY, AND SAID IT
+        # HAD SENT. From this service's own production log, 2026-08-07:
+        #
+        #   22:30:18  measure reminder: telegram send failed (TelegramError)
+        #   22:30:18  measure 2026-08-07: 5 unmeasured post(s), reminder sent
+        #
+        # Two consecutive lines. The send was wrapped in try/except and the very next
+        # statement announced success unconditionally.
+        #
+        # It could never have worked. D1 removed TELEGRAM_BOT_TOKEN from artec api AND
+        # artec-scheduler so the brain is STRUCTURALLY the sole Telegram owner — verified
+        # against both services' variable lists. A daily call to a service holding no
+        # credentials for it, reporting delivery of a message nobody received.
+        #
+        # `measure-reminder` sat in jobs.RETIRED the whole time. The registry says twelve
+        # jobs; this fired as a thirteenth. Naming it retired did nothing, because nothing
+        # compared the name to the behaviour. The digest already carries the unmeasured list
+        # (app/stages/digest.py), which is what "the digest replaces it" meant.
+        #
+        # `measure_reminder_time` is gone from OPERATOR_CONSTANTS with it: a config key that
+        # schedules nothing is a setting in name only.
     return fired
 
 
@@ -352,7 +373,7 @@ def wait_for_schema(timeout_s: int = 300, poll_s: int = 5) -> None:
 
     WHY THAT MATTERS BEYOND THE NOISE: `tick()` reads `slot_times` AFTER the registry-job
     loop and OUTSIDE its per-job try/except, so a failed config read skips `run_publish_job`
-    and `run_measure_job` for that tick. Slot matching is minute-exact (`hhmm == at`), and
+    for that tick. Slot matching is minute-exact (`hhmm == at`), and
     the tick that would have matched is the one that raised — so a slot falling inside the
     window is missed FOR THE DAY, with no retry, and the only trace is a line in a log
     nobody reads at 08:00. Publishing is the one job whose omission is invisible: the digest
@@ -393,45 +414,24 @@ def wait_for_schema(timeout_s: int = 300, poll_s: int = 5) -> None:
             time.sleep(poll_s)
 
 
-def _start_proof_sweep() -> None:
-    """Run all nine proofs once, in a BACKGROUND THREAD, AFTER the tick loop is live.
-
-    Nine capabilities have been UNPROVEN since the build began, and nobody could run them:
-    every route needs a bearer token, and the one person holding it has other work. So the
-    sweep runs where the credentials already are.
-
-    THREE THINGS ABOUT THE PLACEMENT, all learned the hard way:
-
-    1. A DAEMON THREAD, NOT INLINE. I put a diagnostic before this loop once and the
-       scheduler produced nothing but "Starting Container" for fifteen minutes — nine jobs
-       unscheduled because a probe hung. `try/except Exception` does not catch a hang. A
-       thread cannot block the loop no matter what it does.
-    2. AFTER the loop starts, not before. The jobs are the product; the proof of the jobs
-       is not.
-    3. IT SLEEPS FIRST. The first tick matters more than the sweep, and a proof run
-       competing with it would make both slower and neither clearer.
-
-    NOTHING IRREVERSIBLE. `brevo-send` is dry unless `live=True` — a real send reaches a
-    real customer and requires review_email(approve), which is a human decision this thread
-    must never make. `stripe-attribution` needs a real card purchase no code can produce.
-    Both report what is missing.
-    """
-    import threading
-
-    def _sweep() -> None:
-        try:
-            time.sleep(45)
-            from app.db import session_scope
-            from app.stages import prove as prove_mod
-
-            print("proof sweep: running all nine capabilities (nothing irreversible)")
-            with session_scope() as session:
-                prove_mod.run_all(session, settings=get_settings(), log=print)
-        except Exception as e:                                # noqa: BLE001
-            print(f"proof sweep failed (non-fatal, the loop is unaffected): "
-                  f"{type(e).__name__}: {e}")
-
-    threading.Thread(target=_sweep, name="proof-sweep", daemon=True).start()
+# THE PROOF SWEEP DOES NOT RUN HERE — AND NOT FOR THE REASON I FIRST WROTE DOWN.
+#
+# I removed it while blaming it for a stall, and the deploy logs say plainly that it was
+# innocent. Deployment 46e96205, the commit that ADDED the sweep, booted normally: banner at
+# 08:49:45, full proof matrix at 08:50:35, fifty seconds, nine jobs unharmed. The service
+# that hung was the NEXT deploy, whose only diff was six lines inside prove_brevo_send. The
+# real cause was an unbounded DB connect (app/db.py, DB_CONNECT_TIMEOUT_S) and it would have
+# hung this service with or without a sweep.
+#
+# The false attribution is recorded rather than quietly deleted, because it is the more
+# useful half: I had a suspect I had recently touched, a symptom that fit, and I stopped
+# looking. The log that exonerated it was one query away and I ran it only afterwards.
+#
+# The sweep stays out on its own merits, which do not depend on that story. This process
+# owns nine jobs; a proof sweep on its boot path can only ever risk them, and buys nothing
+# that POST /commands/prove-all on artec api does not buy with a bounded blast radius. The
+# three brain-side proofs live in deploy/hermes-brain/prove_brain.py, where the evidence is.
+# Nothing that proves the scheduler may run inside the scheduler.
 
 
 def main() -> None:
@@ -471,8 +471,6 @@ def main() -> None:
         # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the
         # scheduler has no external registry, so it lists itself at every boot.
         print(f"  job {row['number']:>2} {row['name']:<22} next {row['next_run']}")
-    _start_proof_sweep()
-
     fired: set[str] = set()
     current_day = datetime.now(SGT).strftime("%Y-%m-%d")
     while True:

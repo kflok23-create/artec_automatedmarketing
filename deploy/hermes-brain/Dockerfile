@@ -39,6 +39,9 @@ COPY deploy/hermes-brain/audit_memory_report.py /bootstrap/audit_memory_report.p
 COPY deploy/hermes-brain/purge_memory_claims.py /bootstrap/purge_memory_claims.py
 COPY deploy/hermes-brain/report_board.py /bootstrap/report_board.py
 COPY deploy/hermes-brain/report_volume.py /bootstrap/report_volume.py
+# The three §9 proofs whose evidence lives on THIS volume and nowhere else. Self-contained
+# for the same reason every script above is: the brain image does not carry the app package.
+COPY deploy/hermes-brain/prove_brain.py /bootstrap/prove_brain.py
 COPY deploy/hermes-brain/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

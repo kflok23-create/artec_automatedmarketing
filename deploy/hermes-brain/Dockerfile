@@ -42,6 +42,9 @@ COPY deploy/hermes-brain/report_volume.py /bootstrap/report_volume.py
 # The three §9 proofs whose evidence lives on THIS volume and nowhere else. Self-contained
 # for the same reason every script above is: the brain image does not carry the app package.
 COPY deploy/hermes-brain/prove_brain.py /bootstrap/prove_brain.py
+# The agent spend meter. hermes already measures cost per session in its own store; this is
+# what carries it into Postgres, where the weekly cap and the digest read it.
+COPY deploy/hermes-brain/report_agent_runs.py /bootstrap/report_agent_runs.py
 COPY deploy/hermes-brain/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

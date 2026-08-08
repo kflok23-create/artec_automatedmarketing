@@ -1,6 +1,21 @@
 # One Railway service, one process. ffmpeg is required by the visual toolbox.
+#
+# postgresql_18 is required by JOB 8, THE ONLY BACKUP THIS SYSTEM HAS, and its absence was
+# invisible for as long as it existed:
+#
+#   2026-08-07T19:00:09Z  job 8 pg-dump FAILED: BackupError: pg_dump is not on PATH
+#
+# Every night, in a log line nobody read. The dependency is not a Python package — psycopg
+# talks the wire protocol and needs no client binaries — so nothing in pyproject.toml implies
+# it and nothing failed at build or boot. Only the job failed, once a day, quietly.
+#
+# THE VERSION IS LOAD-BEARING, not tidiness. Railway's Postgres is
+# ghcr.io/railwayapp-templates/postgres-ssl:18, and pg_dump REFUSES a server newer than
+# itself. A `postgresql` that resolved to 16 would put the binary on PATH, satisfy every
+# presence check, and abort every night on "server version mismatch" — which is why the
+# doctor compares the two majors rather than asking whether the file exists.
 [phases.setup]
-nixPkgs = ["python312", "ffmpeg"]
+nixPkgs = ["python312", "ffmpeg", "postgresql_18"]
 
 [phases.install]
 cmds = ["python -m venv /opt/venv && . /opt/venv/bin/activate && pip install --upgrade pip && pip install ."]

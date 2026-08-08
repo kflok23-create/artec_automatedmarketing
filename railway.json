@@ -1,11 +1,11 @@
 {
-  "//": "artec-api ONLY. Railway applies the root railway.json to EVERY service built from this repo unless the service's Settings → Config-as-code → Config File Path points elsewhere. artec-scheduler uses railway.scheduler.json; hermes-brain uses railway.hermes-brain.json — neither runs the alembic pre-deploy (only artec-api owns migrations; the brain image has no alembic at all).",
+  "//": "artec-api ONLY. Railway applies the root railway.json to EVERY service built from this repo unless the service's Settings \u2192 Config-as-code \u2192 Config File Path points elsewhere. artec-scheduler uses railway.scheduler.json; hermes-brain uses railway.hermes-brain.json \u2014 neither runs the alembic pre-deploy (only artec-api owns migrations; the brain image has no alembic at all).  START COMMAND IS `python -u -m uvicorn`, NOT bare `uvicorn`: uvicorn's own logs go to stderr and were always visible, but EVERY /commands/* mirror reports its progress through RunRecorder.log(), which is print() to STDOUT -- block-buffered on a pipe. So an operator-triggered render produced no visible output at all while it ran, and an in-flight request was indistinguishable from one that never arrived. Same defect as artec-scheduler, on the service the operator actually calls by hand; fixed there first and not checked for here, which is the omission worth remembering.",
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port $PORT",
+    "startCommand": "python -u -m uvicorn app.main:app --host 0.0.0.0 --port $PORT",
     "preDeployCommand": "alembic upgrade head",
     "healthcheckPath": "/healthz",
     "restartPolicyType": "ON_FAILURE",

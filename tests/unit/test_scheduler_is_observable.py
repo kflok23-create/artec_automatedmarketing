@@ -61,8 +61,35 @@ def test_the_scheduler_reports_itself_with_print_which_is_why_u_matters(repo_roo
         "-u flag and this test can go — but confirm the new stream is unbuffered first.")
 
 
-def test_the_api_needs_no_such_flag(repo_root):
-    """The control case, asserted so the asymmetry is deliberate rather than an oversight:
-    the api logs to stderr via uvicorn/`logging`, which is not block-buffered."""
+def test_the_api_is_unbuffered_too(repo_root):
+    """THIS TEST USED TO ASSERT THE OPPOSITE, AND WAS WRONG.
+
+    It was `test_the_api_needs_no_such_flag`, and it reasoned that the api "logs to stderr
+    via uvicorn/`logging`, which is not block-buffered". True of uvicorn's own lines — and
+    irrelevant to the ones that matter. EVERY `/commands/*` mirror reports progress through
+    `RunRecorder.log()`, which is `print()` to STDOUT.
+
+    So an operator-triggered `POST /commands/render` produced no visible output at all while
+    it ran, and an in-flight request was indistinguishable from one that never arrived. I
+    fixed the identical defect on the scheduler the day before, wrote this test to record
+    why the api was different, and the reason I gave was false — a control case that
+    cemented the bug instead of catching it.
+
+    A test that explains why the other thing is fine deserves the same scrutiny as the fix.
+    """
     with open(repo_root / "railway.json", encoding="utf-8") as fh:
-        assert "uvicorn" in json.load(fh)["deploy"]["startCommand"]
+        command = json.load(fh)["deploy"]["startCommand"]
+    assert command.startswith("python -u "), (
+        f"api startCommand is {command!r}. Without -u, RunRecorder's print() output is "
+        "block-buffered and every operator-triggered command runs blind.")
+    assert "uvicorn app.main:app" in command
+
+
+def test_every_railway_service_that_prints_starts_unbuffered(repo_root):
+    """The generalisation, so the third instance does not need its own outage. Any service
+    whose start command runs python must be unbuffered, because `RunRecorder.log()` is
+    shared by the scheduler and every command mirror alike."""
+    for config in ("railway.json", "railway.scheduler.json"):
+        with open(repo_root / config, encoding="utf-8") as fh:
+            command = json.load(fh)["deploy"]["startCommand"]
+        assert command.startswith("python -u "), f"{config}: {command!r} is buffered"

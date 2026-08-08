@@ -62,6 +62,38 @@ def test_no_plugin_file_imports_the_app_package(repo_root):
     )
 
 
+def test_no_brain_bootstrap_script_imports_the_app_package(repo_root):
+    """THE SAME IMAGE, THE SAME MISSING PACKAGE, A WORSE FAILURE MODE.
+
+    The guard above covered `plugins/` and stopped there, while seven scripts under
+    `deploy/hermes-brain/` are COPYed into the very same image and run by the entrypoint —
+    audit_memory_report, probe_scouting, purge_memory_claims, report_board, report_volume,
+    prove_brain. `app` does not exist for them either.
+
+    And here it is worse than it was for read_digest. Those scripts run at BOOT, every one of
+    them behind `|| echo WARN`, so a ModuleNotFoundError would not raise, would not crash,
+    and would not even read as an error — it would look like the WARN line that has been
+    scrolling past since the first deploy. The digest would go on reporting a memory audit
+    and a scouting probe for scripts that died on their import line.
+
+    The scope of a guard is part of the guard. This one was correct about half the code it
+    needed to cover, which is the disconnected-guard shape wearing a passing test.
+    """
+    offenders = {}
+    for path in sorted((repo_root / "deploy" / "hermes-brain").rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        hits = _app_imports(path)
+        if hits:
+            offenders[str(path.relative_to(repo_root))] = hits
+    assert not offenders, (
+        f"brain bootstrap scripts importing the app package: {offenders}. These are COPYed "
+        "into the hermes-brain image, which carries hermes-agent and NOTHING of `app`. Every "
+        "one is invoked as `python /bootstrap/<name>.py || echo WARN`, so this fails SILENTLY "
+        "at boot and the digest keeps reporting results for a script that never ran."
+    )
+
+
 def test_the_two_digest_date_implementations_agree(repo_root):
     """The duplication is only safe while it is a duplication.
 

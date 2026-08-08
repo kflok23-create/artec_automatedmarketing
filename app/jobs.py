@@ -113,6 +113,11 @@ JOBS: tuple[Job, ...] = (
 #   measure-reminder (daily 06:30) - the digest replaces it, and it was the only thing on a
 #   bespoke service that sent to Telegram. D1 removes TELEGRAM_BOT_TOKEN from artec api and
 #   artec-scheduler AFTER deploy, so the brain is STRUCTURALLY the sole Telegram owner.
+#   NAMING IT WAS NOT ENOUGH: it went on firing from the tick loop for weeks after being
+#   listed here, every day, failing on the missing token and logging "reminder sent" anyway.
+#   RETIRED was a comment, and a warning in a comment is not a guard. It is now enforced by
+#   tests/unit/test_retired_jobs_do_not_fire.py, which drives a whole simulated day through
+#   `tick` and asserts NOTHING fires that this registry does not list.
 #   review-expiry-sweep (daily 20:00) - folded into job 11; see its note.
 RETIRED = ("measure-reminder", "review-expiry-sweep")
 
@@ -161,6 +166,4 @@ NON_JOB_ROUTES: dict[str, str] = {
                        "never an agent tool, which is why it may write config.proofs",
     "/commands/restore-check": "rides job 8 monthly; exposed so a restore can be proven on "
                                "demand, which is the only time anyone wants it",
-    "/commands/measure-reminder": "the RETIRED job's body, kept invocable only until D1 "
-                                  "removes TELEGRAM_BOT_TOKEN from this service at merge",
 }

@@ -5,7 +5,9 @@ Drive `_generated/` write probe.
 
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 
 import httpx
@@ -142,6 +144,49 @@ def run_doctor(settings: Settings, session=None, log=print) -> list[Check]:  # n
                          "the ffmpeg package bundles ffprobe — if ffmpeg is green and this "
                          "is red, the container has a partial install and video pre-flight "
                          "cannot run"))
+
+    # THE DOCTOR WATCHED THE TWO BINARIES THE TOOLBOX NEEDS AND NOT THE ONE THE BACKUP DOES.
+    #
+    #   2026-08-07T19:00:09Z  job 8 pg-dump FAILED: BackupError: pg_dump is not on PATH in
+    #                         this process — the nightly dump cannot run.
+    #
+    # Every night, and nothing here was RED, because nothing here looked. `nixpacks.toml`
+    # installs ffmpeg and not postgresql, and the only component that noticed was the job
+    # itself, in a log line nobody was reading. There has been no backup.
+    #
+    # PRESENCE IS NOT ENOUGH, and this is where the check earns the name. The server is
+    # Postgres 18; pg_dump REFUSES a server newer than itself ("aborting because of server
+    # version mismatch"). A pg_dump 16 on PATH would turn this green and still take no
+    # backup. WHAT SUPPLIES EACH SIDE: the client major comes from `pg_dump --version`, the
+    # server major from the live connection. Neither is derived from the other, and neither
+    # can be absent while the check still passes.
+    def _pg_dump():
+        path = shutil.which("pg_dump")
+        if not path:
+            raise RuntimeError("not found — no backup has been taken since this became true")
+        out = subprocess.run([path, "--version"], capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=30).stdout or ""
+        found = re.search(r"(\d+)", out)
+        if not found:
+            raise RuntimeError(f"pg_dump --version unparseable: {out.strip()[:80]!r}")
+        client = int(found.group(1))
+
+        from sqlalchemy import text as _text
+
+        from app.db import get_engine
+
+        with get_engine().connect() as conn:
+            server_raw = conn.execute(_text("SHOW server_version")).scalar() or ""
+        server = int(re.match(r"(\d+)", str(server_raw)).group(1))
+        if client < server:
+            raise RuntimeError(
+                f"pg_dump is {client} but the server is {server} — pg_dump refuses a server "
+                "newer than itself, so this would abort every night while looking installed")
+        return f"pg_dump {client} vs server {server}"
+    checks.append(_check("pg_dump present and not older than the server", _pg_dump,
+                         "add postgresql_18 to nixPkgs in nixpacks.toml — job 8 is the only "
+                         "backup this system has, and a reachable database is not evidence "
+                         "that pg_dump ships with it"))
 
     # v4: advisory locks, sequences and jsonb are Postgres-only. A deployed service on any
     # other dialect would silently lose those guarantees, so this is RED, never a warning.

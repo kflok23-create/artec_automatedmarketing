@@ -1742,3 +1742,43 @@ Redaction is the operator's call, and it is recorded here rather than silently s
      reminder fired through a third function nobody had thought to spy on. A guard that only
      sees the firings you remembered to enumerate cannot find the one you forgot. Verified by
      re-injecting the defect: both assertions fail.
+
+124. **2026-08-08 - THE AGENT SPEND METER READ $0.00 FOR THE LIFE OF THE SYSTEM, AND HERMES
+     HAD BEEN MEASURING ALL ALONG.** `week_to_date_spend_cents` sums `agent_runs.cost_cents`
+     and NOTHING IN PRODUCTION EVER WROTE THAT COLUMN. `start_run`/`finish_run` have no call
+     site outside tests, because the three brain jobs are native `hermes cron` entries whose
+     entire payload is a prompt - there is no Python wrapper around a cron firing to call
+     them, and the plugin's only hook is `pre_tool_call`. So every production row was opened
+     by `record_tool_call_for_session` as `job='telegram-session' / trigger='manual' /
+     status='running'`, and:
+
+     * the digest printed "agent - week to date: $0.00 - weekly cap $15.00" nightly, a
+       measured-looking zero for a quantity nothing measured;
+     * the A6.2 weekly cap could not engage at ANY spend, its meter being disconnected;
+     * migration 0009 added `trigger` so a cron firing could be told from a run-now, and the
+       'cron' side of that comparison was structurally unsuppliable.
+
+     **THE MEASUREMENT ALREADY EXISTED.** Probing a live hermes install the way VERIFY.md was
+     built, its own `sessions` table carries per session: `input_tokens`, `output_tokens`,
+     `cache_read_tokens`, `estimated_cost_usd`, `actual_cost_usd`, `cost_status`,
+     `api_call_count`, `started_at`, `ended_at`, `end_reason`, `model`. The meter did not need
+     inventing. It needed READING, and carrying from the brain's volume into Postgres -
+     `deploy/hermes-brain/report_agent_runs.py`.
+
+     **THE JOIN IS DIRECT, NOT INFERRED.** A cron session id is
+     `cron_<jobid>_<YYYYMMDD>_<HHMMSS>`, and `hermes cron list` prints that same `<jobid>`
+     beside the job name. WHAT SUPPLIES EACH SIDE: the cron registry gives jobid -> name, the
+     message store gives jobid -> cost. A session whose job id is not in the listing is
+     recorded as `cron:<jobid>` rather than given a neighbouring name - an unresolved id is a
+     fact, a plausible name is a fabrication.
+
+     **STALE IS NOT ZERO, AND THE STORE SAYS SO ITSELF.** `cost_status` is 'estimated',
+     'unknown' or NULL, and a real row carries `estimated_cost_usd = 0.0` with
+     `cost_status = 'unknown'`. Those are written `cost_cents = NULL`, never 0. Writing 0
+     would make an unmeasured week indistinguishable from a free one - the very defect, one
+     layer down. `week_to_date_spend` now returns measured/unmeasured counts alongside the
+     cents, and `spend_posture(blind=True)` refuses to read a disconnected meter as
+     permission: a cap enforced against a meter that recorded nothing is not a cap.
+
+     The reporter also REPAIRS the mislabelled rows rather than duplicating them, so the
+     history stops claiming every Sunday firing was an operator chat.

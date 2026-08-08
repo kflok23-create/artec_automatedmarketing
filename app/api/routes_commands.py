@@ -366,6 +366,20 @@ def digest_preview_cmd(body: CommandRequest):
         return result
 
 
+@router.post("/prove-all")
+def prove_all_cmd():
+    """Every capability in one pass, classified three ways. Nothing irreversible.
+
+    Nine capabilities have been UNPROVEN since the build began, reported as a single count
+    that could not distinguish "the code is broken" from "the world has not supplied the
+    precondition". Those have different owners. This separates them.
+    """
+    from app.stages import prove as prove_mod
+
+    with record_run("prove-all", {}) as (session, rec):
+        return prove_mod.run_all(session, settings=get_settings(), log=rec.log)
+
+
 @router.post("/doctor")
 def doctor_cmd():
     """CHECKPOINT 3 mirror: full green/red verification, incl. the live LoRA probes and

@@ -393,6 +393,47 @@ def wait_for_schema(timeout_s: int = 300, poll_s: int = 5) -> None:
             time.sleep(poll_s)
 
 
+def _start_proof_sweep() -> None:
+    """Run all nine proofs once, in a BACKGROUND THREAD, AFTER the tick loop is live.
+
+    Nine capabilities have been UNPROVEN since the build began, and nobody could run them:
+    every route needs a bearer token, and the one person holding it has other work. So the
+    sweep runs where the credentials already are.
+
+    THREE THINGS ABOUT THE PLACEMENT, all learned the hard way:
+
+    1. A DAEMON THREAD, NOT INLINE. I put a diagnostic before this loop once and the
+       scheduler produced nothing but "Starting Container" for fifteen minutes — nine jobs
+       unscheduled because a probe hung. `try/except Exception` does not catch a hang. A
+       thread cannot block the loop no matter what it does.
+    2. AFTER the loop starts, not before. The jobs are the product; the proof of the jobs
+       is not.
+    3. IT SLEEPS FIRST. The first tick matters more than the sweep, and a proof run
+       competing with it would make both slower and neither clearer.
+
+    NOTHING IRREVERSIBLE. `brevo-send` is dry unless `live=True` — a real send reaches a
+    real customer and requires review_email(approve), which is a human decision this thread
+    must never make. `stripe-attribution` needs a real card purchase no code can produce.
+    Both report what is missing.
+    """
+    import threading
+
+    def _sweep() -> None:
+        try:
+            time.sleep(45)
+            from app.db import session_scope
+            from app.stages import prove as prove_mod
+
+            print("proof sweep: running all nine capabilities (nothing irreversible)")
+            with session_scope() as session:
+                prove_mod.run_all(session, settings=get_settings(), log=print)
+        except Exception as e:                                # noqa: BLE001
+            print(f"proof sweep failed (non-fatal, the loop is unaffected): "
+                  f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=_sweep, name="proof-sweep", daemon=True).start()
+
+
 def main() -> None:
     settings = get_settings()
     install_redaction(settings)
@@ -430,6 +471,8 @@ def main() -> None:
         # VERIFY BY LISTING, on this side too. The brain lists via `hermes cron list`; the
         # scheduler has no external registry, so it lists itself at every boot.
         print(f"  job {row['number']:>2} {row['name']:<22} next {row['next_run']}")
+    _start_proof_sweep()
+
     fired: set[str] = set()
     current_day = datetime.now(SGT).strftime("%Y-%m-%d")
     while True:

@@ -399,6 +399,58 @@ def run(session: Session, capability: str, settings=None, log=print, **kwargs) -
     return proof
 
 
+def run_all(session: Session, settings=None, log=print, **kwargs) -> dict:
+    """Every capability, one pass, three outcomes — never two.
+
+    THE POINT IS THE CLASSIFICATION, not the score. Nine capabilities have sat UNPROVEN
+    since the build began and nobody could say WHY each one was unproven — whether the code
+    was broken, or the world had not yet supplied the thing it needs. Those are different
+    problems with different owners, and a single "9 unproven" line conflates them.
+
+      proven       the real path ran and demonstrated the thing
+      failed       the real path ran and did not — a defect, ours
+      not_provable the path could not run because a precondition is absent — NOT a defect,
+                   and NOT a pass. `NotProvable` carries what is missing.
+
+    Recording a skip as a proof is how a capability comes to be believed without ever having
+    run; that is why `run()` re-raises NotProvable rather than swallowing it, and why this
+    keeps the three apart.
+
+    NOTHING IRREVERSIBLE HAPPENS HERE. `brevo-send` is dry by default — a real send needs
+    review_email(approve) and reaches a real customer — and `stripe-attribution` needs a real
+    card purchase that no code can manufacture. Both report what is missing instead. A proof
+    harness that could fake either would be worse than no harness.
+    """
+    results: dict[str, dict] = {}
+    for capability in CAPABILITIES:
+        try:
+            proof = run(session, capability, settings=settings, log=log, **kwargs)
+            results[capability] = {"state": "proven" if proof.ok else "failed",
+                                   "detail": proof.detail, "evidence": proof.evidence}
+        except NotProvable as e:
+            # A precondition is absent. Say WHAT, so the operator knows whether the gap is
+            # theirs (upload footage, make a purchase) or ours (fix the code).
+            results[capability] = {"state": "not_provable", "detail": str(e),
+                                   "needs": str(e)}
+            log(f"prove {capability}: NOT PROVABLE — {e}")
+        except Exception as e:                                 # noqa: BLE001
+            # One bad prover must not abort the other eight.
+            results[capability] = {"state": "failed",
+                                   "detail": f"{type(e).__name__}: {e}"}
+            log(f"prove {capability}: FAILED — {type(e).__name__}: {e}")
+
+    tally = {state: sorted(c for c, r in results.items() if r["state"] == state)
+             for state in ("proven", "failed", "not_provable")}
+    log("")
+    log("=== PROOF MATRIX ===")
+    for state in ("proven", "failed", "not_provable"):
+        log(f"  {state:<13} {len(tally[state])}  {tally[state]}")
+    blocked_s1 = [c for c in S1 if results[c]["state"] != "proven"]
+    if blocked_s1:
+        log(f"  S1 STILL UNPROVEN: {blocked_s1}")
+    return {"results": results, "tally": tally, "s1_unproven": blocked_s1}
+
+
 def proof_status(session: Session, now: datetime | None = None) -> list[dict]:
     """Every capability with its state: proven / stale / failed / never. `never` and `stale`
     are YELLOW at doctor; `failed` is RED."""

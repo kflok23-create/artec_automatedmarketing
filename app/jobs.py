@@ -145,6 +145,9 @@ NON_JOB_ROUTES: dict[str, str] = {
     "/commands/wishlist-match": "runs inside job 9; exposed for the monthly wishlist review",
     "/commands/media/{post_id}": "not a job — deliver_video reads the publish bytes here",
     "/commands/gate": "409 by design: the gate is an interactive Telegram session",
+    "/commands/prove-all": "not a job — every capability in one pass, classified proven / "
+                           "failed / not_provable. Operator-driven like /commands/prove, "
+                           "never an agent tool, which is why it may write config.proofs",
     "/commands/match-probe": "not a job — READ-ONLY: can each DRAFT be serviced from the "
                              "bank? wishlist.match() only inspects PARKED posts, so a "
                              "draft's servicability was unanswerable until render parked "

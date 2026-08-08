@@ -33,7 +33,17 @@ NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 
 
 def _at(delta: timedelta) -> dict:
-    return {"video-pipeline": {"ok": True, "at": (NOW - delta).isoformat()}}
+    """Every capability this sweep OWNS, stamped the same age.
+
+    Was `{"video-pipeline": ...}` alone — which passed only because the gate then read the
+    newest stamp across the whole matrix. One capability standing in for nine is the defect
+    these tests now exist to catch, so the helper builds the full owned set.
+    """
+    from app.stages.prove import CAPABILITIES
+    from app.stages.prove_sweep import BRAIN_ONLY
+
+    return {c: {"ok": True, "at": (NOW - delta).isoformat()}
+            for c in CAPABILITIES if c not in BRAIN_ONLY}
 
 
 # --- staleness: both sides named --------------------------------------------------------
@@ -44,7 +54,7 @@ def test_never_run_is_due_not_fresh():
     and called it clean."""
     due, why = sweep_is_due({}, NOW)
     assert due
-    assert "ever been recorded" in why
+    assert "never proven on this service" in why
 
 
 def test_a_fresh_matrix_is_not_re_swept():
@@ -69,25 +79,33 @@ def test_the_clock_is_a_parameter_not_a_hidden_side():
 def test_an_unparseable_stamp_is_treated_as_absent_not_as_now():
     """A corrupt value read as 'now' would make the sweep permanently fresh and silently
     stop. Absent is the safe reading, because absent means DUE."""
-    assert sweep_is_due({"video-pipeline": {"at": "not-a-date"}}, NOW)[0]
-    assert sweep_is_due({"video-pipeline": {"at": None}}, NOW)[0]
-    assert sweep_is_due({"video-pipeline": "not-even-a-dict"}, NOW)[0]
+    for bad in ("not-a-date", None):
+        proofs = _at(timedelta(minutes=1))
+        proofs["video-pipeline"] = {"at": bad}
+        assert sweep_is_due(proofs, NOW)[0]
+    proofs = _at(timedelta(minutes=1))
+    proofs["video-pipeline"] = "not-even-a-dict"
+    assert sweep_is_due(proofs, NOW)[0]
 
 
 def test_a_naive_stamp_does_not_explode_the_comparison():
     """config.proofs has carried stamps from two writers (run_all and the brain's
     prove_brain.py). A naive datetime raises TypeError against an aware one, inside a boot
     thread, where the failure would be a log line nobody reads."""
-    naive = {"video-pipeline": {"at": (NOW - timedelta(hours=1)).replace(tzinfo=None).isoformat()}}
+    naive = _at(timedelta(hours=1))
+    naive["video-pipeline"] = {
+        "at": (NOW - timedelta(hours=1)).replace(tzinfo=None).isoformat()}
     assert not sweep_is_due(naive, NOW)[0]
 
 
-def test_the_newest_stamp_wins_across_capabilities():
-    """Nine capabilities write nine stamps. The sweep is as fresh as its most recent one,
-    not its oldest — otherwise one never-proven capability pins it permanently due."""
-    proofs = {"video-pipeline": {"at": (NOW - timedelta(days=40)).isoformat()},
-              "brevo-send": {"at": (NOW - timedelta(minutes=5)).isoformat()}}
-    assert not sweep_is_due(proofs, NOW)[0]
+def test_the_OLDEST_owned_stamp_decides_not_the_newest():
+    """THIS TEST USED TO ASSERT THE DEFECT. It was `test_the_newest_stamp_wins_across_
+    capabilities`, and it passed — which is how the bug shipped. One capability proven five
+    minutes ago cannot vouch for another proven forty days ago; they are separate facts."""
+    proofs = _at(timedelta(minutes=5))
+    proofs["video-pipeline"] = {"at": (NOW - timedelta(days=40)).isoformat()}
+    due, why = sweep_is_due(proofs, NOW)
+    assert due and "video-pipeline" in why
 
 
 # --- restore rides a much slower clock ---------------------------------------------------
@@ -211,3 +229,53 @@ def test_the_gates_never_raise_on_a_malformed_proofs_row(bad):
     to 'due', never to an exception inside a boot thread."""
     assert sweep_is_due(bad, NOW)[0] is True
     assert restore_is_due(bad, NOW)[0] is True
+
+
+# --- the brain's proofs must not vouch for the api's ------------------------------------
+
+def _all_owned(delta: timedelta) -> dict:
+    from app.stages.prove import CAPABILITIES
+    from app.stages.prove_sweep import BRAIN_ONLY
+    return {c: {"ok": True, "at": (NOW - delta).isoformat()}
+            for c in CAPABILITIES if c not in BRAIN_ONLY}
+
+
+def test_fresh_brain_proofs_do_not_make_the_api_sweep_look_fresh():
+    """CAUGHT IN PRODUCTION ONE MINUTE AFTER DEPLOY:
+
+        13:30:43  prove_brain: merged 3 proof(s) into config.proofs
+        13:31:26  proof sweep: skipped — last sweep 0.0h ago — still fresh
+
+    The gate read the NEWEST stamp across all nine, so three brain proofs written seconds
+    earlier vouched for six api proofs that were a day old. The freshness of `audit-memory`
+    says nothing about `brevo-send`.
+    """
+    from app.stages.prove_sweep import BRAIN_ONLY
+
+    proofs = _all_owned(timedelta(days=1))                      # api's six: stale
+    for capability in BRAIN_ONLY:                               # brain's three: seconds old
+        proofs[capability] = {"ok": True, "at": NOW.isoformat()}
+
+    due, why = sweep_is_due(proofs, NOW)
+    assert due, f"stale owned proofs were masked by fresh brain proofs: {why}"
+
+
+def test_a_capability_never_proven_here_makes_the_sweep_due():
+    """Absent is not fresh. A capability with no stamp has never run on this service."""
+    proofs = _all_owned(timedelta(minutes=1))
+    proofs.pop("brevo-send")
+    due, why = sweep_is_due(proofs, NOW)
+    assert due and "brevo-send" in why
+
+
+def test_all_owned_proofs_fresh_still_skips():
+    """The gate must still do its job — a burst of redeploys sweeps once, not once each."""
+    assert not sweep_is_due(_all_owned(timedelta(minutes=1)), NOW)[0]
+
+
+def test_freshness_follows_the_OLDEST_owned_proof_not_the_newest():
+    """One recently-proven capability must not vouch for five stale ones."""
+    proofs = _all_owned(timedelta(days=1))
+    proofs["budget-refusal"] = {"ok": True, "at": NOW.isoformat()}
+    due, why = sweep_is_due(proofs, NOW)
+    assert due and "budget-refusal" not in why

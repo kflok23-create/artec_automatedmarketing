@@ -34,6 +34,8 @@ import logging
 import threading
 from datetime import UTC, datetime, timedelta
 
+from app.stages.prove import CAPABILITIES
+
 # How long a matrix stays trustworthy. Twelve hours means a burst of redeploys sweeps once,
 # and a system left alone still re-checks itself twice a day.
 SWEEP_STALE_AFTER = timedelta(hours=12)
@@ -43,6 +45,13 @@ SWEEP_STALE_AFTER = timedelta(hours=12)
 RESTORE_STALE_AFTER = timedelta(days=30)
 
 LOCK_NAME = "boot-proof-sweep"
+
+# The three whose evidence lives on the brain's volume. This sweep runs on artec api and
+# CANNOT prove them — `deploy/hermes-brain/report_agent_runs.py`'s sibling `prove_brain.py`
+# does, and merges them into the same `config.proofs` row. They are excluded from the
+# freshness question because a proof this service cannot run must not decide whether this
+# service's own proofs are stale.
+BRAIN_ONLY = ("agent-session", "sunday-cron", "audit-memory")
 
 log = logging.getLogger(__name__)
 
@@ -73,14 +82,41 @@ def _stamp(proofs: dict, capability: str | None = None) -> datetime | None:
 
 def sweep_is_due(proofs: dict | None, now: datetime,
                  stale_after: timedelta = SWEEP_STALE_AFTER) -> tuple[bool, str]:
-    """Both sides named: `now` from the caller, the stamp from the last recorded sweep."""
-    last = _stamp(proofs or {})
-    if last is None:
-        return True, "no proof has ever been recorded"
-    age = now - last
+    """Both sides named: `now` from the caller, the stamps from the capabilities THIS SWEEP
+    OWNS.
+
+    THE FIRST DEPLOY OF THIS FUNCTION SKIPPED THE SWEEP, and production said so within a
+    minute:
+
+        13:30:43  prove_brain: merged 3 proof(s) into config.proofs
+        13:31:26  proof sweep: skipped — last sweep 0.0h ago — still fresh
+
+    It read the NEWEST stamp across all nine. The brain had just written its three, so three
+    fresh proofs made the api's six look fresh and none of them ran. The freshness of
+    `audit-memory` says nothing whatever about `brevo-send`.
+
+    That is precisely the trap `restore_is_due` was written to avoid one level down — "its
+    freshness is read from ITS OWN entry; reading the whole-matrix stamp would keep it
+    permanently fresh and it would never run again" — and I rebuilt it at the sweep level in
+    the same file. Getting a principle right in one function does not apply it to the next.
+
+    So: freshness is the OLDEST stamp among the capabilities this sweep can actually prove,
+    and a capability with no stamp at all is due, not ignored.
+    """
+    proofs = proofs or {}
+    owned = [c for c in CAPABILITIES if c not in BRAIN_ONLY]
+
+    missing = [c for c in owned if _stamp(proofs, c) is None]
+    if missing:
+        return True, f"never proven on this service: {missing}"
+
+    oldest_at = min(_stamp(proofs, c) for c in owned)
+    oldest = next(c for c in owned if _stamp(proofs, c) == oldest_at)
+    age = now - oldest_at
+    hours = age.total_seconds() / 3600
     if age >= stale_after:
-        return True, f"last sweep {age.total_seconds() / 3600:.1f}h ago"
-    return False, f"last sweep {age.total_seconds() / 3600:.1f}h ago — still fresh"
+        return True, f"oldest owned proof is {oldest} at {hours:.1f}h"
+    return False, f"oldest owned proof is {oldest} at {hours:.1f}h — still fresh"
 
 
 def restore_is_due(proofs: dict | None, now: datetime,

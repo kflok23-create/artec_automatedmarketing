@@ -1669,3 +1669,76 @@ Redaction is the operator's call, and it is recorded here rather than silently s
      capability absent from the pass — the S1 summary line crashing the whole matrix at the
      exact moment it was reporting that something had not run. `.get` now reads absence as
      unproven, which is what absence means.
+
+122. **2026-08-08 - FOUR OF THE NINE PROVERS COULD REPORT PROVEN WITHOUT THE CAPABILITY
+     WORKING** - found by turning the standing review question on the proof harness itself.
+     It matters more since 121: the sweep now runs unattended every twelve hours, and
+     `proof_status` drops a "proven" capability off the digest's unproven list and out of
+     doctor's YELLOW. **A false PROVEN is not a stale fact; it removes the surface that
+     would have reported the truth.**
+
+     * **`publish-by-slot`** - `evaluated = would_publish + held` defended only the
+       registered false pass ("zero posts to select"), so an all-held board made `evaluated`
+       large, `would_publish` EMPTY, and it returned ok=True with the detail "0 would
+       publish". All-held is the ORDINARY end-of-week state: `select_due_posts` filters on
+       `external_post_id IS NULL`, so photo posts leave the board as they publish and what
+       remains is exactly the email and video posts held pending an approval receipt. The
+       green row would have landed on a normal Friday. Now NOT_PROVABLE - the gates working
+       is not a defect, but it is not proof of publishing either.
+     * **`stripe-attribution`** - the prover built the Checkout event ITSELF, including the
+       `client_reference_id`, then asserted the webhook copied it. The one untested link in
+       the I19 chain - does artec.my's Payment Link populate that field from
+       `utm_campaign=post_XXXX` at all? - was precisely the link being fabricated.
+       `run_all`'s own docstring already said it "needs a real card purchase that no code
+       can manufacture ... reports what is missing instead", and it reported PROVEN while
+       gap B6 stayed open. The join is still verified; end-to-end needs one real order.
+     * **`video-pipeline`** - pre-flighted with `aspect_ratio="16:9"` and
+       `duration_bounds=(1.0, 10.0)`, neither of which occurs in production. The live spec
+       comes from `channel_media`: tiktok 9:16/12s (6-24s) and youtube 9:16/15s (7.5-30s).
+       The check ran in a configuration THAT CANNOT OCCUR, and the bytes making it green are
+       bytes `run_preflight` would park twice over - the fixture is 1920x1080 at 3.0s, while
+       a real 12s vertical render would fail the prover's own 1-10s bound. Half of S1, green
+       on a check whose two configured sides had been replaced by constants.
+     * **`brevo-send`** - `ok` was the literal `True` and the measured `deleted` reached only
+       the detail string. A MEASURED OUTCOME THAT NEVER ENTERS A COMPARISON IS NOT A CHECK.
+       The campaign is created on the production account against the live consumer list, so
+       a refused DELETE left a send-ready campaign aimed at every subscriber and still
+       recorded PROVEN - accumulating at up to one per api boot, while `run_all` claimed
+       NOTHING IRREVERSIBLE HAPPENS HERE.
+
+     Also closed: **`sweep_orphaned_slots` matched the literal `"RENDERED"`** while
+     `select_due_posts` two functions above uses `PUBLISHABLE_STATUSES`, which also holds
+     APPROVED_TO_SEND. A post approved onto a slot matching no `slot_times` key was invisible
+     to the only A7 guard - never selected, never reported, shown nightly as queued for
+     delivery. Approval is exactly when a post is most likely to be orphaned, because it is
+     when the operator is most likely to have just edited `slot_times`.
+
+123. **2026-08-08 - RETIRED WAS A COMMENT, AND THE JOB WENT ON FIRING.** From
+     artec-scheduler's own log, 2026-08-07, two consecutive lines:
+
+         22:30:18  measure reminder: telegram send failed (TelegramError)
+         22:30:18  measure 2026-08-07: 5 unmeasured post(s), reminder sent
+
+     The send failed inside a try/except and the next statement announced success
+     unconditionally. It could never have succeeded: D1 removed TELEGRAM_BOT_TOKEN from
+     artec api AND artec-scheduler so the brain is structurally the sole Telegram owner -
+     verified against both services' variable lists. A daily call to a service holding no
+     credentials for it, reporting delivery of a message nobody received.
+
+     `measure-reminder` had sat in `jobs.RETIRED` the whole time, and the module docstring
+     still advertised it as one of "EXACTLY TWO jobs" while the registry had grown to twelve.
+     Every document that might have contradicted the behaviour agreed with it instead.
+
+     The body is DELETED rather than unscheduled, and the route with it - the route had its
+     expiry written down ("kept invocable only until D1 removes TELEGRAM_BOT_TOKEN") and that
+     condition was met. `measure_reminder_time` is out of OPERATOR_CONSTANTS and out of the
+     scheduler REQUIRED keys, where it could have made a service refuse to boot over a
+     setting that set nothing.
+
+     THE GUARD: `tests/unit/test_retired_jobs_do_not_fire.py` drives all 1440 minutes of a
+     day through `tick` and compares the firings to the registry. It asserts on the loop's
+     OWN `fired` set rather than on spied functions - the first draft spied on
+     `run_registry_job` and `run_publish_job` and WOULD NOT HAVE CAUGHT THIS, because the
+     reminder fired through a third function nobody had thought to spy on. A guard that only
+     sees the firings you remembered to enumerate cannot find the one you forgot. Verified by
+     re-injecting the defect: both assertions fail.

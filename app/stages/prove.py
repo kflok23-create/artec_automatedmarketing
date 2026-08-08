@@ -180,9 +180,43 @@ def prove_stripe_attribution(session: Session, **_) -> Proof:
         session.delete(order)
     session.delete(session.get(Post, probe_id))
     session.flush()
-    return Proof("stripe-attribution", ok,
-                 "client_reference_id joined to the post" if ok
-                 else "the webhook did not attribute the order to its post")
+    if not ok:
+        return Proof("stripe-attribution", False,
+                     "the webhook did not attribute the order to its post")
+
+    # THE HALF THIS CANNOT PROVE, AND USED TO CLAIM ANYWAY.
+    #
+    # Everything above builds the Checkout event ITSELF — including the
+    # `client_reference_id` — and then asserts the webhook copied it into `Order.post_id`.
+    # That is a real test of OUR join, and it is worth running. But the untested link in the
+    # I19 chain is precisely the one being fabricated: whether artec.my's hosted Payment Link
+    # populates `client_reference_id` from the spine's `utm_campaign=post_XXXX` AT ALL.
+    # FALSE_PASS names a different trap ("an order row written directly"), and this walked
+    # past it while supplying one side of the comparison itself — the standing review
+    # question failing inside the proof harness.
+    #
+    # `run_all`'s own docstring already said what should happen: "stripe-attribution needs a
+    # real card purchase that no code can manufacture ... reports what is missing instead."
+    # It reported PROVEN. Since the sweep went unattended that verdict lands every 12 hours,
+    # dropping the capability off the digest's unproven list and out of doctor's YELLOW,
+    # while SYSTEM_STATE_AND_GAPS still classes it U and gap B6 open.
+    #
+    # So: the join is proven above; end-to-end attribution needs ONE real order that arrived
+    # from a real card with a reference this code did not write.
+    real = (session.query(Order)
+            .filter(Order.source == "stripe", Order.post_id.isnot(None))
+            .order_by(Order.order_id.desc()).first())
+    if real is None:
+        raise NotProvable(
+            "our webhook join is exercised and correct, but NO REAL STRIPE ORDER has ever "
+            "arrived carrying a client_reference_id. The untested link is artec.my's hosted "
+            "Payment Link populating client_reference_id from utm_campaign=post_XXXX — this "
+            "code cannot manufacture it, and manufacturing it is exactly how this reported "
+            "PROVEN while gap B6 stayed open. One real card purchase closes it.")
+    return Proof("stripe-attribution", True,
+                 f"the webhook join is correct AND a real Stripe order exists carrying a "
+                 f"client_reference_id: {real.order_id} -> {real.post_id}",
+                 {"real_order_id": real.order_id, "real_post_id": real.post_id})
 
 
 def prove_video_pipeline(session: Session, **_) -> Proof:
@@ -214,11 +248,63 @@ def prove_video_pipeline(session: Session, **_) -> Proof:
         return Proof("video-pipeline", False,
                      f"the fixture is {bps:.3f} bits/pixel-second — that is a synthetic "
                      "clip, not real bank footage, and would prove the fixture")
-    result = preflight_video(str(fixture), aspect_ratio="16:9", duration_bounds=(1.0, 10.0))
-    return Proof("video-pipeline", result.ok,
-                 "real encode passed publish pre-flight" if result.ok
-                 else "; ".join(result.failures),
-                 {"checks": getattr(result, "checks", None), "fixture": str(fixture)})
+    # THE SPEC COMES FROM `channel_media`, NOT FROM TWO LITERALS NOBODY USES.
+    #
+    # This called preflight_video(aspect_ratio="16:9", duration_bounds=(1.0, 10.0)). Neither
+    # value occurs in production. `run_preflight` (app/stages/publish.py) reads the spec from
+    # config: aspect_ratio defaults to "9:16" and the bounds are (duration*0.5, duration*2.0)
+    # from `duration_s`. The only two video channels are tiktok (9:16, 12s -> 6.0-24.0) and
+    # youtube (9:16, 15s -> 7.5-30.0).
+    #
+    # So the prover exercised the pre-flight in a configuration that CANNOT OCCUR, and the
+    # bytes that made it report PROVEN are bytes production would reject twice over — the
+    # fixture is 1920x1080 (1.778 against a 0.5625 target, 243% off a 4% tolerance) and 3.0s
+    # (below both floors). Meanwhile a real 12s 1080x1920 TikTok render, the only video this
+    # system produces, would fail the prover's own 1-10s bound. Half of S1 was green on a
+    # check whose two configured sides had been replaced by constants.
+    #
+    # Reading the live spec also means drift in `channel_media` — a removed aspect_ratio, a
+    # changed duration_s, a channel switched to video — now reaches this proof instead of
+    # being discovered at publish time by parking.
+    channel_media = get_config(session, "channel_media", {}) or {}
+    video_channels = {c: s for c, s in channel_media.items()
+                      if isinstance(s, dict) and s.get("media") == "video"}
+    if not video_channels:
+        raise NotProvable(
+            "no channel in `channel_media` is configured for video, so there is no real "
+            "pre-flight contract to prove against. Proving one made of literals is how this "
+            "check came to pass on a file production would park.")
+
+    failures, checks = [], {}
+    for channel, spec in sorted(video_channels.items()):
+        aspect = spec.get("aspect_ratio", "9:16")
+        seconds = float(spec.get("duration_s") or 0)
+        if not seconds:
+            failures.append(f"{channel}: no duration_s in channel_media — bounds undefined")
+            continue
+        bounds = (max(1.0, seconds * 0.5), seconds * 2.0)
+        result = preflight_video(str(fixture), aspect_ratio=aspect, duration_bounds=bounds)
+        checks[channel] = {"aspect_ratio": aspect, "duration_bounds": bounds,
+                           "ok": result.ok, "failures": list(result.failures)}
+        if not result.ok:
+            failures.append(f"{channel} ({aspect}, {bounds[0]:.1f}-{bounds[1]:.1f}s): "
+                            + "; ".join(result.failures))
+    if failures:
+        # A REAL RESULT, not a fixture problem to be papered over. The committed fixture is
+        # landscape and short; the pipeline that must be proven is the vertical one. Until a
+        # real vertical encode exists this reports FAILED with the exact reason, which is the
+        # honest state — the previous green was the reassuring one.
+        return Proof("video-pipeline", False,
+                     "the real per-channel pre-flight contract REJECTS the committed "
+                     f"fixture: {' | '.join(failures)}. The fixture is "
+                     f"{stream.get('width')}x{stream.get('height')} at {duration:.1f}s; "
+                     "production renders vertical. This was green only because the prover "
+                     "used 16:9 and 1-10s, which no channel is configured with.",
+                     {"checks": checks, "fixture": str(fixture)})
+    return Proof("video-pipeline", True,
+                 f"real encode passed the LIVE publish pre-flight for "
+                 f"{sorted(video_channels)} — spec read from channel_media, not literals",
+                 {"checks": checks, "fixture": str(fixture)})
 
 
 def prove_publish_by_slot(session: Session, **_) -> Proof:
@@ -245,6 +331,27 @@ def prove_publish_by_slot(session: Session, **_) -> Proof:
                      "— that proves the pass runs, not that it selects correctly. Render "
                      "something into a slot and re-run.",
                      {"by_slot": seen, "evaluated": 0})
+    # A BOARD WHERE EVERYTHING IS HELD DEMONSTRATES WITHHOLDING, NOT PUBLISHING.
+    #
+    # The registered false pass is "zero posts to select", and `evaluated` defended exactly
+    # that and no more: `evaluated = would_publish + held`, so an all-held board makes
+    # `evaluated` large and `would_publish` EMPTY, and this returned ok=True with the detail
+    # "0 would publish". One side of the comparison wholly absent, the check still passing.
+    #
+    # And all-held is the NORMAL end-of-week state, not a corner case. `select_due_posts`
+    # filters on `external_post_id IS NULL`, so photo posts leave the board as they publish
+    # and what remains is precisely the email and video posts `skip_reason` holds pending an
+    # approval receipt. The green row would land on the ordinary Friday.
+    #
+    # NOT_PROVABLE, not FAILED: nothing is broken: the gates are working. What is absent is
+    # a post this pass would actually send, which is a precondition the world supplies.
+    if not would_publish:
+        raise NotProvable(
+            f"every one of the {len(held)} selected post(s) is HELD by a review gate, so the "
+            "pass demonstrated withholding and not publishing. That is the gates working, "
+            "not a defect — but it is not proof of the first unattended action this system "
+            f"takes. Approve a video/email review, or render a photo post into a slot, and "
+            f"re-run. Held: {held[:8]}")
     return Proof("publish-by-slot", True,
                  f"slot pass evaluated {len(slot_times)} slots: {len(would_publish)} would "
                  f"publish, {len(held)} held by a review gate",
@@ -315,11 +422,34 @@ def prove_brevo_send(session: Session, settings=None, live: bool = False, **_) -
     campaign_id = brevo.create_campaign(name=f"artec-prove-{datetime.now(UTC):%Y%m%d%H%M%S}",
                                         subject="artec proof — not sent", html=substituted)
     deleted = brevo.delete_campaign(campaign_id)
+    # `ok` WAS THE LITERAL `True`, WITH `deleted` GOING ONLY INTO THE DETAIL STRING.
+    #
+    # A measured outcome that never enters a comparison is not a check. The campaign is
+    # created on the PRODUCTION account against the live consumer list, and
+    # `delete_campaign` returns False for any status outside 200/204 — a 403, a 404, a
+    # transient 5xx, a rate limit. So a failed delete left a send-ready campaign aimed at
+    # every subscriber and this still returned PROVEN, which means nothing surfaced it in
+    # doctor, the digest, or the matrix. `delete_campaign`'s own docstring names the
+    # consequence: "eventually get one sent by accident".
+    #
+    # It matters more since the sweep went unattended: the api boot thread runs this
+    # whenever the matrix is over 12h old, so the residue accumulates at up to one per boot
+    # while `run_all`'s docstring claims NOTHING IRREVERSIBLE HAPPENS HERE — true only if
+    # the unchecked delete always worked.
+    if not deleted:
+        return Proof("brevo-send", False,
+                     f"the proof campaign was created on the LIVE list and NOT deleted "
+                     f"(Brevo refused the DELETE). Campaign {campaign_id} is sitting in the "
+                     "production account, send-ready, aimed at every subscriber — remove it "
+                     "by hand. The template contract itself passed; this failure is the "
+                     "residue, and it is reported rather than tidied away because a "
+                     "send-ready campaign nobody knows about is how one gets sent.",
+                     {"campaign_id": campaign_id, "deleted": False,
+                      "action_required": "delete campaign in Brevo"})
     return Proof("brevo-send", True,
                  f"template contract, substitution and campaign creation proven; campaign "
-                 f"{campaign_id} created and {'deleted' if deleted else 'NOT deleted'}; "
-                 "sendNow was never called",
-                 {"campaign_id": campaign_id, "deleted": deleted})
+                 f"{campaign_id} created and deleted; sendNow was never called",
+                 {"campaign_id": campaign_id, "deleted": True})
 
 
 def prove_agent_session(session: Session, **_) -> Proof:

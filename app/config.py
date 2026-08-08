@@ -144,7 +144,6 @@ OPERATOR_CONSTANTS: dict[str, Any] = {
                                   "line structurally incapable of firing (v4 §E1)",
     # v3 §9 — slot becomes a real firing time (Asia/Singapore) AND stays a learned lever.
     "slot_times": {"morning": "09:00", "lunch": "12:30", "evening": "19:00", "weekend": "10:00"},
-    "measure_reminder_time": "06:30",
     # v3 §11 — shadow-mode cutover. Starts and stays on 'shadow' until the operator flips
     # it after 2–3 Sundays of plan-diff. 'bespoke' is full rollback, no redeploy.
     "plan_source": "shadow",
@@ -235,7 +234,7 @@ REQUIRED_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
     ),
     # artec-scheduler: without these the twelve jobs cannot fire correctly
     "scheduler": (
-        "slot_times", "measure_reminder_time",
+        "slot_times",
         "render_run_cap_cents", "per_call_ceiling_cents", "max_output_megapixels",
         "email_review_expiry_days", "video_review_expiry_days",
     ),

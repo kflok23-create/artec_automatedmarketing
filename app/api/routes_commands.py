@@ -271,14 +271,14 @@ def publish_slot_cmd(body: CommandRequest):
         return run_publish_job(session, slot, log=rec.log)
 
 
-@router.post("/measure-reminder")
-def measure_reminder_cmd():
-    """Job 4 body over HTTPS. RETIRED AT MERGE (D1) — the brain becomes the sole Telegram
-    owner and the digest carries the unmeasured list."""
-    from app.scheduler import run_measure_job
-
-    with record_run("measure-reminder", {}) as (session, rec):
-        return run_measure_job(session, log=rec.log)
+# /commands/measure-reminder IS REMOVED, on the condition it set for itself. jobs.py carried
+# the expiry in writing — "kept invocable only until D1 removes TELEGRAM_BOT_TOKEN from this
+# service at merge" — and D1 is done: neither artec api nor artec-scheduler holds that
+# variable any more, verified against both services. The route could only ever have called
+# Telegram from a service with no Telegram credentials.
+#
+# What remains is POST /commands/measure, where the operator posts figures directly, and the
+# nightly digest, which carries the unmeasured list.
 
 
 @router.post("/prove")

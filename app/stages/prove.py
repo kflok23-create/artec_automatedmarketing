@@ -18,6 +18,7 @@ will ever take. Their proofs exercise the real path. A mock would prove the mock
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -281,16 +282,36 @@ def prove_brevo_send(session: Session, settings=None, live: bool = False, **_) -
     if leftovers:
         return Proof("brevo-send", False,
                      f"{len(leftovers)} unsubstituted placeholder(s) survived")
-    # the non-variable bytes must be untouched
-    skeleton_before = html
-    for name in variables:
-        skeleton_before = skeleton_before.replace("{{" + name + "}}", "")
-    skeleton_after = substituted
-    for value in variables.values():
-        skeleton_after = skeleton_after.replace(value, "")
-    if skeleton_before.replace(" ", "") != skeleton_after.replace(" ", ""):
+    # THE NON-VARIABLE BYTES MUST BE UNTOUCHED — and the first version of this check could
+    # not tell. It reported FAILED against the live template, and the fault was its own:
+    #
+    #   _PLACEHOLDER = r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}"   tolerates whitespace
+    #   skeleton_before.replace("{{" + name + "}}", "")                does not
+    #
+    # A template written `{{ headline }}` — the ordinary convention — left the placeholder in
+    # the BEFORE skeleton while the value was stripped from the AFTER one, so the two could
+    # never match. It also removed each VALUE wherever it appeared, over-removing whenever a
+    # value occurred naturally in the template, and colliding when one value was a substring
+    # of another. Then it compared with whitespace deleted, which would have hidden a real
+    # change to the template's spacing.
+    #
+    # Two sides built by two different notions of "a placeholder" is the wrong-comparison
+    # pattern, arriving inside the proof harness written to catch it. Both sides now use the
+    # SAME regex, and the comparison is exact rather than whitespace-blind.
+    #
+    # UNIQUE SENTINELS, not the real values: substituting markers that cannot occur in HTML
+    # means removing them afterwards cannot remove anything else.
+    from app.integrations.brevo_client import _PLACEHOLDER
+
+    sentinels = {name: f"@@ARTEC_SENTINEL_{i}@@" for i, name in enumerate(variables)}
+    probe = substitute_template(html, sentinels)
+    skeleton_after = re.sub(r"@@ARTEC_SENTINEL_\d+@@", "", probe)
+    skeleton_before = _PLACEHOLDER.sub(
+        lambda m: "" if m.group(1) in variables else m.group(0), html)
+    if skeleton_before != skeleton_after:
         return Proof("brevo-send", False,
-                     "substitution changed bytes outside the variables")
+                     "substitution changed bytes outside the variables "
+                     f"(before={len(skeleton_before)}B after={len(skeleton_after)}B)")
     campaign_id = brevo.create_campaign(name=f"artec-prove-{datetime.now(UTC):%Y%m%d%H%M%S}",
                                         subject="artec proof — not sent", html=substituted)
     deleted = brevo.delete_campaign(campaign_id)
